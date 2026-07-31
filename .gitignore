@@ -1,0 +1,21 @@
+# build products
+build/
+tessera
+*.o
+*.d
+
+# default output directory
+tessera_out/
+
+# assembly output and test scratch
+tessera-test.*/
+tests/tmp/
+*.fasta.gz
+core
+perf.data*
+
+# Benchmark working data (large; regenerate with bench/simulate.sh)
+bench/reads/
+bench/refs/
+bench/results/
+bench/work/
