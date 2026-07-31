@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "0.9.0";
+constexpr const char* kVersion = "1.0.0";
 
 void usage() {
     std::printf(
