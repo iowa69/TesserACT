@@ -28,6 +28,7 @@ struct AssemblyOptions {
     bool correctReads = true;
     bool resolveRepeats = true;
     bool scaffold = true;
+    bool gapFill = true;
     bool polish = true;
     bool emitGfa = true;
     bool emitHtml = true;

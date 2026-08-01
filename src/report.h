@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "correct.h"
+#include "gapfill.h"
 #include "graph.h"
 #include "polish.h"
 #include "resolve.h"
@@ -76,6 +77,9 @@ struct AssemblyReport {
     ResolveStats resolve;
     double resolveSeconds = 0;
     std::vector<uint64_t> insertHistogram;   // index = fragment length
+
+    bool gapFillRun = false;
+    GapFillStats gapFill;
 
     bool polishRun = false;
     PolishStats polish;

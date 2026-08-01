@@ -7,6 +7,7 @@
 
 #include "correct.h"
 #include "counter.h"
+#include "gapfill.h"
 #include "gfa.h"
 #include "polish.h"
 #include "resolve.h"
@@ -201,7 +202,7 @@ bool Assembler::run(std::string& error) {
         if (!l.r2.empty()) report_.inputFiles.push_back(l.r2);
     }
 
-    if (opt_.verbose) std::fprintf(stderr, "[1/6] loading reads\n");
+    if (opt_.verbose) std::fprintf(stderr, "[1/7] loading reads\n");
     reads_.setQualityTrim(opt_.qtrim);
     if (!reads_.load(opt_.libraries, opt_.threads, error)) return false;
     if (reads_.size() == 0) { error = "no reads were loaded"; return false; }
@@ -233,7 +234,7 @@ bool Assembler::run(std::string& error) {
         // abundance cutoff even in thin coverage, so the trusted set covers the
         // genome densely enough to anchor almost every read.
         const int kc = ladder.front();
-        if (opt_.verbose) std::fprintf(stderr, "[2/6] read error correction (k=%d)\n", kc);
+        if (opt_.verbose) std::fprintf(stderr, "[2/7] read error correction (k=%d)\n", kc);
         util::Timer t;
         KmerCounter cc(kc, opt_.threads);
         cc.count(reads_, {}, 0);
@@ -296,7 +297,7 @@ bool Assembler::run(std::string& error) {
     std::vector<std::string> carryOver;
     double meanCoverage = 0;
 
-    if (opt_.verbose) std::fprintf(stderr, "[3/6] de Bruijn iterations\n");
+    if (opt_.verbose) std::fprintf(stderr, "[3/7] de Bruijn iterations\n");
     for (size_t i = 0; i < ladder.size(); ++i) {
         const int k = ladder[i];
         if (k >= static_cast<int>(reads_.maxReadLength())) {
@@ -324,7 +325,7 @@ bool Assembler::run(std::string& error) {
     std::vector<GfaPath> gfaPaths;
 
     if (opt_.resolveRepeats && reads_.paired()) {
-        if (opt_.verbose) std::fprintf(stderr, "[4/6] paired-end repeat resolution\n");
+        if (opt_.verbose) std::fprintf(stderr, "[4/7] paired-end repeat resolution\n");
         util::Timer t;
         PairedResolver resolver(graph, reads_, opt_.threads, opt_.minLinkSupport, opt_.tieRatio);
         resolver.setScaffolding(opt_.scaffold);
@@ -381,12 +382,36 @@ bool Assembler::run(std::string& error) {
             }
         }
     } else {
-        if (opt_.verbose) std::fprintf(stderr, "[4/6] collecting contigs\n");
+        if (opt_.verbose) std::fprintf(stderr, "[4/7] collecting contigs\n");
         graph.toContigs(minLen, seqs, covs);
     }
 
+    // Scaffolding wrote the joins it trusts as Ns. Those Ns are a statement
+    // about the graph, not about the data: the reads that cross the join are
+    // still in memory. Closing them here, before polishing, means the bases
+    // that come back are polished with everything else.
+    if (opt_.gapFill && opt_.scaffold && !seqs.empty()) {
+        if (opt_.verbose) std::fprintf(stderr, "[5/7] scaffold gap closing\n");
+        const GapFillStats gs = closeGaps(seqs, reads_, opt_.threads, 31, 300);
+        report_.gapFill = gs;
+        report_.gapFillRun = true;
+        if (opt_.verbose && gs.gapsSeen) {
+            std::fprintf(stderr,
+                         "      %s/%s gaps closed (%s ambiguous, %s unspanned), "
+                         "%s Ns -> %s bases, %.1fs (thin=%zu budget=%zu seedgone=%zu tgtgone=%zu depth=%.0f floor=%.1f)\n",
+                         util::commify(static_cast<long long>(gs.gapsClosed)).c_str(),
+                         util::commify(static_cast<long long>(gs.gapsSeen)).c_str(),
+                         util::commify(static_cast<long long>(gs.gapsAmbiguous)).c_str(),
+                         util::commify(static_cast<long long>(gs.gapsNoPath)).c_str(),
+                         util::commify(static_cast<long long>(gs.nBasesRemoved)).c_str(),
+                         util::commify(static_cast<long long>(gs.basesInserted)).c_str(),
+                         gs.seconds, gs.gapsThinPool, gs.gapsOutOfBudget,
+                         gs.seedBelowFloor, gs.targetBelowFloor, gs.meanLocalDepth, gs.meanFloor);
+        }
+    }
+
     if (opt_.polish && !seqs.empty()) {
-        if (opt_.verbose) std::fprintf(stderr, "[5/6] consensus polishing\n");
+        if (opt_.verbose) std::fprintf(stderr, "[6/7] consensus polishing\n");
         util::Timer t;
         for (int pass = 0; pass < opt_.polishPasses; ++pass) {
             const PolishStats ps = polishContigs(seqs, reads_, opt_.threads, 31, 15, 0.90);
@@ -452,7 +477,7 @@ bool Assembler::run(std::string& error) {
         error = "cannot create output directory " + opt_.outDir;
         return false;
     }
-    if (opt_.verbose) std::fprintf(stderr, "[6/6] writing output\n");
+    if (opt_.verbose) std::fprintf(stderr, "[7/7] writing output\n");
 
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
     if (!writeFasta(contigPath, outSeqs, outNames, 80, error)) return false;

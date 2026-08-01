@@ -59,6 +59,20 @@ public:
         return static_cast<int>((word >> ((bit & 31) * 2)) & 3);
     }
 
+    // The stored base regardless of the ambiguity bit. Masking a range does not
+    // erase what was read there, it only withdraws the claim that the base is
+    // trustworthy -- and a stage that supplies its own evidence threshold can
+    // reasonably look again. Gap closing does exactly that: the reads the
+    // corrector gave up on are disproportionately the ones covering a gap,
+    // because low coverage is what created both the mask and the gap.
+    // Positions that were ambiguous in the input read as 'A' here, which the
+    // caller must be able to tolerate.
+    int rawBaseAt(size_t read, uint32_t pos) const {
+        uint64_t bit = offsets_[read] + pos;
+        uint64_t word = data_[bit >> 5];
+        return static_cast<int>((word >> ((bit & 31) * 2)) & 3);
+    }
+
     void decode(size_t read, std::string& out) const;
     std::string decode(size_t read) const {
         std::string s;
@@ -117,6 +131,24 @@ inline void forEachKmer(const SequenceStore& store, size_t read, int k, Fn&& fn)
         fwd = pushBack(fwd, c, k);
         rc = pushFrontRc(rc, c, k);
         if (++valid >= k) {
+            fn(fwd < rc ? fwd : rc, p + 1 - static_cast<uint32_t>(k));
+        }
+    }
+}
+
+// As forEachKmer, but reading through the ambiguity mask -- see rawBaseAt.
+// Nothing restarts the rolling window, so every position of the read yields a
+// k-mer and a masked stretch contributes whatever bases were stored there.
+template <typename Fn>
+inline void forEachKmerRaw(const SequenceStore& store, size_t read, int k, Fn&& fn) {
+    const uint32_t len = store.length(read);
+    if (len < static_cast<uint32_t>(k)) return;
+    Kmer fwd = 0, rc = 0;
+    for (uint32_t p = 0; p < len; ++p) {
+        const int c = store.rawBaseAt(read, p);
+        fwd = pushBack(fwd, c, k);
+        rc = pushFrontRc(rc, c, k);
+        if (p + 1 >= static_cast<uint32_t>(k)) {
             fn(fwd < rc ? fwd : rc, p + 1 - static_cast<uint32_t>(k));
         }
     }

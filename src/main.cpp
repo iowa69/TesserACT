@@ -57,6 +57,7 @@ void usage() {
         "      --qtrim-window N    window used for the 3' quality scan (default: 4)\n"
         "      --no-resolve        skip paired-end repeat resolution\n"
         "      --no-scaffold       skip scaffolding\n"
+        "      --no-gapfill        skip scaffold gap closing\n"
         "      --no-polish         skip consensus polishing\n"
         "\n"
         "GENERAL\n"
@@ -146,6 +147,7 @@ int main(int argc, char** argv) {
         else if (a == "--qtrim-window") opt.qtrim.windowSize = std::atoi(needValue(i, "--qtrim-window"));
         else if (a == "--no-resolve") opt.resolveRepeats = false;
         else if (a == "--no-scaffold") opt.scaffold = false;
+        else if (a == "--no-gapfill") opt.gapFill = false;
         else if (a == "--no-polish") opt.polish = false;
         else if (a == "-t" || a == "--threads") opt.threads = std::atoi(needValue(i, "-t"));
         else if (a == "-q" || a == "--quiet") opt.verbose = false;
