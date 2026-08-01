@@ -96,6 +96,17 @@ MiSeq it is what makes the rest of the pipeline behave.
 The remaining contiguity gap is repeat resolution in the graph, not k. Extending
 the k ladder does not close it -- on `kpn_1GR13` the ladders `21,33,55`,
 `21,33,55,77` and `21,33,55,77,95` give N50 76,933 / 72,168 / 77,131, i.e. it
-has plateaued well below the 192-bit k<=96 ceiling. Widening the k-mer
-representation to reach SPAdes' k=127 would not help. `kpn_KSB17J`, the one
-dataset where SPAdes itself only used k<=55, is also the one tessera ties.
+has plateaued well below the k<=96 ceiling this panel was run under.
+`kpn_KSB17J`, the one dataset where SPAdes itself only used k<=55, is also the
+one tessera ties.
+
+> **Superseded in part.** An earlier version of this paragraph went further and
+> said widening the k-mer representation to reach k=127 "would not help". That
+> was a claim about these seven libraries generalised past its evidence. On the
+> 212-isolate *Klebsiella* panel (`KLEBSIELLA_PANEL.md`), which is mostly 2x250
+> MiSeq, the unitig N50 was still climbing steeply at k=95 and widening to
+> k<=128 took it from 142,604 to 207,162 on one isolate. The plateau above is
+> real for 2x150 and 2x300 data and says nothing about 2x250. The larger finding
+> from that panel -- that the abundance cutoff, not k or repeat resolution, was
+> the dominant limiter -- applies here too and postdates every number on this
+> page.
