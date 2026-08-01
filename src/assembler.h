@@ -40,6 +40,7 @@ struct AssemblyOptions {
     int simplifyRounds = 12;
     int polishPasses = 1;
     long long maxMemoryBytes = 0;   // 0 = 80% of physical RAM
+    QualityTrim qtrim;              // 3' trimming applied as reads are loaded
 
     // Set when the user named the knob explicitly, so applyMode() leaves it be.
     bool userSetK = false, userSetMinLink = false, userSetTie = false,

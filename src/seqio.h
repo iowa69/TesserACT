@@ -11,6 +11,14 @@
 
 namespace ts {
 
+// 3' quality trimming applied as reads are loaded, before anything is counted.
+struct QualityTrim {
+    bool enabled = true;
+    int windowSize = 4;
+    int meanQuality = 20;
+    int phredOffset = 33;
+};
+
 // One input library.
 struct Library {
     std::string r1;
@@ -60,7 +68,16 @@ public:
     // Overwrite a base, used by the read error corrector.
     void setBase(size_t read, uint32_t pos, int code);
 
+    // Marks [from, to) of a read ambiguous so every k-mer spanning it is
+    // skipped. The corrector uses this to discard stretches it cannot vouch
+    // for -- the k-mer-spectrum equivalent of quality trimming.
+    void maskRange(size_t read, uint32_t from, uint32_t to);
+
     uint32_t maxReadLength() const { return maxLen_; }
+
+    // Must be set before load() to have any effect.
+    void setQualityTrim(const QualityTrim& qt) { qtrim_ = qt; }
+    uint64_t trimmedBases() const { return trimmedBases_; }
 
 private:
     bool isAmbiguous(uint64_t bit) const {
@@ -73,6 +90,8 @@ private:
     uint64_t totalBases_ = 0;
     uint32_t maxLen_ = 0;
     bool paired_ = false;
+    QualityTrim qtrim_;
+    uint64_t trimmedBases_ = 0;
 };
 
 // Streams every valid k-mer of a read to `fn` as (canonicalKmer, position).

@@ -20,6 +20,7 @@ struct CorrectionStats {
     size_t readsCorrected = 0;
     size_t basesCorrected = 0;
     size_t readsUncorrectable = 0;   // no trusted k-mer to anchor on
+    size_t basesMasked = 0;          // stretches correction could not vouch for
 };
 
 // Rewrites `reads` in place. `solid` is the trusted k-mer set at `k`.

@@ -15,10 +15,29 @@ namespace {
 constexpr int kLookahead = 8;
 constexpr int kMinAnchorRun = 2;
 
+// A substitution is only believed when the k-mers that follow it stay trusted
+// for this many further steps. Restoring a real base re-opens a long solid run;
+// picking a base merely because it happens to spell some solid k-mer almost
+// never survives four more. Without this, a degraded 3' tail -- where every
+// base is noise -- is silently rewritten into plausible but fictional genomic
+// sequence, and those fabrications enter the graph as trusted evidence.
+constexpr int kMinCorroboration = 4;
+
+// Once correction stalls, the rest of the read is sequence we cannot vouch for.
+// Masking it keeps its k-mers out of the graph instead of relying on the
+// abundance cutoff to catch them one by one.
+constexpr uint32_t kMinMaskRun = 8;
+
 struct Fix {
     uint32_t read;
     uint32_t pos;
     uint8_t code;
+};
+
+struct Mask {
+    uint32_t read;
+    uint32_t from;
+    uint32_t to;
 };
 
 }  // namespace
@@ -29,14 +48,16 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
     if (solid.size() == 0) return stats;
 
     std::vector<std::vector<Fix>> perThread(static_cast<size_t>(threads));
-    std::atomic<size_t> examined{0}, corrected{0}, uncorrectable{0};
+    std::vector<std::vector<Mask>> perThreadMask(static_cast<size_t>(threads));
+    std::atomic<size_t> examined{0}, corrected{0}, uncorrectable{0}, maskedBases{0};
 
     auto worker = [&](int tid) {
         std::vector<Fix>& fixes = perThread[static_cast<size_t>(tid)];
+        std::vector<Mask>& masks = perThreadMask[static_cast<size_t>(tid)];
         std::vector<int> codes;
         std::vector<Kmer> fwd;
         std::vector<char> ok;
-        size_t localExamined = 0, localCorrected = 0, localUncorrectable = 0;
+        size_t localExamined = 0, localCorrected = 0, localUncorrectable = 0, localMasked = 0;
 
         for (size_t r = static_cast<size_t>(tid); r < reads.size(); r += static_cast<size_t>(threads)) {
             const int len = static_cast<int>(reads.length(r));
@@ -87,6 +108,8 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
             int applied = 0;
 
             // Extend right: the only base the next k-mer adds is at pos+k.
+            // `stopRight` is the first index we could not vouch for.
+            int stopRight = len;
             Kmer cur = fwd[static_cast<size_t>(hi)];
             for (int pos = hi; pos + 1 < m && applied < maxFixes; ++pos) {
                 const int idx = pos + k;
@@ -108,7 +131,11 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
                     }
                     if (score > bestScore) { bestScore = score; bestBase = b; }
                 }
-                if (bestBase < 0) break;
+                // Near the read end there is little left to corroborate with, so
+                // ask only for what the remaining length can possibly supply.
+                const int avail = std::min(kLookahead, m - pos - 2);
+                const int need = 1 + std::min(kMinCorroboration, avail);
+                if (bestBase < 0 || bestScore < need) { stopRight = idx; break; }
                 codes[static_cast<size_t>(idx)] = bestBase;
                 fixes.push_back({static_cast<uint32_t>(r), static_cast<uint32_t>(idx),
                                  static_cast<uint8_t>(bestBase)});
@@ -117,6 +144,8 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
             }
 
             // Extend left: the k-mer one position earlier adds the base at lo-1.
+            // `stopLeft` is one past the last index we could not vouch for.
+            int stopLeft = 0;
             cur = fwd[static_cast<size_t>(bestLo)];
             for (int pos = bestLo; pos > 0 && applied < maxFixes; --pos) {
                 const int idx = pos - 1;
@@ -138,7 +167,9 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
                     }
                     if (score > bestScore) { bestScore = score; bestBase = b; }
                 }
-                if (bestBase < 0) break;
+                const int avail = std::min(kLookahead, idx);
+                const int need = 1 + std::min(kMinCorroboration, avail);
+                if (bestBase < 0 || bestScore < need) { stopLeft = idx + 1; break; }
                 codes[static_cast<size_t>(idx)] = bestBase;
                 fixes.push_back({static_cast<uint32_t>(r), static_cast<uint32_t>(idx),
                                  static_cast<uint8_t>(bestBase)});
@@ -146,11 +177,26 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
                 cur = pushFront(cur, bestBase, k);
             }
 
+            // Whatever lies past the point where correction stalled is sequence
+            // the k-mer spectrum does not support. Drop it rather than let it
+            // seed spurious branches. Short stretches are left alone: they cost
+            // little and are usually just the read running out of coverage.
+            if (stopRight < len && static_cast<uint32_t>(len - stopRight) >= kMinMaskRun) {
+                masks.push_back({static_cast<uint32_t>(r), static_cast<uint32_t>(stopRight),
+                                 static_cast<uint32_t>(len)});
+                localMasked += static_cast<size_t>(len - stopRight);
+            }
+            if (stopLeft > 0 && static_cast<uint32_t>(stopLeft) >= kMinMaskRun) {
+                masks.push_back({static_cast<uint32_t>(r), 0, static_cast<uint32_t>(stopLeft)});
+                localMasked += static_cast<size_t>(stopLeft);
+            }
+
             if (applied) ++localCorrected;
         }
         examined += localExamined;
         corrected += localCorrected;
         uncorrectable += localUncorrectable;
+        maskedBases += localMasked;
     };
 
     std::vector<std::thread> pool;
@@ -167,9 +213,16 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
         }
     }
 
+    // Masks are applied after every substitution: setBase clears the ambiguous
+    // bit for the position it writes, so masking first would be undone.
+    for (const auto& v : perThreadMask) {
+        for (const Mask& mk : v) reads.maskRange(mk.read, mk.from, mk.to);
+    }
+
     stats.readsExamined = examined.load();
     stats.readsCorrected = corrected.load();
     stats.readsUncorrectable = uncorrectable.load();
+    stats.basesMasked = maskedBases.load();
     return stats;
 }
 

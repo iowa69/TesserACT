@@ -60,6 +60,7 @@ struct AssemblyReport {
     size_t reads = 0;
     uint64_t inputBases = 0;
     uint32_t maxReadLength = 0;
+    uint64_t qualityTrimmedBases = 0;
     bool paired = false;
     std::vector<std::string> inputFiles;
 

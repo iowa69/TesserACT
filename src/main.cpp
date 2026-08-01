@@ -52,6 +52,9 @@ void usage() {
         "      --simplify-rounds N max graph simplification passes per k\n"
         "      --polish-passes N   consensus polishing passes (0 disables)\n"
         "      --no-correct        skip read error correction\n"
+        "      --no-qtrim          keep 3' ends that fall below the quality cutoff\n"
+        "      --qtrim-quality N   3' trim below mean quality N (default: 20)\n"
+        "      --qtrim-window N    window used for the 3' quality scan (default: 4)\n"
         "      --no-resolve        skip paired-end repeat resolution\n"
         "      --no-scaffold       skip scaffolding\n"
         "      --no-polish         skip consensus polishing\n"
@@ -138,6 +141,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-html") opt.emitHtml = false;
         else if (a == "--unitigs") opt.emitUnitigs = true;
         else if (a == "--no-correct") opt.correctReads = false;
+        else if (a == "--no-qtrim") opt.qtrim.enabled = false;
+        else if (a == "--qtrim-quality") opt.qtrim.meanQuality = std::atoi(needValue(i, "--qtrim-quality"));
+        else if (a == "--qtrim-window") opt.qtrim.windowSize = std::atoi(needValue(i, "--qtrim-window"));
         else if (a == "--no-resolve") opt.resolveRepeats = false;
         else if (a == "--no-scaffold") opt.scaffold = false;
         else if (a == "--no-polish") opt.polish = false;

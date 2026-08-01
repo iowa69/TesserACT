@@ -193,6 +193,37 @@ void testPushFront() {
 
 // ---------------------------------------------------------------------------
 
+// The count histogram's last bin is a saturation bucket: it holds every k-mer
+// at or above the limit, so its index is a floor, not a count. Weighting it by
+// that index once let it outweigh the real coverage mode, which pushed the
+// peak to the limit and the cutoff into the hundreds, emptying the solid set.
+void testCutoffIgnoresSaturationBin() {
+    Section s("cutoff ignores the histogram saturation bin");
+
+    // A textbook spectrum: error shoulder at low counts, coverage mode at 34.
+    std::vector<uint64_t> hist(100001, 0);
+    for (size_t c = 1; c <= 5; ++c) hist[c] = 20000000 / c;   // error shoulder
+    for (size_t c = 20; c <= 50; ++c) {
+        const double d = static_cast<double>(c) - 34.0;
+        hist[c] = static_cast<uint64_t>(5000000.0 * std::exp(-d * d / 50.0));
+    }
+
+    double peak = 0;
+    const uint32_t clean = ts::KmerCounter::chooseCutoff(hist, peak);
+    CHECK_NOTE(peak > 30 && peak < 38, "peak=" + std::to_string(peak));
+    CHECK_NOTE(clean >= 2 && clean <= 10, "cutoff=" + std::to_string(clean));
+
+    // Now drop a realistic pile of collapsed-repeat and low-complexity k-mers
+    // into the saturation bin. The answer must not move.
+    hist[100000] = 4000;
+    double peak2 = 0;
+    const uint32_t saturated = ts::KmerCounter::chooseCutoff(hist, peak2);
+    CHECK_NOTE(peak2 == peak,
+               "peak=" + std::to_string(peak2) + " expected " + std::to_string(peak));
+    CHECK_NOTE(saturated == clean,
+               "cutoff=" + std::to_string(saturated) + " expected " + std::to_string(clean));
+}
+
 void testKmerTable() {
     Section s("KmerTable vs std::unordered_map");
     ts::KmerTable table;
@@ -443,6 +474,7 @@ int main() {
     testSlidingWindow();
     testPushFront();
     testKmerTable();
+    testCutoffIgnoresSaturationBin();
     testSequenceIdentity();
     testGraphInvariants();
     testUnitigReconstruction();

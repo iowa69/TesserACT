@@ -202,18 +202,27 @@ bool Assembler::run(std::string& error) {
     }
 
     if (opt_.verbose) std::fprintf(stderr, "[1/6] loading reads\n");
+    reads_.setQualityTrim(opt_.qtrim);
     if (!reads_.load(opt_.libraries, opt_.threads, error)) return false;
     if (reads_.size() == 0) { error = "no reads were loaded"; return false; }
     report_.reads = reads_.size();
     report_.inputBases = reads_.totalBases();
     report_.maxReadLength = reads_.maxReadLength();
     report_.paired = reads_.paired();
+    report_.qualityTrimmedBases = reads_.trimmedBases();
     if (opt_.verbose) {
         std::fprintf(stderr, "      %s reads, %s bases, max length %u%s  [mode: %s]\n",
                      util::commify(static_cast<long long>(reads_.size())).c_str(),
                      util::commify(static_cast<long long>(reads_.totalBases())).c_str(),
                      reads_.maxReadLength(), reads_.paired() ? ", paired" : "",
                      runModeName(opt_.mode));
+        if (reads_.trimmedBases() > 0) {
+            const double pct = 100.0 * static_cast<double>(reads_.trimmedBases()) /
+                               static_cast<double>(reads_.trimmedBases() + reads_.totalBases());
+            std::fprintf(stderr, "      quality trimmed %s bases from 3' ends (%.1f%%, below Q%d)\n",
+                         util::commify(static_cast<long long>(reads_.trimmedBases())).c_str(),
+                         pct, opt_.qtrim.meanQuality);
+        }
     }
 
     const std::vector<int> ladder = resolveKLadder();

@@ -135,8 +135,9 @@ private:
 };
 
 // Walks a FASTA or FASTQ stream (format detected from the first record) and
-// calls fn(name, seq, seqLen) once per record. `seq` is only valid inside the
-// callback. fn returns false to abort, having already filled `error`.
+// calls fn(name, seq, seqLen, qual) once per record. `seq` and `qual` are only
+// valid inside the callback, and `qual` is null for FASTA. fn returns false to
+// abort, having already filled `error`.
 template <typename Fn>
 bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&& fn) {
     const char* line = nullptr;
@@ -167,8 +168,9 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
                 error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
                 return false;
             }
-            const size_t seqLen = len;
-            if (!fn(name, line, seqLen)) return false;
+            // Copied because reading the quality line invalidates `line`.
+            seqBuf.assign(line, len);
+            const size_t seqLen = seqBuf.size();
             if (!r.nextLine(line, len)) {
                 error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
                 return false;
@@ -187,6 +189,7 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
                         "': quality length differs from sequence length";
                 return false;
             }
+            if (!fn(name, seqBuf.data(), seqLen, line)) return false;
             if (!r.nextLine(line, len)) break;
         }
     } else if (line[0] == '>') {
@@ -199,7 +202,7 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
                 if (!more || (len > 0 && line[0] == '>')) break;
                 seqBuf.append(line, len);
             }
-            if (!fn(name, seqBuf.data(), seqBuf.size())) return false;
+            if (!fn(name, seqBuf.data(), seqBuf.size(), nullptr)) return false;
         }
     } else {
         error = "unrecognised format in '" + path + "': expected FASTA ('>') or FASTQ ('@')";
@@ -213,6 +216,39 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
     return true;
 }
 
+// Length of the read once its 3' end has been cut back to where quality holds
+// up. Illumina reads decay towards the 3' end, and on 2x250/2x300 MiSeq runs
+// the last stretch can fall to Q3 -- a ~50% error rate, i.e. noise. Those bases
+// are worse than useless: the corrector will happily rewrite them into
+// plausible genomic sequence, and the fabrication enters the graph as trusted
+// evidence. Cutting them before anything is counted is the only place the fix
+// is cheap, because the trusted k-mer set is built from this same pass.
+//
+// The window is walked from the 3' end, the same rule fastp's --cut_tail uses,
+// so the two tools agree on where a read stops being trustworthy.
+uint32_t qualityTrimmedLength(const char* qual, size_t len, const QualityTrim& qt) {
+    if (!qt.enabled || qual == nullptr || len == 0) return static_cast<uint32_t>(len);
+    const int w = qt.windowSize;
+    if (w <= 0 || static_cast<size_t>(w) > len) return static_cast<uint32_t>(len);
+
+    const int threshold = qt.meanQuality;
+    size_t end = len;
+    int sum = 0;
+    for (size_t i = end - static_cast<size_t>(w); i < end; ++i) {
+        sum += qual[i] - qt.phredOffset;
+    }
+    // Shrink one base at a time; the window slides with the end, so the sum is
+    // maintained rather than recomputed.
+    while (end > static_cast<size_t>(w)) {
+        if (sum >= threshold * w) break;
+        sum -= qual[end - 1] - qt.phredOffset;
+        sum += qual[end - 1 - static_cast<size_t>(w)] - qt.phredOffset;
+        --end;
+    }
+    if (end == static_cast<size_t>(w) && sum < threshold * w) end = 0;
+    return static_cast<uint32_t>(end);
+}
+
 // Error path only: recovers a record's name so the message can point at it.
 std::string recordNameAt(const std::string& path, size_t index) {
     GzReader r;
@@ -220,7 +256,7 @@ std::string recordNameAt(const std::string& path, size_t index) {
     if (!r.open(path, err)) return "<unreadable>";
     std::string found = "<missing>";
     size_t i = 0;
-    forEachRecord(r, path, err, [&](const std::string& name, const char*, size_t) {
+    forEachRecord(r, path, err, [&](const std::string& name, const char*, size_t, const char*) {
         if (i++ == index) {
             found = trimName(name);
             return false;
@@ -295,6 +331,7 @@ struct FileSlot {
     size_t stride = 1;
     size_t count = 0;
     uint64_t bases = 0;
+    uint64_t trimmedBases = 0;
     uint32_t maxLen = 0;
     std::vector<uint32_t> lengths;
     std::vector<uint64_t> nameHashes;
@@ -364,15 +401,18 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         GzReader r;
         if (!r.open(slot.path, slotErr[s])) return;
         forEachRecord(r, slot.path, slotErr[s],
-                      [&](const std::string& name, const char*, size_t len) {
-                          if (len > 0xFFFFFFFFull) {
+                      [&](const std::string& name, const char*, size_t rawLen, const char* qual) {
+                          if (rawLen > 0xFFFFFFFFull) {
                               slotErr[s] = "record '" + trimName(name) + "' in '" + slot.path +
                                            "' is longer than 4 Gbp";
                               return false;
                           }
-                          slot.lengths.push_back(static_cast<uint32_t>(len));
+                          // Must match pass 2 exactly or the buffers mis-size.
+                          const uint32_t len = qualityTrimmedLength(qual, rawLen, qtrim_);
+                          slot.trimmedBases += rawLen - len;
+                          slot.lengths.push_back(len);
                           slot.bases += len;
-                          if (len > slot.maxLen) slot.maxLen = static_cast<uint32_t>(len);
+                          if (len > slot.maxLen) slot.maxLen = len;
                           if (slot.needNames) slot.nameHashes.push_back(nameHashOf(name.data(), name.size()));
                           return true;
                       });
@@ -384,7 +424,10 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         }
     }
 
-    for (FileSlot& slot : slots) slot.count = slot.lengths.size();
+    for (FileSlot& slot : slots) {
+        slot.count = slot.lengths.size();
+        trimmedBases_ += slot.trimmedBases;
+    }
 
     // Pairing sanity checks, then the global read index layout.
     size_t nextRead = 0;
@@ -472,11 +515,12 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         if (!r.open(slot.path, slotErr[s])) return;
         size_t j = 0;
         forEachRecord(r, slot.path, slotErr[s],
-                      [&](const std::string& name, const char* seq, size_t len) {
+                      [&](const std::string& name, const char* seq, size_t rawLen, const char* qual) {
                           if (j >= slot.count) {
                               slotErr[s] = "'" + slot.path + "' changed while it was being read";
                               return false;
                           }
+                          const size_t len = qualityTrimmedLength(qual, rawLen, qtrim_);
                           const size_t read = slot.base + j * slot.stride;
                           const uint64_t start = offsets_[read];
                           if (offsets_[read + 1] - start != len) {
@@ -529,6 +573,22 @@ void SequenceStore::setBase(size_t read, uint32_t pos, int code) {
     word = (word & ~(static_cast<uint64_t>(3) << shift)) |
            (static_cast<uint64_t>(code & 3) << shift);
     if (!ambiguous_.empty()) ambiguous_[bit >> 6] &= ~(1ULL << (bit & 63));
+}
+
+void SequenceStore::maskRange(size_t read, uint32_t from, uint32_t to) {
+    const uint32_t len = length(read);
+    if (from >= to || from >= len) return;
+    if (to > len) to = len;
+    // The bitmap is dropped during load when the input held no ambiguous base,
+    // so it may have to be materialised here.
+    if (ambiguous_.empty()) {
+        ambiguous_.assign(static_cast<size_t>((totalBases_ + 63) / 64), 0);
+    }
+    const uint64_t base = offsets_[read];
+    for (uint32_t p = from; p < to; ++p) {
+        const uint64_t bit = base + p;
+        ambiguous_[bit >> 6] |= 1ULL << (bit & 63);
+    }
 }
 
 bool writeFasta(const std::string& path, const std::vector<std::string>& seqs,
