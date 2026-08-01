@@ -18,6 +18,15 @@ namespace {
 // without letting the search wander across the chromosome.
 constexpr double kTopologyReach = 6000.0;
 
+// Coverage-continuity fallback, used only where the paired reads gave nothing.
+// A candidate counts as on-depth within kDepthMatch of the chain's own depth,
+// and the decision is only taken when every rival is at least kDepthSeparation
+// away -- a 2x repeat sits at 1.0, so the bar clears real alternatives while
+// refusing anything that merely looks different.
+constexpr double kDepthMatch = 0.25;
+constexpr double kDepthSeparation = 0.60;
+constexpr double kDepthWindow = 20000.0;   // how much of the chain end to average
+
 constexpr int kMaxProbes = 12;        // k-mer lookups per read before deciding
 constexpr int kMinVotes = 2;
 constexpr int kAnchorK = 31;
@@ -338,6 +347,78 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     auto flip = [](uint64_t oid) { return orientedId(unitigOf(oid), 1 - orientOf(oid)); };
     auto addedLen = [&](uint64_t oid) { return g_.nodes[unitigOf(oid)].seq.size() - ov; };
 
+    // Depth of a chain, weighted by how much sequence each unitig contributes,
+    // and only over the part near the end being extended -- a 400 kb chain's
+    // far end says nothing about the coverage where it is about to continue.
+    auto chainDepth = [&](const std::vector<uint64_t>& tailFirst) {
+        double num = 0, den = 0, acc = 0;
+        for (size_t i = tailFirst.size(); i-- > 0;) {
+            const uint32_t u = unitigOf(tailFirst[i]);
+            const double len = static_cast<double>(addedLen(tailFirst[i]));
+            num += g_.nodes[u].coverage * len;
+            den += len;
+            acc += len;
+            if (acc > kDepthWindow) break;
+        }
+        return den > 0 ? num / den : 0.0;
+    };
+
+    // True when every candidate ends on the same oriented unitig, so the only
+    // thing in doubt is which way through the repeat, not where it comes out.
+    auto allSameDestination = [](const std::vector<std::vector<uint64_t>>& cands) {
+        if (cands.empty()) return false;
+        const uint64_t t = cands.front().back();
+        for (const auto& c : cands) {
+            if (c.back() != t) return false;
+        }
+        return true;
+    };
+
+    // Among routes to the same destination, the one whose weakest interior
+    // unitig is best covered -- a route through sequence the reads support all
+    // the way is likelier than one that dips through a thinly covered branch.
+    auto pickByInterior = [&](const std::vector<std::vector<uint64_t>>& cands) {
+        int pickIdx = 0;
+        double bestInterior = -1.0;
+        for (size_t i = 0; i < cands.size(); ++i) {
+            double minCov = std::numeric_limits<double>::max();
+            for (size_t j = 0; j + 1 < cands[i].size(); ++j) {
+                minCov = std::min(minCov, g_.nodes[unitigOf(cands[i][j])].coverage);
+            }
+            // A path with no interior is the most direct route.
+            if (minCov > bestInterior) { bestInterior = minCov; pickIdx = static_cast<int>(i); }
+        }
+        return pickIdx;
+    };
+
+    // The candidate whose terminal unitig runs at the chain's own depth, when
+    // exactly one does and the rest are clearly off it. Returns -1 when the
+    // answer is not clean enough to act on -- which is most of the time, and
+    // deliberately so: this fires only where the paired reads had nothing to
+    // say, so it has no second opinion to check itself against.
+    auto pickByCoverage = [&](const std::vector<uint64_t>& tailFirst,
+                              const std::vector<std::vector<uint64_t>>& cands) -> int {
+        const double depth = chainDepth(tailFirst);
+        if (depth <= 0) return -1;
+        int match = -1;
+        double worstOther = 1e9;
+        for (size_t i = 0; i < cands.size(); ++i) {
+            const double cov = g_.nodes[unitigOf(cands[i].back())].coverage;
+            const double rel = std::fabs(cov - depth) / depth;
+            if (rel <= kDepthMatch) {
+                if (match >= 0) return -1;      // two candidates fit; no answer
+                match = static_cast<int>(i);
+            } else {
+                worstOther = std::min(worstOther, rel);
+            }
+        }
+        if (match < 0) return -1;
+        // The runner-up has to be properly off-depth, not just outside the
+        // matching band, or this is a tie dressed up as a decision.
+        if (cands.size() > 1 && worstOther < kDepthSeparation) return -1;
+        return match;
+    };
+
     // Every way out of `from` that terminates on an anchorable unitig within
     // fragment reach; intermediate nodes are unanchorable repeats.
     auto enumerate = [&](uint64_t from, std::vector<std::vector<uint64_t>>& out) {
@@ -415,6 +496,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // Best continuation off one end of a chain, scored with every member of
     // that chain that still lies within fragment reach of the boundary.
     long long dbgNoCand = 0, dbgLowSupport = 0, dbgTie = 0, dbgMidChain = 0, dbgOk = 0;
+    long long dbgCoverage = 0;
     long long dbgTieBest = 0, dbgTieSecond = 0;
 
     auto bestContinuation = [&](uint32_t c, int end) {
@@ -462,8 +544,38 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             else if (sc > second) second = sc;
         }
 
-        if (cands.size() > 1) {
-            if (best < minLinkSupport_) { ++dbgLowSupport; return result; }
+        // Whether the paired reads decided this, or coverage had to.
+        bool byCoverage = false;
+        if (cands.size() > 1 && best < minLinkSupport_) {
+            // No paired evidence to choose with -- which on a library whose
+            // mates overlap is the normal case, not the exception. With a
+            // ~230 bp fragment against ~190 bp reads only about 0.3% of pairs
+            // land on two different unitigs, and once the permissive cutoff
+            // connected the graph this became the single largest reason a chain
+            // stops: on one panel isolate 616 chain ends had candidates and no
+            // support, against 239 successful joins.
+            //
+            // Two things can still settle it. First, and much the commoner:
+            // every candidate may end on the same unitig in the same
+            // orientation, differing only in the route taken through the repeat
+            // between. Then the destination is not in question at all and the
+            // absent paired evidence was never needed -- only the arm is
+            // uncertain, and interior coverage picks that. This is the same
+            // reasoning the tie branch below already applies; it simply has to
+            // apply before support is consulted, not only after.
+            //
+            // Failing that, coverage continuity: a chain running at 45x
+            // continues into sequence at 45x, while a repeat it merely passes
+            // through sits at a multiple of that.
+            const int chosen = allSameDestination(cands) ? pickByInterior(cands)
+                                                         : pickByCoverage(tailFirst, cands);
+            if (chosen < 0) { ++dbgLowSupport; return result; }
+            pick = static_cast<size_t>(chosen);
+            byCoverage = true;
+            ++dbgCoverage;
+        }
+
+        if (cands.size() > 1 && !byCoverage) {
             // A near tie means the repeat is genuinely unresolved; guessing
             // would manufacture a misassembly.
             if (second > 0 && best < tieRatio_ * second) {
@@ -574,8 +686,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     if (getenv("TESSERA_DEBUG_RESOLVE")) {
         std::fprintf(stderr,
                      "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
-                     "low-support=%lld tie=%lld mid-chain=%lld  (tie mean best=%.1f second=%.1f)\n",
-                     dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain,
+                     "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld  "
+                     "(tie mean best=%.1f second=%.1f)\n",
+                     dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain, dbgCoverage,
                      dbgTie ? static_cast<double>(dbgTieBest) / static_cast<double>(dbgTie) : 0.0,
                      dbgTie ? static_cast<double>(dbgTieSecond) / static_cast<double>(dbgTie) : 0.0);
     }
