@@ -43,10 +43,12 @@ inline int idxStrand(uint64_t v) { return static_cast<int>(v & 1); }
 }  // namespace
 
 PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
-                               int minLinkSupport, double tieRatio, int minScaffoldSupport)
+                               int minLinkSupport, double tieRatio, double linkSupportPerX,
+                               int minScaffoldSupport)
     : g_(graph), reads_(reads), threads_(threads > 0 ? threads : 1), k_(graph.k()),
       kMap_(std::min(kAnchorK, graph.k())),
       minLinkSupport_(minLinkSupport), tieRatio_(tieRatio),
+      linkSupportPerX_(linkSupportPerX > 0 ? linkSupportPerX : 0.10),
       minScaffoldSupport_(minScaffoldSupport) {
     medianCoverage_ = graph.medianCoverage();
 }
@@ -344,6 +346,18 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // a statement about the graph's topology that needs no reads to back it.
     const double searchBudget = std::max(reach, kTopologyReach);
 
+    // How much paired support a contested join needs. A flat count cannot mean
+    // the same thing at every depth: the number of pairs crossing a junction
+    // scales with coverage, so a fixed 2 is a real bar on a 40x library and
+    // almost none on a 100x one. That showed up as soon as the trimming stopped
+    // discarding a fifth of the bases -- contig NGA50 rose sharply and so did
+    // long-range chimeric joins, which is what a threshold too weak for the
+    // depth looks like. Scaling keeps the bar constant in the units that
+    // matter, with the configured value as the floor so a shallow library is
+    // never asked for less than it was before.
+    const double linkBar = std::max(static_cast<double>(minLinkSupport_),
+                                    std::min(6.0, medianCoverage_ * linkSupportPerX_));
+
     auto flip = [](uint64_t oid) { return orientedId(unitigOf(oid), 1 - orientOf(oid)); };
     auto addedLen = [&](uint64_t oid) { return g_.nodes[unitigOf(oid)].seq.size() - ov; };
 
@@ -546,7 +560,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
         // Whether the paired reads decided this, or coverage had to.
         bool byCoverage = false;
-        if (cands.size() > 1 && best < minLinkSupport_) {
+        if (cands.size() > 1 && best < linkBar) {
             // No paired evidence to choose with -- which on a library whose
             // mates overlap is the normal case, not the exception. With a
             // ~230 bp fragment against ~190 bp reads only about 0.3% of pairs

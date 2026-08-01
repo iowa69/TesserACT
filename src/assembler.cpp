@@ -49,6 +49,7 @@ void AssemblyOptions::applyMode() {
             // supported decisions, at the cost of some contiguity.
             if (!userSetRounds) simplifyRounds = 24;
             if (!userSetMinLink) minLinkSupport = 3;
+            if (!userSetLinkPerX) linkSupportPerX = 0.14;
             if (!userSetTie) tieRatio = 1.4;
             if (!userSetPolishPasses) polishPasses = 2;
             break;
@@ -58,6 +59,7 @@ void AssemblyOptions::applyMode() {
             if (!userSetBubble) bubbleCoverageLimit = 10.0;
             if (!userSetTie) tieRatio = 1.05;
             if (!userSetMinLink) minLinkSupport = 2;
+            if (!userSetLinkPerX) linkSupportPerX = 0.05;
             if (!userSetRounds) simplifyRounds = 16;
             break;
     }
@@ -345,7 +347,8 @@ bool Assembler::run(std::string& error) {
     if (opt_.resolveRepeats && reads_.paired()) {
         if (opt_.verbose) std::fprintf(stderr, "[4/7] paired-end repeat resolution\n");
         util::Timer t;
-        PairedResolver resolver(graph, reads_, opt_.threads, opt_.minLinkSupport, opt_.tieRatio);
+        PairedResolver resolver(graph, reads_, opt_.threads, opt_.minLinkSupport, opt_.tieRatio,
+                                opt_.linkSupportPerX);
         resolver.setScaffolding(opt_.scaffold);
         resolver.buildSupport();
         const ResolveStats& rs = resolver.stats();

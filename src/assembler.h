@@ -35,7 +35,15 @@ struct AssemblyOptions {
     bool emitUnitigs = false;
 
     RunMode mode = RunMode::Standard;
-    int minLinkSupport = 2;          // paired reads needed to trust a join
+    int minLinkSupport = 2;          // floor on paired reads needed to trust a join
+    // Paired support required per unit of median unitig coverage before a
+    // contested join is taken. A flat count cannot mean the same thing at every
+    // depth, and the trade it controls is contiguity against chimeric joins --
+    // measured across 20 closed-reference isolates:
+    //     flat 2   median NGA50 303,624   12 misassemblies
+    //     0.07                  291,265    7
+    //     0.10                  277,799    3
+    double linkSupportPerX = 0.10;
     double tieRatio = 1.15;          // winning branch must beat the runner-up by this
     double bubbleCoverageLimit = 0.35;   // see UnitigGraph::simplify
     int simplifyRounds = 12;
@@ -44,7 +52,7 @@ struct AssemblyOptions {
     QualityTrim qtrim;              // 3' trimming applied as reads are loaded
 
     // Set when the user named the knob explicitly, so applyMode() leaves it be.
-    bool userSetK = false, userSetMinLink = false, userSetTie = false,
+    bool userSetK = false, userSetMinLink = false, userSetTie = false, userSetLinkPerX = false,
          userSetBubble = false, userSetRounds = false, userSetPolishPasses = false;
 
     void applyMode();
