@@ -282,10 +282,39 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
         }
     }
 
-    uint32_t cutoff = static_cast<uint32_t>(valley);
-    const uint32_t ceiling = std::max<uint32_t>(3, static_cast<uint32_t>(peak / 4));
+    // Cutting at the valley was costing far more than it saved.
+    //
+    // The valley is where the error shoulder meets the coverage distribution
+    // -- but on a real bacterial genome the counts between them are not empty,
+    // they hold the genuinely low-coverage sequence: AT-rich prophages and
+    // genomic islands, low-copy plasmids, the k-mers either side of a repeat.
+    // Diffing tessera against SPAdes on the closed-reference panel, every large
+    // region SPAdes recovered and tessera did not was AT-rich (GC 29-42%
+    // against a 57% genome), and the whole difference was this threshold.
+    //
+    // Measured on one such isolate, cutting at the valley (5) against a flat 2:
+    //
+    //     cutoff  NGA50     genome fraction  misassemblies  contigs
+    //     5        39,855   97.43%           1              328
+    //     3        86,779   98.15%           0              195
+    //     2       132,059   98.41%           1              157
+    //
+    // for reference SPAdes on the same reads: 81,707 / 98.58% / 3 / 188.
+    //
+    // The error k-mers a low cutoff lets through do not survive anyway: they
+    // enter the graph as tips, bubbles and erroneous connections, which is what
+    // simplify() exists to remove, and it removes them by topology -- evidence
+    // a count threshold does not have. So be permissive here and strict there.
+    //
+    // The scaling keeps a floor of 2 up to ~125x and rises slowly beyond it, on
+    // the reasoning that error k-mers reach a given count more often as depth
+    // grows. The panel spans 41-89x, so anything above that is extrapolation
+    // and is deliberately gentle; the valley still caps the result, so a
+    // library whose error shoulder really does run long is still respected.
+    const uint32_t permissive =
+        std::max<uint32_t>(2, static_cast<uint32_t>((peak + 25) / 50));
+    uint32_t cutoff = std::min<uint32_t>(permissive, static_cast<uint32_t>(valley));
     if (cutoff < 2) cutoff = 2;
-    if (cutoff > ceiling) cutoff = ceiling;
     return cutoff;
 }
 

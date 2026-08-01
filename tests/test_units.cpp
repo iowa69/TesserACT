@@ -52,9 +52,9 @@ struct Section {
 std::mt19937_64 rng(0x7e55e7a);
 
 // The k values exercised everywhere: inside the first 64-bit word, exactly at
-// the first word boundary (k=32 bases fills it), straddling the second, and at
-// the 96-base ceiling the 192-bit packing allows.
-const int kTestKs[] = {15, 31, 63, 77, 95};
+// each word boundary (32 bases fill one), straddling them, and at the 128-base
+// ceiling the 256-bit packing allows.
+const int kTestKs[] = {15, 31, 32, 63, 64, 77, 95, 96, 127, 128};
 
 ts::Kmer randomKmer(int k) {
     ts::Kmer x;
@@ -223,6 +223,56 @@ void testCutoffIgnoresSaturationBin() {
                "peak=" + std::to_string(peak2) + " expected " + std::to_string(peak));
     CHECK_NOTE(saturated == clean,
                "cutoff=" + std::to_string(saturated) + " expected " + std::to_string(clean));
+}
+
+// The cutoff decides how much genuinely low-coverage genome survives to reach
+// the graph, and cutting at the histogram valley was throwing away AT-rich
+// islands wholesale. These pin the policy that replaced it.
+void testCutoffStaysPermissive() {
+    Section s("cutoff stays permissive across depths");
+
+    auto spectrum = [](double mode, uint64_t shoulder) {
+        std::vector<uint64_t> h(100001, 0);
+        for (size_t c = 1; c <= 6; ++c) h[c] = shoulder / c;
+        const size_t lo = static_cast<size_t>(mode * 0.4);
+        const size_t hi = static_cast<size_t>(mode * 1.8);
+        for (size_t c = lo; c <= hi; ++c) {
+            const double d = static_cast<double>(c) - mode;
+            h[c] += static_cast<uint64_t>(5000000.0 * std::exp(-d * d / (mode * 1.5)));
+        }
+        return h;
+    };
+
+    // Ordinary bacterial depths: the floor, so the low-coverage tail survives.
+    for (double mode : {30.0, 55.0, 90.0, 120.0}) {
+        double peak = 0;
+        std::vector<uint64_t> h = spectrum(mode, 20000000);
+        const uint32_t c = ts::KmerCounter::chooseCutoff(h, peak);
+        CHECK_NOTE(c == 2, "mode=" + std::to_string(mode) + " cutoff=" + std::to_string(c));
+    }
+
+    // Very deep libraries let error k-mers reach higher counts, so the cutoff
+    // is allowed to rise -- but only slowly.
+    {
+        double peak = 0;
+        std::vector<uint64_t> h = spectrum(400.0, 20000000);
+        const uint32_t c = ts::KmerCounter::chooseCutoff(h, peak);
+        CHECK_NOTE(c >= 3 && c <= 10, "deep cutoff=" + std::to_string(c));
+    }
+
+    // The valley is still a ceiling: a spectrum whose error shoulder is tiny
+    // and whose valley sits at 1 must not be pushed above it.
+    {
+        std::vector<uint64_t> h(100001, 0);
+        h[1] = 5;
+        for (size_t c = 20; c <= 60; ++c) {
+            const double d = static_cast<double>(c) - 40.0;
+            h[c] = static_cast<uint64_t>(5000000.0 * std::exp(-d * d / 60.0));
+        }
+        double peak = 0;
+        const uint32_t c = ts::KmerCounter::chooseCutoff(h, peak);
+        CHECK_NOTE(c == 2, "sparse-shoulder cutoff=" + std::to_string(c));
+    }
 }
 
 // 3' quality trimming decides how much of every read survives to be counted,
@@ -533,6 +583,7 @@ int main() {
     testPushFront();
     testKmerTable();
     testCutoffIgnoresSaturationBin();
+    testCutoffStaysPermissive();
     testQualityTrim();
     testSequenceIdentity();
     testGraphInvariants();
