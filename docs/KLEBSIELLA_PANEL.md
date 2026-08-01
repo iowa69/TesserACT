@@ -21,31 +21,32 @@ pair** — around 230 bp of insert against ~190 bp reads after trimming. Two
 consequences run through everything below:
 
 * **Paired-end resolution has almost nothing to work with.** A pair only links
-  two unitigs if a junction falls between the two anchor positions, which is a
-  window of about `insert − readLength` ≈ 36 bp. Measured: 2,595 linking pairs
-  out of 702,392 — 0.37%, and in line with that arithmetic. This is the
-  library's information content, not a defect in the anchoring.
-* **k is doing the work instead**, which is why the k ceiling and the abundance
-  cutoff turned out to matter far more here than the pairing logic.
+  two unitigs if a junction falls between the two anchor positions, a window of
+  about `insert − readLength` ≈ 36 bp. Measured: 2,595 linking pairs out of
+  702,392 — 0.37%, in line with that arithmetic. This is the library's
+  information content, not a defect in the anchoring.
+* **k and the abundance cutoff do the work instead**, which is why they turned
+  out to matter far more here than the pairing logic.
 
 Roughly 86% of pairs will merge into a single ~238 bp read. Merging was tried
-and is *not* used by default: it halves k-mer depth by removing the overlap's
-double-counting, which starves the top rungs of the ladder. On one isolate it
-cost 73% of contig NGA50. tessera does accept the merged output
+and is **not** used: it halves k-mer depth by removing the overlap's
+double-counting, which starves the top of the ladder — on one isolate it cost
+73% of contig NGA50. tessera does accept merged output
 (`-1 unmerged_1 -2 unmerged_2 -s merged`) for anyone who wants it.
 
 ## What the panel found
 
-Three defects, all fixed, in rough order of how much they cost.
+In descending order of how much it cost. None of it was where the search
+started.
 
-### The abundance cutoff was set at the histogram valley
+### 1. The abundance cutoff was set at the histogram valley
 
-Much the largest. The valley is where the error shoulder meets the coverage
-mode, so it looks like the principled place to threshold — but on a real genome
-the counts in between are not empty. They hold the AT-rich prophages and
-genomic islands, the low-copy plasmids, the k-mers flanking repeats.
+The valley is where the error shoulder meets the coverage mode, so it looks
+like the principled place to threshold. But on a real genome the counts in
+between are not empty: they hold the AT-rich prophages and genomic islands, the
+low-copy plasmids, the k-mers flanking repeats.
 
-The diagnosis came from diffing against SPAdes: of 83,765 bp tessera failed to
+The diagnosis came from diffing against SPAdes. Of 83,765 bp tessera failed to
 recover on one isolate, SPAdes recovered 55,663 bp, and **every large stretch
 was GC 29–42% against a 57% genome**. Composition bias like that points at a
 coverage threshold, not at an algorithm.
@@ -59,80 +60,108 @@ coverage threshold, not at an algorithm.
 
 The error k-mers a low cutoff admits do not survive anyway — they enter the
 graph as tips, bubbles and erroneous connections, and simplification removes
-them *by topology*, which is evidence a count threshold does not have. Be
-permissive at the k-mer level and strict at the topology level.
+them *by topology*, which is evidence a count threshold does not have.
 
-### The k ceiling was set for 150 bp reads
+### 2. The trimming preset was throwing the assembly away
+
+`fastplus --preset assembly` ran `cut_right` at Q20 and enabled overlap
+correction. Both cost contiguity, and together they explained the entire gap to
+plain fastp — to the base.
+
+| trimming | NGA50 |
+|---|---|
+| `cut_right` Q20 + correction *(what it did)* | 132,059 |
+| `cut_tail` Q10 + correction | 149,192 |
+| `cut_tail` Q10, no correction | **160,991** |
+| fastp's own defaults | **160,991** |
+
+`cut_right` truncates a read at the first sliding window below the threshold,
+discarding 13–24% of all bases. Overlap correction rewrites disagreeing bases
+toward the higher-quality mate — wrong whenever the mates disagree because they
+came off different repeat copies. On one isolate the fix was +95% NGA50.
+
+Same lesson as the cutoff, in a different component: an assembler removes errors
+by graph topology, pooling evidence across every read covering a locus; a
+trimmer decides per read, in advance, with far less information.
+
+### 3. The k ceiling was set for 150 bp reads
 
 The 192-bit k-mer capped k at 96. On 2×250 libraries the unitig N50 was still
 climbing steeply there. Widening to 256 bits (k ≤ 128) and topping the ladder at
 127 took unitig N50 from 142,604 to 207,162 on one isolate and mismatches from
 2.78 to 0.52 per 100 kbp.
 
-This directly contradicts what the older seven-isolate benchmark concluded, and
-both are correct for their data: on those 2×150 and 2×300 libraries the ladder
-had genuinely plateaued below k=96, so widening would have bought nothing. The
-conclusion was right about that panel and wrong as a general claim.
+This contradicts what the older seven-isolate benchmark concluded, and both are
+correct for their data: on those 2×150 and 2×300 libraries the ladder had
+genuinely plateaued below k=96. The conclusion was right about that panel and
+wrong as a general claim.
 
-### The ladder keyed off maximum read length
+### 4. Smaller findings
 
-Many public runs arrive already trimmed by the submitter, so their reads are
-variable-length. One 301 bp survivor in a library averaging 190 bp was
-selecting a ladder most of the reads were too short to contribute a k-mer to.
-It now uses the mean.
+* **The ladder keyed off maximum read length.** Many public runs arrive already
+  trimmed by the submitter, so one 301 bp survivor in a library averaging 190 bp
+  selected a ladder most reads were too short to contribute to. Now uses the mean.
+* **A chain end with candidates but no paired support was rejected outright**,
+  even when every candidate ended on the same unitig and only the route through
+  the repeat differed. The destination is not in doubt there. Taking those joins
+  is +26% and +23% on two isolates, with misassemblies unchanged.
+* **Scaffold gaps had no closing stage.** Local reassembly from the reads
+  crossing each gap closes them; the corrector's masking had been hiding the
+  very reads needed, so gap closing reads through the mask.
+* **`minLinkSupport` was a flat count.** Pairs crossing a junction scale with
+  coverage, so 2 is a real bar at 40x and almost none at 100x. It became visible
+  the moment better trimming raised the depth: contiguity rose and so did
+  long-range chimeric joins. Scaling it with the median unitig coverage took
+  misassemblies from 9 to 2 across the affected isolates for about 4% of NGA50.
 
 ## Batch 1: the session's effect, contig level
 
-| isolate | before | after | change |
-|---|---|---|---|
-| ERR11578909 | 35,768 | 132,059 | +269% |
-| ERR11578757 | 72,904 | 265,033 | +264% |
-| ERR11579004 | 78,313 | 240,856 | +208% |
-| ERR11578413 | 101,486 | 265,335 | +161% |
-| ERR11578712 | 73,879 | 173,713 | +135% |
-| ERR11578485 | 49,939 | 102,944 | +106% |
-| ERR11578347 | 45,342 | 88,184 | +94% |
-| ERR11578610 | 99,487 | 168,365 | +69% |
-| ERR2631558 | 162,079 | 265,037 | +64% |
-| ERR11578154 | 200,724 | 304,809 | +52% |
-| ERR11578086 | 224,616 | 282,003 | +26% |
-| ERR12791282 | 137,038 | 143,286 | +5% |
-| ERR10447223 | 373,371 | 387,438 | +4% |
-| ERR11579075 | 367,615 | 377,674 | +3% |
-| ERR11578240 | 304,377 | 304,165 | −0% |
-| ERR11578571 | 348,740 | 283,971 | **−19%** |
-| ERR11578837 | 219,607 | 168,470 | **−23%** |
-
-Median NGA50 137,038 → 265,033. Genome fraction up on all 17, median 98.64% →
-98.78%. Misassemblies 9 → 6.
-
-The two regressions are the honest cost of the permissive cutoff: on those
-isolates the extra low-coverage k-mers add graph branching faster than
-simplification removes it, halving unitig N50 (160,804 → 80,136 on ERR11578837).
-Raising `--simplify-rounds` does not recover them — tested, no change.
-
-## Against vanilla SPAdes
-
-Fifteen isolates, same trimmed reads, contig level throughout.
-
-| | tessera | SPAdes |
+| | before | after |
 |---|---|---|
-| NGA50 wins | 4/15 | 11/15 |
-| median NGA50 ratio | **0.88×** | — |
-| genome fraction | 98.71% | 98.85% |
-| **misassemblies (total)** | **6** | **11** |
-| wall clock | ~100 s | ~180–260 s |
+| median NGA50 | 181,402 | **303,624** (+67%) |
+| median genome fraction | 98.67% | **98.81%** (up on 17/20) |
+| mismatches per 100 kbp | — | 0.04–0.49 |
 
-**SPAdes still leads contiguity by about 12% at the median.** tessera makes
-roughly half the structural errors and runs 2–3× faster on a third to a half the
-memory. That is the position; it should not be quoted any other way.
+Seven isolates more than doubled: ERR11578909 +350%, ERR11578712 +321%,
+ERR11578757 +275%, ERR11579004 +232%, ERR11578413 +159%, ERR2631558 +133%,
+ERR11578347 +119%. One regressed: ERR11578571, −16%.
 
-## Where the remaining gap is
+## Runtime
 
-Repeat resolution, and specifically what to do when the read pairs say nothing.
-With the graph now well connected, the resolver's dominant failure changed from
-"no candidate continuation exists" (2,620 chain ends before, 636 after) to
-"candidates exist and no paired evidence separates them" (616, against 239
-successful joins). On these overlapping-mate libraries that is the normal case,
-so anything that decides those without inventing joins is worth more than any
-further work on the pairing itself.
+Graph construction was profiled with `TESSERA_GRAPH_PHASES=1`. The unitig walk
+was 78–84% of it, against 13–16% for the start classification. The walk
+parallelises exactly — the walks are disjoint by construction — taking graph
+build from 8.5 s to 3.4 s per k-rung with byte-identical output.
+
+## Five things that looked right and were not
+
+Each was measured, rejected, and the measurement recorded in the code so the
+same plausible argument does not get made twice.
+
+* **Merging overlapping mates.** +32% on the hardest isolate, −73% on another.
+  It halves k-mer depth.
+* **More simplification rounds.** A 4× mismatch improvement on the first isolate
+  tried; reproduced on neither of the next two, identical NGA50 *and* identical
+  mismatches on both.
+* **Widening the repeat-enumeration budget.** Changed no output at all — those
+  chain ends were graph dead ends, not budget exhaustion. Kept anyway, as the
+  correct separation of "what continuations exist" from "which do the reads
+  prefer", but with no measured gain claimed.
+* **Polishing being blind to repeats.** It covers 99.9998% of assembly positions
+  at 64x. It sees essentially everything.
+* **Polishing's threshold being too strict.** Lowering it from 0.90 to 0.70 made
+  15 corrections and took mismatches from 0.49 to 0.80 per 100 kbp; every
+  correction was wrong. The positions where the pileup disagrees with the contig
+  are collapsed repeats, where the read majority belongs to whichever copy is
+  commonest rather than to the locus being polished. Near-unanimity is what stops
+  the stage rewriting one repeat copy into another, so polishing is a guard, not
+  a corrector, and should stay silent.
+
+## A caution about the panel itself
+
+Eight of batch 2's twenty isolates have ≥1 kb of assembly that does not align to
+their own closed reference, up to 53 kb — contamination or imperfect
+strain/reference pairing in the public dataset, not an assembler defect. Those
+eight carry 11 of that batch's 19 misassemblies and a mean 2.19 mismatches per
+100 kbp against 0.27 for the twelve cleanly paired ones. Scoring should report
+the clean subset separately.
