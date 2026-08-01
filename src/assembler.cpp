@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <cstdlib>
 #include <ctime>
 #include <thread>
 
@@ -427,11 +428,34 @@ bool Assembler::run(std::string& error) {
         }
     }
 
+    // How much of the pileup has to back a base before it replaces what the
+    // graph produced.
+    //
+    // This is deliberately close to unanimity, and the consequence is that the
+    // stage corrects nothing at all on a clean bacterial isolate -- it covers
+    // 99.9998% of assembly positions at 64x and changes zero bases. That looks
+    // like a threshold set too high, and it was tested as one. It is not.
+    //
+    // Lowering it to 0.70 on a panel isolate made 15 corrections and took
+    // mismatches against the closed reference from 0.49 to 0.80 per 100 kbp:
+    // every correction it bought was wrong. The positions where the pileup
+    // disagrees with the contig are collapsed repeats, where the reads come
+    // from several copies at once and the majority belongs to whichever copy is
+    // commonest -- not to the locus being polished. Near-unanimity is what
+    // keeps the stage from rewriting one repeat copy into another.
+    //
+    // So polishing is a guard, not a corrector: it earns its 3 seconds by
+    // confirming the graph consensus already matches the reads, and it should
+    // stay silent. Tunable for experiments; do not lower it on this evidence.
+    const double kPolishFraction = std::getenv("TESSERA_POLISH_FRACTION")
+                                       ? std::atof(std::getenv("TESSERA_POLISH_FRACTION"))
+                                       : 0.90;
+
     if (opt_.polish && !seqs.empty()) {
         if (opt_.verbose) std::fprintf(stderr, "[6/7] consensus polishing\n");
         util::Timer t;
         for (int pass = 0; pass < opt_.polishPasses; ++pass) {
-            const PolishStats ps = polishContigs(seqs, reads_, opt_.threads, 31, 15, 0.90);
+            const PolishStats ps = polishContigs(seqs, reads_, opt_.threads, 31, 15, kPolishFraction);
             report_.polish.readsUsed = ps.readsUsed;
             report_.polish.basesChanged += ps.basesChanged;
             report_.polish.positionsCovered = ps.positionsCovered;

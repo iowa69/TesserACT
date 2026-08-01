@@ -180,6 +180,11 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
             for (int b = 1; b < 4; ++b) if (q[b] > q[bi]) bi = b;
             const double frac = static_cast<double>(q[bi]) / static_cast<double>(depth);
             if (frac < minFraction) continue;
+            // A read that carries the true base where the contig is wrong still
+            // agrees with the contig everywhere else, so it does anchor and it
+            // does vote -- the reason nothing was ever corrected is that the
+            // winning fraction has to clear `minFraction`, and at a real error
+            // the split is nothing like unanimous.
             const char want = codeBase(bi);
             if (s[p] != want) { s[p] = want; ++changed; }
         }
