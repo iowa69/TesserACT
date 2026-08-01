@@ -1,9 +1,13 @@
 #include "graph.h"
 
+#include "util.h"
+
 #include <algorithm>
 #include <thread>
 #include <cstdio>
+#include <cstdlib>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace ts {
 
@@ -107,7 +111,7 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
     solid.forEach([&](Kmer key, uint32_t) { keys.push_back(key); });
 
     KmerTable visited;
-    visited.reserve(solid.size());
+    size_t placedKmers = 0;
 
     Kmer nb[4], nb2[4];
 
@@ -141,6 +145,10 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
     // orientation it is the bulk of construction. Doing it up front across
     // threads leaves the walk itself sequential, so unitigs come out in exactly
     // the same order and the assembly stays byte-identical.
+    util::Timer phaseTimer;
+    const bool phaseDebug = std::getenv("TESSERA_GRAPH_PHASES") != nullptr;
+    const double tKeys = phaseTimer.elapsed();
+
     std::vector<uint8_t> startFlag(keys.size() * 2, 0);
     {
         int nt = threads > 0 ? threads : 1;
@@ -184,24 +192,144 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
         for (auto& th : pool) th.join();
     }
 
+    const double tFlags = phaseTimer.elapsed();
+
+    // The walk is the bulk of construction -- 78-84% of build time once the
+    // start classification above was threaded -- and it parallelises exactly,
+    // because the walks are disjoint by construction. A step is only taken from
+    // `cur` to `nxt` when `cur` has one successor and `nxt` one predecessor,
+    // which makes `nxt` not a start; so no other walk begins there, and any walk
+    // reaching it must have come through `cur` and is therefore this one. The
+    // shared `visited` table was never arbitrating between walks. It was doing
+    // two other jobs, and each is handled separately below.
+    //
+    // Job one: stopping a walk that closes on itself. That collision can only
+    // be with the current walk, so a per-walk set does it.
+    // Job two: skipping a unitig's second discovery, from its other end. Both
+    // orientations are walked here and one is dropped afterwards -- the second
+    // walk retraces the first's nodes backwards and so yields exactly its
+    // reverse complement.
+    struct StartRef { uint32_t key; uint8_t orient; };
+    std::vector<StartRef> starts;
+    starts.reserve(keys.size());
     for (size_t i = 0; i < keys.size(); ++i) {
-        if (!startFlag[i * 2] && !startFlag[i * 2 + 1]) continue;
         for (int orient = 0; orient < 2; ++orient) {
-            if (!startFlag[i * 2 + static_cast<size_t>(orient)]) continue;
-            Kmer x = orient == 0 ? keys[i] : reverseComplement(keys[i], k);
-            if (visited.contains(canonical(x, k))) continue;
-            extend(x);
+            if (startFlag[i * 2 + static_cast<size_t>(orient)]) {
+                starts.push_back({static_cast<uint32_t>(i), static_cast<uint8_t>(orient)});
+            }
+        }
+    }
+
+    std::vector<Unitig> walked(starts.size());
+    std::vector<uint32_t> walkedKmers(starts.size(), 0);
+    {
+        int nt = threads > 0 ? threads : 1;
+        if (nt > static_cast<int>(starts.size())) nt = static_cast<int>(starts.size());
+        if (nt < 1) nt = 1;
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(nt));
+        for (int t = 0; t < nt; ++t) {
+            pool.emplace_back([&, t]() {
+                std::unordered_set<Kmer, KmerHasher> seen;
+                Kmer lnb[4], lnb2[4];
+                auto lOut = [&](Kmer x, Kmer* dst) {
+                    int n = 0;
+                    for (int b = 0; b < 4; ++b) {
+                        Kmer y = pushBack(x, b, k);
+                        if (solid.contains(canonical(y, k))) dst[n++] = y;
+                    }
+                    return n;
+                };
+                auto lIn = [&](Kmer x, Kmer* dst) {
+                    int n = 0;
+                    for (int b = 0; b < 4; ++b) {
+                        Kmer y = pushFront(x, b, k);
+                        if (solid.contains(canonical(y, k))) dst[n++] = y;
+                    }
+                    return n;
+                };
+                for (size_t s = static_cast<size_t>(t); s < starts.size();
+                     s += static_cast<size_t>(nt)) {
+                    Kmer cur = starts[s].orient == 0
+                                   ? keys[starts[s].key]
+                                   : reverseComplement(keys[starts[s].key], k);
+                    seen.clear();
+                    std::string seq = kmerToString(cur, k);
+                    seen.insert(canonical(cur, k));
+                    double covSum = static_cast<double>(solid.get(canonical(cur, k)));
+                    uint32_t nk = 1;
+                    while (true) {
+                        if (lOut(cur, lnb) != 1) break;
+                        const Kmer nxt = lnb[0];
+                        if (lIn(nxt, lnb2) != 1) break;
+                        const Kmer cn = canonical(nxt, k);
+                        if (seen.count(cn)) break;   // closed a cycle
+                        seq += codeBase(lowBase(nxt));
+                        cur = nxt;
+                        seen.insert(cn);
+                        covSum += static_cast<double>(solid.get(cn));
+                        ++nk;
+                    }
+                    walked[s].seq = std::move(seq);
+                    walked[s].coverage = covSum / static_cast<double>(nk);
+                    walkedKmers[s] = nk;
+                }
+            });
+        }
+        for (auto& th : pool) th.join();
+    }
+
+    // Keep the first orientation of each unitig, in the order the sequential
+    // walk would have reached it.
+    {
+        std::unordered_set<std::string> emitted;
+        emitted.reserve(starts.size());
+        std::string rc;
+        for (size_t s = 0; s < starts.size(); ++s) {
+            const std::string& seq = walked[s].seq;
+            rc.assign(seq.rbegin(), seq.rend());
+            for (char& c : rc) {
+                switch (c) {
+                    case 'A': c = 'T'; break;
+                    case 'C': c = 'G'; break;
+                    case 'G': c = 'C'; break;
+                    case 'T': c = 'A'; break;
+                    default: break;
+                }
+            }
+            if (emitted.count(seq < rc ? seq : rc)) continue;
+            emitted.insert(seq < rc ? seq : rc);
+            placedKmers += walkedKmers[s];
+            g.nodes.push_back(std::move(walked[s]));
         }
     }
 
     // Whatever remains lies on a cycle where every k-mer has in-degree and
     // out-degree 1, so no start exists; break each such cycle arbitrarily.
-    for (Kmer key : keys) {
-        if (visited.contains(key)) continue;
-        extend(key);
+    // Emitted unitigs partition the solid set, so anything left over shows up
+    // as a shortfall in the k-mer count -- and when there is none, which is the
+    // usual case, the marking pass this needs is skipped entirely.
+    if (placedKmers < solid.size()) {
+        for (const Unitig& u : g.nodes) {
+            Kmer fwd = 0;
+            int valid = 0;
+            for (size_t p = 0; p < u.seq.size(); ++p) {
+                const int b = baseCode(u.seq[p]);
+                if (b < 0) { valid = 0; continue; }
+                fwd = pushBack(fwd, b, k);
+                if (++valid >= k) visited.put(canonical(fwd, k), 1);
+            }
+        }
+        for (Kmer key : keys) {
+            if (visited.contains(key)) continue;
+            extend(key);
+        }
     }
 
+    const double tWalk = phaseTimer.elapsed();
+
     // ---- link the unitigs ----
+    // (timing for this phase is reported at the end of build)
     std::unordered_map<Kmer, std::pair<uint32_t, uint8_t>, KmerHasher> entry;
     entry.reserve(g.nodes.size() * 2);
     for (uint32_t i = 0; i < g.nodes.size(); ++i) {
@@ -236,6 +364,12 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
                 if (it != entry.end()) g.addLink(i, 0, it->second.first, it->second.second);
             }
         }
+    }
+    if (phaseDebug) {
+        const double tLink = phaseTimer.elapsed();
+        std::fprintf(stderr,
+                     "      [graph k=%d] keys %.2fs  startFlags %.2fs  walk %.2fs  link %.2fs\n",
+                     k, tKeys, tFlags - tKeys, tWalk - tFlags, tLink - tWalk);
     }
     return g;
 }
