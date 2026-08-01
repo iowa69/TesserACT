@@ -19,6 +19,11 @@ struct QualityTrim {
     int phredOffset = 33;
 };
 
+// Length a read keeps once its 3' end is cut back to where quality holds up,
+// using the same sliding window as fastp's --cut_tail. Returns `len` unchanged
+// when trimming is off or there is no quality line. Exposed for testing.
+uint32_t qualityTrimmedLength(const char* qual, size_t len, const QualityTrim& qt);
+
 // One input library.
 struct Library {
     std::string r1;
@@ -71,6 +76,10 @@ public:
     // Marks [from, to) of a read ambiguous so every k-mer spanning it is
     // skipped. The corrector uses this to discard stretches it cannot vouch
     // for -- the k-mer-spectrum equivalent of quality trimming.
+    //
+    // NOT thread-safe, and must run after any setBase on the same read: it may
+    // grow the ambiguity bitmap, and setBase clears the ambiguity bit for the
+    // position it writes. Call it serially, as correctReads does.
     void maskRange(size_t read, uint32_t from, uint32_t to);
 
     uint32_t maxReadLength() const { return maxLen_; }

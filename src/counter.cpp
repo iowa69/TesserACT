@@ -249,16 +249,21 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
     // Weighting by c picks the coverage mode rather than the error shoulder,
     // which always dominates by raw distinct-k-mer count.
     //
-    // The final bin is a saturation bucket holding every k-mer at or above the
-    // histogram limit, so its index is a floor rather than an observed count.
-    // Weighting it by that index credits it with a mass it never had, and at
-    // small k -- where collapsed repeats and low-complexity sequence pile up
-    // there -- it outweighs the real coverage mode. That put the peak at the
-    // limit itself and dragged the valley search across the whole range,
-    // yielding absurd cutoffs that emptied the solid set.
+    // Index kHistMax is a saturation bucket holding every k-mer at or above the
+    // limit, so it is a floor rather than an observed count. Weighting it by
+    // that index credits it with a mass it never had, and at small k -- where
+    // collapsed repeats and low-complexity sequence pile up there -- it
+    // outweighs the real coverage mode. That put the peak at the limit itself
+    // and dragged the valley search across the whole range, yielding absurd
+    // cutoffs that emptied the solid set.
+    //
+    // Keyed off kHistMax rather than the argument's length so a caller passing
+    // a histogram already truncated to its used range does not lose a genuine
+    // top bin.
+    const size_t last = std::min(n, kHistMax);
     size_t peak = 0;
     unsigned __int128 best = 0;
-    for (size_t c = 3; c + 1 < n; ++c) {
+    for (size_t c = 3; c < last; ++c) {
         const unsigned __int128 v = static_cast<unsigned __int128>(histogram[c]) * c;
         if (v > best) {
             best = v;

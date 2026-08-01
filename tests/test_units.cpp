@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "counter.h"
+#include "seqio.h"
 #include "graph.h"
 #include "kmer.h"
 
@@ -222,6 +223,63 @@ void testCutoffIgnoresSaturationBin() {
                "peak=" + std::to_string(peak2) + " expected " + std::to_string(peak));
     CHECK_NOTE(saturated == clean,
                "cutoff=" + std::to_string(saturated) + " expected " + std::to_string(clean));
+}
+
+// 3' quality trimming decides how much of every read survives to be counted,
+// so its edge cases matter more than its common case. Checked against a naive
+// recompute-the-window reference.
+void testQualityTrim() {
+    Section s("qualityTrimmedLength");
+    ts::QualityTrim qt;   // enabled, window 4, meanQuality 20, Phred+33
+
+    auto q = [](const std::string& phred) { return phred; };
+
+    // No quality line (FASTA) and disabled trimming both pass length through.
+    CHECK(ts::qualityTrimmedLength(nullptr, 100, qt) == 100);
+    ts::QualityTrim off; off.enabled = false;
+    const std::string bad(50, '#');   // Q2
+    CHECK(ts::qualityTrimmedLength(bad.data(), bad.size(), off) == 50);
+
+    // All-good stays whole; all-bad collapses to nothing.
+    const std::string good(50, 'I');  // Q40
+    CHECK(ts::qualityTrimmedLength(good.data(), good.size(), qt) == 50);
+    CHECK(ts::qualityTrimmedLength(bad.data(), bad.size(), qt) == 0);
+
+    // Half good, half noise: the cut lands at the transition.
+    const std::string mixed = std::string(30, 'I') + std::string(20, '#');
+    const uint32_t cut = ts::qualityTrimmedLength(mixed.data(), mixed.size(), qt);
+    CHECK_NOTE(cut >= 28 && cut <= 32, "cut=" + std::to_string(cut));
+
+    // Degenerate shapes must not underflow or exceed the input length.
+    for (size_t len = 0; len <= 12; ++len) {
+        for (int w = 1; w <= 8; ++w) {
+            ts::QualityTrim t; t.windowSize = w;
+            std::string qs;
+            for (size_t i = 0; i < len; ++i) qs += static_cast<char>(33 + (rng() % 45));
+            const uint32_t got = ts::qualityTrimmedLength(qs.data(), len, t);
+            CHECK_NOTE(got <= len, "len=" + std::to_string(len) + " w=" + std::to_string(w) +
+                                       " got=" + std::to_string(got));
+            // Reference: largest end where the trailing window averages >= threshold.
+            size_t want = len;
+            if (static_cast<size_t>(w) <= len) {
+                while (want > static_cast<size_t>(w)) {
+                    int sum = 0;
+                    for (size_t i = want - static_cast<size_t>(w); i < want; ++i) sum += qs[i] - 33;
+                    if (sum >= t.meanQuality * w) break;
+                    --want;
+                }
+                if (want == static_cast<size_t>(w)) {
+                    int sum = 0;
+                    for (size_t i = 0; i < want; ++i) sum += qs[i] - 33;
+                    if (sum < t.meanQuality * w) want = 0;
+                }
+            }
+            CHECK_NOTE(got == want, "len=" + std::to_string(len) + " w=" + std::to_string(w) +
+                                        " got=" + std::to_string(got) +
+                                        " want=" + std::to_string(want));
+        }
+    }
+    (void)q;
 }
 
 void testKmerTable() {
@@ -475,6 +533,7 @@ int main() {
     testPushFront();
     testKmerTable();
     testCutoffIgnoresSaturationBin();
+    testQualityTrim();
     testSequenceIdentity();
     testGraphInvariants();
     testUnitigReconstruction();

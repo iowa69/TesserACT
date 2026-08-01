@@ -216,6 +216,8 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
     return true;
 }
 
+}  // namespace
+
 // Length of the read once its 3' end has been cut back to where quality holds
 // up. Illumina reads decay towards the 3' end, and on 2x250/2x300 MiSeq runs
 // the last stretch can fall to Q3 -- a ~50% error rate, i.e. noise. Those bases
@@ -248,6 +250,8 @@ uint32_t qualityTrimmedLength(const char* qual, size_t len, const QualityTrim& q
     if (end == static_cast<size_t>(w) && sum < threshold * w) end = 0;
     return static_cast<uint32_t>(end);
 }
+
+namespace {
 
 // Error path only: recovers a record's name so the message can point at it.
 std::string recordNameAt(const std::string& path, size_t index) {
@@ -355,6 +359,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     totalBases_ = 0;
     maxLen_ = 0;
     paired_ = false;
+    trimmedBases_ = 0;
 
     std::vector<FileSlot> slots;
     std::vector<LibPlan> plans;
@@ -579,8 +584,9 @@ void SequenceStore::maskRange(size_t read, uint32_t from, uint32_t to) {
     const uint32_t len = length(read);
     if (from >= to || from >= len) return;
     if (to > len) to = len;
-    // The bitmap is dropped during load when the input held no ambiguous base,
-    // so it may have to be materialised here.
+    // load() always sizes the bitmap, so this only fires for an empty store,
+    // where the range guard above has already returned. Kept as a cheap
+    // guarantee that the indexing below is in bounds.
     if (ambiguous_.empty()) {
         ambiguous_.assign(static_cast<size_t>((totalBases_ + 63) / 64), 0);
     }

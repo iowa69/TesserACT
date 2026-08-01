@@ -250,7 +250,46 @@ bool Assembler::run(std::string& error) {
                          util::commify(static_cast<long long>(report_.correction.readsCorrected)).c_str(),
                          util::commify(static_cast<long long>(report_.correction.readsUncorrectable)).c_str(),
                          report_.correctionSeconds);
+            // Masking removes bases from every later stage, so it has to be
+            // visible: a run that silently drops a large share of the data
+            // would otherwise look like a clean assembly at low coverage.
+            if (report_.correction.basesMasked > 0) {
+                std::fprintf(stderr, "      %s bases masked as unvouchable (%.2f%% of input)\n",
+                             util::commify(
+                                 static_cast<long long>(report_.correction.basesMasked)).c_str(),
+                             100.0 * static_cast<double>(report_.correction.basesMasked) /
+                                 static_cast<double>(reads_.totalBases()));
+            }
         }
+    }
+
+    // If no rung is shorter than the longest read, every iteration below is
+    // skipped and the run would finish "successfully" with an empty assembly.
+    // Quality trimming makes that reachable from ordinary mistakes -- a
+    // Phred+64 file read as Phred+33, or a --qtrim-quality above the data's
+    // range -- so say what happened instead of writing an empty FASTA.
+    if (ladder.empty() || ladder.front() >= static_cast<int>(reads_.maxReadLength())) {
+        char buf[512];
+        const int smallest = ladder.empty() ? 0 : ladder.front();
+        if (reads_.trimmedBases() > 0) {
+            std::snprintf(buf, sizeof(buf),
+                          "after quality trimming the longest read is %u bp, shorter than the "
+                          "smallest k (%d), so there is nothing to assemble. %s bases (%.1f%%) "
+                          "were trimmed -- if that seems too many, the file may be Phred+64 "
+                          "(tessera assumes Phred+33) or --qtrim-quality may be set too high; "
+                          "--no-qtrim disables trimming entirely",
+                          reads_.maxReadLength(), smallest,
+                          util::commify(static_cast<long long>(reads_.trimmedBases())).c_str(),
+                          100.0 * static_cast<double>(reads_.trimmedBases()) /
+                              static_cast<double>(reads_.trimmedBases() + reads_.totalBases()));
+        } else {
+            std::snprintf(buf, sizeof(buf),
+                          "the longest read is %u bp, shorter than the smallest k (%d), so there "
+                          "is nothing to assemble; lower it with -k",
+                          reads_.maxReadLength(), smallest);
+        }
+        error = buf;
+        return false;
     }
 
     UnitigGraph graph;

@@ -94,6 +94,7 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("reads", rep.reads);
     w.uint("bases", rep.inputBases);
     w.uint("max_read_length", rep.maxReadLength);
+    w.uint("quality_trimmed_bases", rep.qualityTrimmedBases);
     w.boolean("paired", rep.paired);
     w.key("files"); w.s += "[";
     for (size_t i = 0; i < rep.inputFiles.size(); ++i) {
@@ -110,6 +111,7 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("reads_corrected", rep.correction.readsCorrected);
     w.uint("bases_corrected", rep.correction.basesCorrected);
     w.uint("reads_without_anchor", rep.correction.readsUncorrectable);
+    w.uint("bases_masked", rep.correction.basesMasked);
     w.num("seconds", rep.correctionSeconds);
     w.close('}');
 
