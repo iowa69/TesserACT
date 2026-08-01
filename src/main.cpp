@@ -81,6 +81,7 @@ int main(int argc, char** argv) {
 
     AssemblyOptions opt;
     Library lib;
+    std::vector<Library> singles;
     bool haveLib = false;
 
     if (argc < 2) { usage(); return 1; }
@@ -100,7 +101,15 @@ int main(int argc, char** argv) {
         else if (a == "-1" || a == "--read1") { lib.r1 = needValue(i, "-1"); haveLib = true; }
         else if (a == "-2" || a == "--read2") { lib.r2 = needValue(i, "-2"); haveLib = true; }
         else if (a == "--12") { lib.r1 = needValue(i, "--12"); lib.interleaved = true; haveLib = true; }
-        else if (a == "-s" || a == "--single") { lib.r1 = needValue(i, "-s"); haveLib = true; }
+        // A separate library, not an overwrite of -1. Merging overlapping
+        // mates yields a set of single-end fragments plus the pairs that did
+        // not merge, and both belong in the same assembly; -s may be repeated.
+        else if (a == "-s" || a == "--single") {
+            Library sl;
+            sl.r1 = needValue(i, "-s");
+            singles.push_back(std::move(sl));
+            haveLib = true;
+        }
         else if (a == "-o" || a == "--out") opt.outDir = needValue(i, "-o");
         else if (a == "--min-contig") opt.minContigLen = static_cast<size_t>(std::atoll(needValue(i, "--min-contig")));
         else if (a == "-k" || a == "--kmers") {
@@ -157,17 +166,24 @@ int main(int argc, char** argv) {
         }
     }
 
-    if (!haveLib || lib.r1.empty()) {
+    if (!haveLib || (lib.r1.empty() && singles.empty())) {
         std::fprintf(stderr, "error: no input reads given (use -1/-2, --12, or -s)\n");
         return 1;
     }
-    for (const std::string& f : {lib.r1, lib.r2}) {
-        if (!f.empty() && !util::fileExists(f)) {
-            std::fprintf(stderr, "error: input file not found: %s\n", f.c_str());
-            return 1;
+    if (lib.r1.empty() && !lib.r2.empty()) {
+        std::fprintf(stderr, "error: -2 given without -1\n");
+        return 1;
+    }
+    if (!lib.r1.empty()) opt.libraries.push_back(lib);
+    for (Library& sl : singles) opt.libraries.push_back(std::move(sl));
+    for (const Library& l : opt.libraries) {
+        for (const std::string& f : {l.r1, l.r2}) {
+            if (!f.empty() && !util::fileExists(f)) {
+                std::fprintf(stderr, "error: input file not found: %s\n", f.c_str());
+                return 1;
+            }
         }
     }
-    opt.libraries.push_back(lib);
 
     Assembler asmb(std::move(opt));
     std::string error;

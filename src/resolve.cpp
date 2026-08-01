@@ -143,7 +143,7 @@ void PairedResolver::buildSupport() {
     buildIndex();
     if (!reads_.paired()) return;
 
-    const size_t pairs = reads_.size() / 2;
+    const size_t pairs = reads_.pairCount();
     std::vector<std::vector<int>> insertSamples(static_cast<size_t>(threads_));
     std::vector<std::unordered_map<uint64_t, std::unordered_map<uint64_t, std::vector<int32_t>>>>
         localSupport(static_cast<size_t>(threads_));

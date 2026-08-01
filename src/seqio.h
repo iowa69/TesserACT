@@ -81,8 +81,14 @@ public:
     }
 
     bool paired() const { return paired_; }
+
+    // Reads [0, pairedReads()) come from paired libraries and are stored
+    // adjacently, so the mate of read i is i^1. Reads at or above it are
+    // single-end and have no mate -- mateOf() must not be called on them.
+    size_t pairedReads() const { return pairedReads_; }
     size_t mateOf(size_t i) const { return i ^ 1; }
-    size_t pairCount() const { return paired_ ? size() / 2 : 0; }
+    bool hasMate(size_t i) const { return i < pairedReads_; }
+    size_t pairCount() const { return pairedReads_ / 2; }
 
     // Overwrite a base, used by the read error corrector.
     void setBase(size_t read, uint32_t pos, int code);
@@ -113,6 +119,7 @@ private:
     uint64_t totalBases_ = 0;
     uint32_t maxLen_ = 0;
     bool paired_ = false;
+    size_t pairedReads_ = 0;
     QualityTrim qtrim_;
     uint64_t trimmedBases_ = 0;
 };

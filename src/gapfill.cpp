@@ -222,7 +222,9 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
                 });
                 if (conflict || hit == kAmbiguousGap) continue;
                 mine[hit].push_back(static_cast<uint32_t>(r));
-                if (paired) mine[hit].push_back(static_cast<uint32_t>(reads.mateOf(r)));
+                if (paired && reads.hasMate(r)) {
+                    mine[hit].push_back(static_cast<uint32_t>(reads.mateOf(r)));
+                }
             }
         };
         std::vector<std::thread> pool;

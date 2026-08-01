@@ -359,6 +359,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     totalBases_ = 0;
     maxLen_ = 0;
     paired_ = false;
+    pairedReads_ = 0;
     trimmedBases_ = 0;
 
     std::vector<FileSlot> slots;
@@ -366,7 +367,6 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     slots.reserve(libs.size() * 2);
     plans.reserve(libs.size());
 
-    bool allPaired = !libs.empty();
     for (const Library& lib : libs) {
         if (lib.r1.empty()) {
             error = "library has no r1 file";
@@ -392,7 +392,6 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         } else {
             plan.mode = kSingle;
             plan.slotB = plan.slotA;
-            allPaired = false;
             slots.emplace_back();
             slots.back().path = lib.r1;
         }
@@ -435,9 +434,18 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     }
 
     // Pairing sanity checks, then the global read index layout.
+    //
+    // Paired libraries are laid out first, so every read below `pairedReads_`
+    // has its mate at i^1 and everything above is unpaired. That lets one run
+    // mix the two -- which is exactly what merging overlapping mates produces:
+    // a pile of single-end fragments plus the pairs that did not merge.
     size_t nextRead = 0;
+    for (int phase = 0; phase < 2; ++phase) {
     for (size_t li = 0; li < plans.size(); ++li) {
         LibPlan& plan = plans[li];
+        const bool isSingle = plan.mode == kSingle;
+        if ((phase == 0) == isSingle) continue;
+        if (phase == 1 && nextRead > 0 && pairedReads_ == 0) pairedReads_ = nextRead;
         FileSlot& a = slots[plan.slotA];
         if (plan.mode == kPaired) {
             FileSlot& b = slots[plan.slotB];
@@ -484,6 +492,8 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         }
     }
 
+    }
+    if (pairedReads_ == 0) pairedReads_ = nextRead;   // no single-end library at all
     const size_t nReads = nextRead;
     uint64_t total = 0;
     for (const FileSlot& slot : slots) {
@@ -491,7 +501,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         if (slot.maxLen > maxLen_) maxLen_ = slot.maxLen;
     }
     totalBases_ = total;
-    paired_ = allPaired;
+    paired_ = pairedReads_ > 0;
 
     offsets_.assign(nReads + 1, 0);
     for (const FileSlot& slot : slots) {
@@ -550,6 +560,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
             totalBases_ = 0;
             maxLen_ = 0;
             paired_ = false;
+            pairedReads_ = 0;
             return false;
         }
     }
