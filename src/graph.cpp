@@ -1,6 +1,7 @@
 #include "graph.h"
 
 #include <algorithm>
+#include <thread>
 #include <cstdio>
 #include <unordered_map>
 
@@ -77,7 +78,6 @@ double sequenceIdentity(const std::string& a, const std::string& b, int maxBand)
 // ---------------------------------------------------------------------------
 
 UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
-    (void)threads;
     UnitigGraph g;
     g.k_ = k;
     if (solid.size() == 0) return g;
@@ -136,19 +136,60 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
         g.nodes.push_back(std::move(u));
     };
 
-    // A k-mer starts a unitig when it cannot be entered from a unique
-    // predecessor that itself continues uniquely into it.
-    auto isStart = [&](Kmer x) {
-        if (inNbrs(x, nb2) != 1) return true;
-        Kmer p = nb2[0];
-        return outNbrs(p, nb) != 1;
-    };
+    // Deciding which k-mers start a unitig is a pure function of `solid`: it
+    // touches no shared state, and at eight table probes per k-mer per
+    // orientation it is the bulk of construction. Doing it up front across
+    // threads leaves the walk itself sequential, so unitigs come out in exactly
+    // the same order and the assembly stays byte-identical.
+    std::vector<uint8_t> startFlag(keys.size() * 2, 0);
+    {
+        int nt = threads > 0 ? threads : 1;
+        if (nt > static_cast<int>(keys.size())) nt = static_cast<int>(keys.size());
+        if (nt < 1) nt = 1;
+        std::vector<std::thread> pool;
+        pool.reserve(static_cast<size_t>(nt));
+        for (int t = 0; t < nt; ++t) {
+            pool.emplace_back([&, t]() {
+                // Counts solid successors; only the count is needed here.
+                auto outDegree = [&](Kmer x) {
+                    int n = 0;
+                    for (int b = 0; b < 4; ++b) {
+                        if (solid.contains(canonical(pushBack(x, b, k), k))) ++n;
+                    }
+                    return n;
+                };
+                for (size_t i = static_cast<size_t>(t); i < keys.size();
+                     i += static_cast<size_t>(nt)) {
+                    // keys are canonical, so one reverseComplement per key
+                    // serves both orientations.
+                    const Kmer fwd = keys[i];
+                    const Kmer rev = reverseComplement(fwd, k);
+                    for (int orient = 0; orient < 2; ++orient) {
+                        const Kmer x = orient == 0 ? fwd : rev;
+                        // A k-mer starts a unitig unless it is entered from a
+                        // unique predecessor that itself continues uniquely
+                        // into it.
+                        Kmer pred = 0;
+                        int nIn = 0;
+                        for (int b = 0; b < 4; ++b) {
+                            const Kmer y = pushFront(x, b, k);
+                            if (solid.contains(canonical(y, k))) { pred = y; ++nIn; }
+                        }
+                        const bool start = (nIn != 1) || (outDegree(pred) != 1);
+                        startFlag[i * 2 + static_cast<size_t>(orient)] = start ? 1 : 0;
+                    }
+                }
+            });
+        }
+        for (auto& th : pool) th.join();
+    }
 
-    for (Kmer key : keys) {
+    for (size_t i = 0; i < keys.size(); ++i) {
+        if (!startFlag[i * 2] && !startFlag[i * 2 + 1]) continue;
         for (int orient = 0; orient < 2; ++orient) {
-            Kmer x = orient == 0 ? key : reverseComplement(key, k);
+            if (!startFlag[i * 2 + static_cast<size_t>(orient)]) continue;
+            Kmer x = orient == 0 ? keys[i] : reverseComplement(keys[i], k);
             if (visited.contains(canonical(x, k))) continue;
-            if (!isStart(x)) continue;
             extend(x);
         }
     }

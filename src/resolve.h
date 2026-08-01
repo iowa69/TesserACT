@@ -59,7 +59,7 @@ struct ResolveStats {
 class PairedResolver {
 public:
     PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
-                   int minLinkSupport, double tieRatio);
+                   int minLinkSupport, double tieRatio, int minScaffoldSupport = 0);
 
     // Anchors reads and accumulates the oriented link support table.
     void buildSupport();
@@ -126,6 +126,7 @@ private:
     double medianCoverage_ = 0;
     int minLinkSupport_;
     double tieRatio_;
+    int minScaffoldSupport_ = 0;   // 0 = scale with observed depth
     bool scaffolding_ = false;
 };
 

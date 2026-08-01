@@ -28,10 +28,11 @@ inline int idxStrand(uint64_t v) { return static_cast<int>(v & 1); }
 }  // namespace
 
 PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
-                               int minLinkSupport, double tieRatio)
+                               int minLinkSupport, double tieRatio, int minScaffoldSupport)
     : g_(graph), reads_(reads), threads_(threads > 0 ? threads : 1), k_(graph.k()),
       kMap_(std::min(kAnchorK, graph.k())),
-      minLinkSupport_(minLinkSupport), tieRatio_(tieRatio) {
+      minLinkSupport_(minLinkSupport), tieRatio_(tieRatio),
+      minScaffoldSupport_(minScaffoldSupport) {
     medianCoverage_ = graph.medianCoverage();
 }
 
@@ -268,8 +269,30 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     const size_t n = g_.nodes.size();
     const size_t ov = static_cast<size_t>(k_ - 1);
 
-    // A unitig well above the median depth is a collapsed repeat: it may be
-    // traversed more than once, and it carries no unique paired evidence.
+    // A collapsed repeat may be traversed more than once and carries no unique
+    // paired evidence, so it cannot seed a chain, terminate a path, or be
+    // traversed -- it is emitted verbatim and walls off both neighbours.
+    //
+    // Depth alone does not identify one. A plasmid at two copies per cell sits
+    // at the same ~2x median as a two-copy repeat while its k-mers are
+    // perfectly unique, and a bacterial isolate usually carries several
+    // plasmids; on one panel isolate 4.8% of the assembly was excluded this
+    // way, including a 68 kb unitig at 1.78x median that was the whole of that
+    // assembly's NGA50. Raising the depth cutoff only trades that error for the
+    // opposite one, and stops two-copy repeats resolving.
+    //
+    // Two refinements were tried and measured on the closed-reference panel,
+    // and both were rejected. Raising the multiplier to 2.4 frees the plasmids
+    // but stops genuine two-copy repeats resolving. Additionally requiring a
+    // branching end -- on the theory that distinct copies of a repeat are
+    // flanked by different sequence -- left contig NGA50 unchanged to the base
+    // pair on both datasets tested while adding misassemblies (3 -> 5 and
+    // 2 -> 3), because a collapsed tandem array has a single link at each end
+    // and was then traversed once instead of many times.
+    //
+    // So this stays depth-only. The plasmid cost is real but is the cheaper
+    // error, and the contiguity it was meant to buy came from the scaffolding
+    // and tie-break changes instead.
     const double repeatThreshold = medianCoverage_ * 1.6;
     auto isRepeat = [&](uint32_t u) {
         return medianCoverage_ > 0 && g_.nodes[u].coverage > repeatThreshold;
@@ -398,6 +421,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
         double best = -1, second = -1;
         size_t pick = 0;
+        std::vector<double> scores(cands.size(), 0.0);
         for (size_t i = 0; i < cands.size(); ++i) {
             int interLen = 0;
             for (size_t j = 0; j + 1 < cands[i].size(); ++j) {
@@ -410,6 +434,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 sc += scoreCandidate(tailFirst[m], terminal,
                                      interLen + static_cast<int>(distToEnd[m]));
             }
+            scores[i] = sc;
             if (sc > best) { second = best; best = sc; pick = i; }
             else if (sc > second) second = sc;
         }
@@ -419,10 +444,36 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             // A near tie means the repeat is genuinely unresolved; guessing
             // would manufacture a misassembly.
             if (second > 0 && best < tieRatio_ * second) {
-                ++dbgTie;
-                dbgTieBest += static_cast<long long>(best);
-                dbgTieSecond += static_cast<long long>(second);
-                return result;
+                // Unless every near-tied path ends on the same unitig in the
+                // same orientation. Then the destination is not in doubt at
+                // all -- the paired evidence cannot separate them precisely
+                // because it supports the identical join -- and only the route
+                // between is ambiguous. Refusing here throws away a join that
+                // is certain; take it, and settle the interior by coverage,
+                // which is the evidence that does distinguish the arms.
+                const uint64_t bestTerm = cands[pick].back();
+                bool sameDestination = true;
+                for (size_t i = 0; i < cands.size(); ++i) {
+                    if (scores[i] * tieRatio_ < best) continue;   // not near-tied
+                    if (cands[i].back() != bestTerm) { sameDestination = false; break; }
+                }
+                if (!sameDestination) {
+                    ++dbgTie;
+                    dbgTieBest += static_cast<long long>(best);
+                    dbgTieSecond += static_cast<long long>(second);
+                    return result;
+                }
+                double bestInterior = -1.0;
+                for (size_t i = 0; i < cands.size(); ++i) {
+                    if (scores[i] * tieRatio_ < best) continue;
+                    double minCov = std::numeric_limits<double>::max();
+                    for (size_t j = 0; j + 1 < cands[i].size(); ++j) {
+                        minCov = std::min(minCov, g_.nodes[unitigOf(cands[i][j])].coverage);
+                    }
+                    // A path with no interior is the most direct route.
+                    if (cands[i].size() < 2) minCov = std::numeric_limits<double>::max();
+                    if (minCov > bestInterior) { bestInterior = minCov; pick = i; }
+                }
             }
         }
 
@@ -586,10 +637,22 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             }
         }
 
-        constexpr double kMinScaffoldSupport = 5;
+        // How many spanning pairs a join needs. A fixed count cannot be right
+        // at both ends of the depth range: the number of pairs crossing a
+        // junction scales with coverage, so a flat 5 is nearly unreachable on a
+        // 40x library and trivially met on a 200x one. On one panel isolate 153
+        // of the 173 dead ends that found a partner were rejected on this
+        // threshold alone -- the mutual-best rule turned away none of them.
+        // Scaling with the observed depth keeps the evidence bar constant in
+        // the units that matter, with a floor of 3 so a shallow library still
+        // needs corroboration.
+        const double minScaffoldSupport =
+            minScaffoldSupport_ > 0
+                ? static_cast<double>(minScaffoldSupport_)
+                : std::min(10.0, std::max(3.0, medianCoverage_ * 0.06));
         for (uint32_t idx = 0; idx < best.size(); ++idx) {
             const Best& b = best[idx];
-            if (b.partner == UINT32_MAX || b.score < kMinScaffoldSupport) continue;
+            if (b.partner == UINT32_MAX || b.score < minScaffoldSupport) continue;
             if (best[b.partner].partner != idx) continue;      // must be mutual
             if (joinTo[idx] != UINT32_MAX || joinTo[b.partner] != UINT32_MAX) continue;
             joinTo[idx] = b.partner;
