@@ -1,7 +1,12 @@
 // K-mer encoding: two bits per base packed into a little-endian multiword
-// integer. Three 64-bit words give 192 bits, so k can reach 96 -- enough for
-// the whole multi-k ladder on 150 bp reads, where the largest k is what pulls
-// short repeats out of the graph.
+// integer. Four 64-bit words give 256 bits, so k can reach 128.
+//
+// Three words (k <= 96) was enough for 150 bp reads, but on 2x250 MiSeq
+// libraries -- which is what most of the closed-reference panel is -- the
+// unitig N50 was still climbing steeply at the top of the ladder, so k, not
+// the data, was the binding constraint. The fourth word costs one more
+// comparison per k-mer operation and eight more bytes per table entry, and
+// buys every repeat between 96 and 128 bases.
 //
 // Words are ordered least-significant first, and the most recently appended
 // base occupies the lowest bits. Because 64 is even, no 2-bit group ever
@@ -14,20 +19,23 @@
 
 namespace ts {
 
-constexpr int kKmerWords = 3;
+constexpr int kKmerWords = 4;
 constexpr int kKmerBits = 64 * kKmerWords;
 constexpr int kMaxK = kKmerBits / 2;   // 96
 
 struct Kmer {
     uint64_t w[kKmerWords];
 
-    Kmer() : w{0, 0, 0} {}
+    Kmer() : w{} {}
     // Implicit so `Kmer x = 0;` and rolling-window resets read naturally; the
     // value is taken as the low word, matching the packed layout.
-    Kmer(uint64_t v) : w{v, 0, 0} {}
+    Kmer(uint64_t v) : w{v} {}
 
     bool operator==(const Kmer& o) const {
-        return w[0] == o.w[0] && w[1] == o.w[1] && w[2] == o.w[2];
+        for (int i = 0; i < kKmerWords; ++i) {
+            if (w[i] != o.w[i]) return false;
+        }
+        return true;
     }
     bool operator!=(const Kmer& o) const { return !(*this == o); }
     bool operator<(const Kmer& o) const {
@@ -54,17 +62,15 @@ inline char codeBase(int c) { return "ACGT"[c & 3]; }
 
 inline Kmer shiftLeft2(Kmer a) {
     Kmer r;
-    r.w[2] = (a.w[2] << 2) | (a.w[1] >> 62);
-    r.w[1] = (a.w[1] << 2) | (a.w[0] >> 62);
+    for (int i = kKmerWords - 1; i > 0; --i) r.w[i] = (a.w[i] << 2) | (a.w[i - 1] >> 62);
     r.w[0] = a.w[0] << 2;
     return r;
 }
 
 inline Kmer shiftRight2(Kmer a) {
     Kmer r;
-    r.w[0] = (a.w[0] >> 2) | (a.w[1] << 62);
-    r.w[1] = (a.w[1] >> 2) | (a.w[2] << 62);
-    r.w[2] = a.w[2] >> 2;
+    for (int i = 0; i < kKmerWords - 1; ++i) r.w[i] = (a.w[i] >> 2) | (a.w[i + 1] << 62);
+    r.w[kKmerWords - 1] = a.w[kKmerWords - 1] >> 2;
     return r;
 }
 
@@ -188,7 +194,9 @@ inline uint64_t mix64(uint64_t x) {
 }
 
 inline uint64_t kmerHash(Kmer km) {
-    return mix64(km.w[0] ^ mix64(km.w[1] ^ mix64(km.w[2])));
+    uint64_t h = 0;
+    for (int i = kKmerWords - 1; i >= 0; --i) h = mix64(km.w[i] ^ h);
+    return h;
 }
 
 // Standard containers keyed by Kmer need this explicitly.

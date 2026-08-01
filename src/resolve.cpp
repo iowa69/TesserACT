@@ -12,6 +12,12 @@ namespace ts {
 
 namespace {
 
+// The distance enumeration may search when it is only establishing which
+// continuations exist. Repeats in an enterobacterial genome run to a few
+// kilobases (IS elements ~0.8-2.5 kb, rRNA operons ~5 kb); this covers them
+// without letting the search wander across the chromosome.
+constexpr double kTopologyReach = 6000.0;
+
 constexpr int kMaxProbes = 12;        // k-mer lookups per read before deciding
 constexpr int kMinVotes = 2;
 constexpr int kAnchorK = 31;
@@ -312,6 +318,23 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     constexpr double kForcedReachFactor = 1.5;
     constexpr size_t kMaxCandidates = 64;
 
+    // How far enumeration may look when it is only asking *what continuations
+    // exist*, as opposed to asking the read pairs to choose between them.
+    //
+    // Tying the search itself to fragment reach conflates the two. On libraries
+    // whose mates overlap -- most of the closed-reference panel, where the
+    // fragment is ~230 bp against ~190 bp reads -- reach is a few hundred bases,
+    // so any repeat longer than that ends the search before a single candidate
+    // is generated: on one isolate 2,620 of 3,288 chain ends returned no
+    // candidate at all, against 269 successful joins. The paired evidence never
+    // got the chance to be insufficient; it was never consulted.
+    //
+    // Searching further does not weaken any decision. A candidate beyond
+    // fragment reach collects no paired support and so cannot win a contested
+    // choice -- it can only be taken when it is the sole way through, which is
+    // a statement about the graph's topology that needs no reads to back it.
+    const double searchBudget = std::max(reach, kTopologyReach);
+
     auto flip = [](uint64_t oid) { return orientedId(unitigOf(oid), 1 - orientOf(oid)); };
     auto addedLen = [&](uint64_t oid) { return g_.nodes[unitigOf(oid)].seq.size() - ov; };
 
@@ -341,7 +364,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             // little past what a fragment can span, but not far: measured on the
             // benchmark panel, letting it run unbounded bought only a lower
             // contig count and cost a misassembly on K. pneumoniae.
-            const double budget = f.forced ? reach * kForcedReachFactor : reach;
+            const double budget = f.forced ? searchBudget * kForcedReachFactor : searchBudget;
             if (static_cast<double>(f.len) > budget) continue;
             const auto& exits = g_.exits(tu, orientOf(tail));
             for (const Link& l : exits) {

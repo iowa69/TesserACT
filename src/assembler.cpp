@@ -79,22 +79,39 @@ Assembler::Assembler(AssemblyOptions opt) : opt_(std::move(opt)) {
 
 std::vector<int> Assembler::resolveKLadder() const {
     if (!opt_.kValues.empty()) return opt_.kValues;
-    const int rl = static_cast<int>(reads_.maxReadLength());
+
+    // Mean, not maximum. Many public runs arrive already trimmed by the
+    // submitter, so their reads are variable-length: one 301 bp survivor in a
+    // library whose reads average 190 would otherwise pick a ladder most of
+    // the reads are too short to contribute a single k-mer to. The mean is
+    // what determines how much k-mer each read still carries at the top rung.
+    const int rl = reads_.size() ? static_cast<int>(reads_.totalBases() / reads_.size())
+                                 : static_cast<int>(reads_.maxReadLength());
 
     // Each rung must stay comfortably below the read length, or too few k-mers
     // per read survive to keep the graph connected.
     if (opt_.mode == RunMode::Fast) {
+        if (rl >= 200) return {21, 55, 99};
         if (rl >= 140) return {21, 55, 77};
         if (rl >= 100) return {21, 45, 55};
         if (rl >= 70)  return {21, 45};
         return {15, 21};
     }
     if (opt_.mode == RunMode::Careful) {
+        if (rl >= 200) return {21, 33, 45, 55, 67, 77, 87, 99, 111, 127};
+        if (rl >= 165) return {21, 33, 45, 55, 67, 77, 87, 99, 111};
         if (rl >= 140) return {21, 33, 45, 55, 67, 77, 87, 95};
         if (rl >= 100) return {21, 31, 41, 51, 61, 71};
         if (rl >= 70)  return {17, 25, 33, 41, 49};
         return {15, 21, 27};
     }
+    // 2x250 libraries carry far more k-mer per read than 2x150, so the top
+    // rung climbs with the read length rather than stopping at 95. The rung
+    // count stays at five: on the closed-reference panel, raising the top from
+    // 95 to 127 took unitig N50 from 142,604 to 207,162 and mismatches from
+    // 2.78 to 0.52 per 100 kbp, while a sixth rung only bought runtime.
+    if (rl >= 200) return {21, 33, 55, 77, 127};
+    if (rl >= 165) return {21, 33, 55, 77, 115};
     if (rl >= 140) return {21, 33, 55, 77, 95};
     if (rl >= 100) return {21, 33, 45, 55};
     if (rl >= 70)  return {21, 33, 45};
