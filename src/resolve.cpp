@@ -5,6 +5,7 @@
 #include <cmath>
 #include <cstdio>
 #include <mutex>
+#include <cstdlib>
 #include <thread>
 
 namespace ts {
@@ -209,6 +210,12 @@ void PairedResolver::buildSupport() {
 
     std::vector<int> all;
     for (auto& s : insertSamples) all.insert(all.end(), s.begin(), s.end());
+    for (int v : all) {
+        if (v < 0) continue;
+        const size_t bin = static_cast<size_t>(v);
+        if (bin >= insertHistogram_.size()) insertHistogram_.resize(bin + 1, 0);
+        ++insertHistogram_[bin];
+    }
     if (all.size() >= 1000) {
         std::sort(all.begin(), all.end());
         // Trim the tails before fitting: chimeric pairs and mismapped reads sit
@@ -279,6 +286,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
     const double reach = insert_.usable ? insert_.maxPlausible : 1000.0;
     constexpr size_t kMaxNodes = 10;
+    constexpr double kForcedReachFactor = 1.5;
     constexpr size_t kMaxCandidates = 64;
 
     auto flip = [](uint64_t oid) { return orientedId(unitigOf(oid), 1 - orientOf(oid)); };
@@ -287,12 +295,17 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // Every way out of `from` that terminates on an anchorable unitig within
     // fragment reach; intermediate nodes are unanchorable repeats.
     auto enumerate = [&](uint64_t from, std::vector<std::vector<uint64_t>>& out) {
-        struct Frame { std::vector<uint64_t> nodes; size_t len; };
+        // `forced` marks a path that has never had an alternative. Paired reads
+        // cannot vouch for anything beyond one fragment length, but where the
+        // graph offers no other way through, length is irrelevant -- so a forced
+        // path may run past `reach` and cross repeats no pair could span.
+        struct Frame { std::vector<uint64_t> nodes; size_t len; bool forced; };
         std::vector<Frame> work;
-        for (const Link& l : g_.exits(unitigOf(from), orientOf(from))) {
+        const auto& firstExits = g_.exits(unitigOf(from), orientOf(from));
+        for (const Link& l : firstExits) {
             if (g_.nodes[l.to].deleted) continue;
             work.push_back({{orientedId(l.to, UnitigGraph::enterOrient(l))},
-                            g_.nodes[l.to].seq.size() - ov});
+                            g_.nodes[l.to].seq.size() - ov, firstExits.size() == 1});
         }
         while (!work.empty() && out.size() < kMaxCandidates) {
             Frame f = std::move(work.back());
@@ -300,8 +313,15 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             const uint64_t tail = f.nodes.back();
             const uint32_t tu = unitigOf(tail);
             if (anchorable(tu)) { out.push_back(std::move(f.nodes)); continue; }
-            if (f.nodes.size() >= kMaxNodes || static_cast<double>(f.len) > reach) continue;
-            for (const Link& l : g_.exits(tu, orientOf(tail))) {
+            if (f.nodes.size() >= kMaxNodes) continue;
+            // A forced path (one the graph offered no alternative to) may run a
+            // little past what a fragment can span, but not far: measured on the
+            // benchmark panel, letting it run unbounded bought only a lower
+            // contig count and cost a misassembly on K. pneumoniae.
+            const double budget = f.forced ? reach * kForcedReachFactor : reach;
+            if (static_cast<double>(f.len) > budget) continue;
+            const auto& exits = g_.exits(tu, orientOf(tail));
+            for (const Link& l : exits) {
                 if (g_.nodes[l.to].deleted) continue;
                 const uint64_t nxt = orientedId(l.to, UnitigGraph::enterOrient(l));
                 bool seen = false;
@@ -310,6 +330,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 Frame g2 = f;
                 g2.nodes.push_back(nxt);
                 g2.len += g_.nodes[l.to].seq.size() - ov;
+                g2.forced = f.forced && exits.size() == 1;
                 work.push_back(std::move(g2));
             }
         }
@@ -347,6 +368,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
     // Best continuation off one end of a chain, scored with every member of
     // that chain that still lies within fragment reach of the boundary.
+    long long dbgNoCand = 0, dbgLowSupport = 0, dbgTie = 0, dbgMidChain = 0, dbgOk = 0;
+    long long dbgTieBest = 0, dbgTieSecond = 0;
+
     auto bestContinuation = [&](uint32_t c, int end) {
         Cont result;
         const std::vector<uint64_t>& ch = chains[c];
@@ -370,7 +394,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
         std::vector<std::vector<uint64_t>> cands;
         enumerate(tailFirst.back(), cands);
-        if (cands.empty()) return result;
+        if (cands.empty()) { ++dbgNoCand; return result; }
 
         double best = -1, second = -1;
         size_t pick = 0;
@@ -391,10 +415,15 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         }
 
         if (cands.size() > 1) {
-            if (best < minLinkSupport_) return result;
+            if (best < minLinkSupport_) { ++dbgLowSupport; return result; }
             // A near tie means the repeat is genuinely unresolved; guessing
             // would manufacture a misassembly.
-            if (second > 0 && best < tieRatio_ * second) return result;
+            if (second > 0 && best < tieRatio_ * second) {
+                ++dbgTie;
+                dbgTieBest += static_cast<long long>(best);
+                dbgTieSecond += static_cast<long long>(second);
+                return result;
+            }
         }
 
         // The terminal has to be an *end* of its chain; landing in the middle
@@ -409,7 +438,8 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
 
         if (storedOrient == orientOf(terminal) && j == 0) result.endB = 0;
         else if (storedOrient != orientOf(terminal) && j + 1 == other.size()) result.endB = 1;
-        else return result;
+        else { ++dbgMidChain; return result; }
+        ++dbgOk;
 
         result.chainB = cb;
         result.connector.assign(cands[pick].begin(), cands[pick].end() - 1);
@@ -465,6 +495,15 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             }
         }
         if (joins == 0) break;
+    }
+
+    if (getenv("TESSERA_DEBUG_RESOLVE")) {
+        std::fprintf(stderr,
+                     "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
+                     "low-support=%lld tie=%lld mid-chain=%lld  (tie mean best=%.1f second=%.1f)\n",
+                     dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain,
+                     dbgTie ? static_cast<double>(dbgTieBest) / static_cast<double>(dbgTie) : 0.0,
+                     dbgTie ? static_cast<double>(dbgTieSecond) / static_cast<double>(dbgTie) : 0.0);
     }
 
     // ---- scaffolding -----------------------------------------------------
@@ -564,11 +603,14 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     std::vector<char> placed(n, 0);
     std::vector<char> done(nc, 0);
 
+    ResolvedPath curPath;
     auto renderChain = [&](uint32_t c, bool flipped, std::string& seq,
                            double& covWeighted, size_t& covLen) {
         const size_t sz = chains[c].size();
         for (size_t i = 0; i < sz; ++i) {
             const uint64_t oid = flipped ? flip(chains[c][sz - 1 - i]) : chains[c][i];
+            curPath.oriented.push_back(oid);
+            curPath.gaps.push_back(0);
             const uint32_t u = unitigOf(oid);
             const std::string piece = g_.oriented(u, orientOf(oid));
             if (seq.empty()) seq = piece;
@@ -588,15 +630,20 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         std::string seq;
         double covWeighted = 0;
         size_t covLen = 0;
+        curPath = ResolvedPath();
         uint32_t cur = c;
         // Entering through the port that has no join leaves the other free to
         // continue; a chain joined only at port 1 is therefore used forward.
         int inPort = (joinTo[c * 2 + 0] == UINT32_MAX) ? 0 : 1;
         size_t steps = 0;
 
+        int pendingGap = 0;
         while (true) {
             done[cur] = 1;
+            const size_t before = curPath.oriented.size();
             renderChain(cur, inPort == 1, seq, covWeighted, covLen);
+            if (pendingGap > 0 && before < curPath.gaps.size()) curPath.gaps[before] = pendingGap;
+            pendingGap = 0;
             const uint32_t outPort = cur * 2 + (inPort == 0 ? 1 : 0);
             const uint32_t partner = joinTo[outPort];
             if (partner == UINT32_MAX || ++steps > nc) break;
@@ -605,6 +652,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             seq.append(static_cast<size_t>(joinGap[outPort]), 'N');
             stats_.gapBases += static_cast<size_t>(joinGap[outPort]);
             ++stats_.scaffoldJoins;
+            pendingGap = joinGap[outPort];
             cur = nextC;
             inPort = static_cast<int>(partner % 2);
         }
@@ -612,6 +660,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         if (seq.empty()) continue;
         contigs.push_back(std::move(seq));
         covs.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0);
+        paths_.push_back(curPath);
         ++stats_.pathsBuilt;
     }
 
@@ -622,10 +671,12 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         double covWeighted = 0;
         size_t covLen = 0;
         done[c] = 1;
+        curPath = ResolvedPath();
         renderChain(c, false, seq, covWeighted, covLen);
         if (seq.empty()) continue;
         contigs.push_back(std::move(seq));
         covs.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0);
+        paths_.push_back(curPath);
         ++stats_.pathsBuilt;
     }
 
@@ -634,6 +685,10 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         if (g_.nodes[u].deleted || placed[u]) continue;
         contigs.push_back(g_.nodes[u].seq);
         covs.push_back(g_.nodes[u].coverage);
+        ResolvedPath solo;
+        solo.oriented.push_back(orientedId(u, 0));
+        solo.gaps.push_back(0);
+        paths_.push_back(solo);
     }
 }
 

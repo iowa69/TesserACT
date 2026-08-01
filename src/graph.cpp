@@ -492,32 +492,45 @@ size_t UnitigGraph::removeIsolated(double covThreshold, size_t maxLen) {
 }
 
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
-                           double bubbleCoverageLimit) {
+                           double bubbleCoverageLimit, int maxRounds,
+                           std::vector<SimplifyRoundStats>* rounds) {
     const size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
     const size_t bubbleLen = static_cast<size_t>(std::max(3 * k_, 2 * readLength));
 
-    for (int round = 0; round < 12; ++round) {
+    for (int round = 0; round < maxRounds; ++round) {
         // Aggressiveness ramps up across rounds: early passes only remove the
         // obviously spurious, so genuine low-coverage sequence survives long
         // enough to be joined into something defensible.
-        const double ramp = 0.4 + 0.6 * static_cast<double>(round) / 11.0;
-        size_t changes = 0;
+        const double ramp = 0.4 + 0.6 * static_cast<double>(round) /
+                                  static_cast<double>(std::max(1, maxRounds - 1));
+        SimplifyRoundStats st;
+        st.round = round + 1;
 
-        changes += removeTips(tipLen, 0.35 * ramp + 0.05);
-        compact();
+        st.tipsRemoved = removeTips(tipLen, 0.35 * ramp + 0.05);
+        st.merged += compact();
         // A true error bubble sits well below even the half-depth a two-copy
         // split would give, which is what separates it from real divergence.
-        changes += popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
-        compact();
-        changes += removeErroneousConnections(meanCoverage * 0.12 * ramp,
-                                              static_cast<size_t>(2 * k_));
-        compact();
-        changes += removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
-        compact();
+        st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
+        st.merged += compact();
+        st.chimerasRemoved = removeErroneousConnections(meanCoverage * 0.12 * ramp,
+                                                        static_cast<size_t>(2 * k_));
+        st.merged += compact();
+        st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
+        st.merged += compact();
+
+        st.unitigs = liveCount();
+        st.n50 = n50();
+        st.totalLength = totalLength();
+        const size_t changes = st.tipsRemoved + st.bubblesPopped +
+                               st.chimerasRemoved + st.isolatedRemoved;
+        if (rounds) rounds->push_back(st);
 
         if (verbose) {
-            std::fprintf(stderr, "    round %-2d changes=%-8zu unitigs=%-8zu N50=%zu\n",
-                         round + 1, changes, liveCount(), n50());
+            std::fprintf(stderr,
+                         "    round %-2d tips=%-6zu bubbles=%-5zu chimeras=%-5zu isolated=%-5zu"
+                         "  unitigs=%-8zu N50=%zu\n",
+                         round + 1, st.tipsRemoved, st.bubblesPopped, st.chimerasRemoved,
+                         st.isolatedRemoved, st.unitigs, st.n50);
         }
         if (changes == 0) break;
     }

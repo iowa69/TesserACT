@@ -38,6 +38,13 @@ struct InsertModel {
     bool usable = false;
 };
 
+// One output contig expressed as a walk over oriented unitigs, so the GFA and
+// the report can show which graph nodes each contig actually traverses.
+struct ResolvedPath {
+    std::vector<uint64_t> oriented;   // (unitig << 1) | orientation
+    std::vector<int> gaps;            // gaps[i] = N-gap inserted before element i
+};
+
 struct ResolveStats {
     size_t readsMapped = 0;
     size_t pairsLinking = 0;
@@ -69,6 +76,12 @@ public:
     void setScaffolding(bool on) { scaffolding_ = on; }
 
     const ResolveStats& stats() const { return stats_; }
+
+    // How each emitted contig walks the graph, in output order.
+    const std::vector<ResolvedPath>& paths() const { return paths_; }
+
+    // Fragment-length histogram observed from same-unitig pairs.
+    const std::vector<uint64_t>& insertHistogram() const { return insertHistogram_; }
 
 private:
     // Oriented unitig identity, packed as (unitig << 1 | orientation).
@@ -107,6 +120,8 @@ private:
     std::unordered_map<uint64_t, std::unordered_map<uint64_t, SpanList>> support_;
 
     InsertModel insert_;
+    std::vector<ResolvedPath> paths_;
+    std::vector<uint64_t> insertHistogram_;
     ResolveStats stats_;
     double medianCoverage_ = 0;
     int minLinkSupport_;

@@ -1,5 +1,7 @@
 #include "counter.h"
 
+#include "util.h"
+
 #include <algorithm>
 #include <atomic>
 #include <mutex>
@@ -140,6 +142,7 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
     constexpr size_t kBlock = 1024;
     const size_t nBlocks = (nReads + kBlock - 1) / kBlock;
     std::atomic<size_t> nextBlock{0};
+    std::atomic<bool> stop{false};
     std::atomic<size_t> nextExtra{0};
     std::atomic<uint64_t> totalKmers{0};
 
@@ -176,6 +179,13 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
         for (;;) {
             const size_t b = nextBlock.fetch_add(1, std::memory_order_relaxed);
             if (b >= nBlocks) break;
+            // Checked once per block rather than per k-mer: reading /proc is a
+            // syscall, and a block is large enough that overshoot is bounded.
+            if (memoryLimit_ > 0 && !stop.load(std::memory_order_relaxed)) {
+                const long long rss = util::currentMemoryBytes();
+                if (rss > 0 && rss > memoryLimit_) stop.store(true, std::memory_order_relaxed);
+            }
+            if (stop.load(std::memory_order_relaxed)) break;
             const size_t begin = b * kBlock;
             const size_t end = std::min(nReads, begin + kBlock);
             for (size_t r = begin; r < end; ++r) {
@@ -183,6 +193,7 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
             }
         }
         for (size_t s = 0; s < nShards; ++s) flushShard(s);
+        if (stop.load(std::memory_order_relaxed)) return;
 
         // Contigs carried over from a smaller k are trusted evidence, so each of
         // their k-mers is worth `extraWeight` observations.
@@ -215,11 +226,13 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
 
     if (nThreads <= 1) {
         worker();
+        if (stop.load(std::memory_order_relaxed)) exceeded_ = true;
     } else {
         std::vector<std::thread> pool;
         pool.reserve(nThreads);
         for (size_t t = 0; t < nThreads; ++t) pool.emplace_back(worker);
         for (auto& th : pool) th.join();
+        if (stop.load(std::memory_order_relaxed)) exceeded_ = true;
     }
 
     uint64_t distinct = 0;

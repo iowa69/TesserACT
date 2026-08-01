@@ -35,6 +35,19 @@ struct Unitig {
 
 std::string reverseComplement(const std::string& s);
 
+// What one pass of the simplification schedule changed, for the run report.
+struct SimplifyRoundStats {
+    int round = 0;
+    size_t tipsRemoved = 0;
+    size_t bubblesPopped = 0;
+    size_t chimerasRemoved = 0;
+    size_t isolatedRemoved = 0;
+    size_t merged = 0;
+    size_t unitigs = 0;
+    size_t n50 = 0;
+    size_t totalLength = 0;
+};
+
 class UnitigGraph {
 public:
     UnitigGraph() = default;
@@ -78,7 +91,8 @@ public:
     // bubble side may be discarded; raising it collapses diverged repeat
     // copies too, which buys contiguity at the risk of misassembly.
     void simplify(double meanCoverage, int readLength, bool verbose,
-                  double bubbleCoverageLimit = 0.35);
+                  double bubbleCoverageLimit = 0.35, int maxRounds = 12,
+                  std::vector<SimplifyRoundStats>* rounds = nullptr);
 
     // ---- traversal helpers ----
     // Sequence of `u` in the given orientation (0 = forward, 1 = reverse).

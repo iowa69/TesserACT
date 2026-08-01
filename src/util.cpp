@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <sys/resource.h>
+#include <unistd.h>
 #include <sys/stat.h>
 
 namespace ts {
@@ -67,6 +68,24 @@ std::vector<std::string> split(const std::string& s, char sep) {
 std::string dirname(const std::string& path) {
     size_t pos = path.find_last_of('/');
     return pos == std::string::npos ? "." : path.substr(0, pos);
+}
+
+long long currentMemoryBytes() {
+    // statm reports pages; field 2 is resident set size.
+    std::FILE* f = std::fopen("/proc/self/statm", "r");
+    if (!f) return 0;
+    long long total = 0, rss = 0;
+    const int n = std::fscanf(f, "%lld %lld", &total, &rss);
+    std::fclose(f);
+    if (n != 2) return 0;
+    return rss * static_cast<long long>(::sysconf(_SC_PAGESIZE));
+}
+
+long long totalMemoryBytes() {
+    const long long pages = ::sysconf(_SC_PHYS_PAGES);
+    const long long pageSize = ::sysconf(_SC_PAGESIZE);
+    if (pages <= 0 || pageSize <= 0) return 0;
+    return pages * pageSize;
 }
 
 long long peakMemoryBytes() {

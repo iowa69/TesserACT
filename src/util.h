@@ -29,5 +29,11 @@ std::string dirname(const std::string& path);
 // Peak resident set size in bytes, or 0 when unavailable.
 long long peakMemoryBytes();
 
+// Current resident set size in bytes, or 0 when unavailable.
+long long currentMemoryBytes();
+
+// Total physical RAM in bytes, or 0 when unavailable.
+long long totalMemoryBytes();
+
 }  // namespace util
 }  // namespace ts

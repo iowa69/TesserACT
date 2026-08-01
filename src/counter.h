@@ -79,6 +79,11 @@ struct CountingStats {
 class KmerCounter {
 public:
     KmerCounter(int k, int threads);
+
+    // Abort counting if resident memory exceeds this many bytes (0 = no limit).
+    // Counting is where memory peaks, so this is the only place worth guarding.
+    void setMemoryLimit(long long bytes) { memoryLimit_ = bytes; }
+    bool exceededMemory() const { return exceeded_; }
     // Declared here and defaulted in the .cpp so `Shard` may stay incomplete in
     // every other translation unit.
     ~KmerCounter();
@@ -104,6 +109,8 @@ private:
     int threads_;
     std::vector<std::unique_ptr<Shard>> shards_;
     CountingStats stats_;
+    long long memoryLimit_ = 0;
+    bool exceeded_ = false;
 };
 
 }  // namespace ts

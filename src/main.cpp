@@ -9,7 +9,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.0.0";
+constexpr const char* kVersion = "1.1.0";
 
 void usage() {
     std::printf(
@@ -30,14 +30,27 @@ void usage() {
         "  -o, --out DIR           output directory (default: tessera_out)\n"
         "      --min-contig N      minimum contig length to report (default: 2*k)\n"
         "\n"
+        "MODES\n"
+        "      --mode NAME         fast | standard (default) | careful | aggressive\n"
+        "                          fast       fewer k values, no polishing\n"
+        "                          standard   balanced; what the benchmarks use\n"
+        "                          careful    denser k ladder, stricter joins, 2 polish passes\n"
+        "                          aggressive collapse diverged repeats for maximum contiguity\n"
+        "\n"
+        "OUTPUT FILES\n"
+        "      --no-gfa            skip assembly_graph.gfa\n"
+        "      --no-html           skip report.html (report.json is always written)\n"
+        "      --unitigs           also write unitigs.fasta (pre-resolution graph)\n"
+        "\n"
         "ASSEMBLY\n"
         "  -k, --kmers LIST        comma-separated k values, e.g. 21,33,55,77\n"
         "                          (default: chosen from the read length; max 96)\n"
         "  -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)\n"
         "      --min-link N        paired reads needed to trust a join (default: 2)\n"
         "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)\n"
-        "      --aggressive        also collapse diverged repeat copies: more\n"
-        "                          contiguity, but risks a misassembly per genome\n"
+        "      --aggressive        alias for --mode aggressive\n"
+        "      --simplify-rounds N max graph simplification passes per k\n"
+        "      --polish-passes N   consensus polishing passes (0 disables)\n"
         "      --no-correct        skip read error correction\n"
         "      --no-resolve        skip paired-end repeat resolution\n"
         "      --no-scaffold       skip scaffolding\n"
@@ -45,6 +58,7 @@ void usage() {
         "\n"
         "GENERAL\n"
         "  -t, --threads N         worker threads (default: all cores)\n"
+        "      --max-memory GB     abort cleanly above this much RAM (default: 80%% of total)\n"
         "  -q, --quiet             suppress progress output\n"
         "  -v, --version           print version\n"
         "  -h, --help              print this message\n"
@@ -99,11 +113,30 @@ int main(int argc, char** argv) {
                 }
                 opt.kValues.push_back(k);
             }
+            opt.userSetK = true;
         }
         else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(std::atoi(needValue(i, "-c")));
-        else if (a == "--min-link") opt.minLinkSupport = std::atoi(needValue(i, "--min-link"));
-        else if (a == "--tie-ratio") opt.tieRatio = std::atof(needValue(i, "--tie-ratio"));
-        else if (a == "--aggressive") opt.bubbleCoverageLimit = 10.0;
+        else if (a == "--min-link") { opt.minLinkSupport = std::atoi(needValue(i, "--min-link")); opt.userSetMinLink = true; }
+        else if (a == "--tie-ratio") { opt.tieRatio = std::atof(needValue(i, "--tie-ratio")); opt.userSetTie = true; }
+        else if (a == "--bubble-coverage") { opt.bubbleCoverageLimit = std::atof(needValue(i, "--bubble-coverage")); opt.userSetBubble = true; }
+        else if (a == "--simplify-rounds") { opt.simplifyRounds = std::atoi(needValue(i, "--simplify-rounds")); opt.userSetRounds = true; }
+        else if (a == "--polish-passes") { opt.polishPasses = std::atoi(needValue(i, "--polish-passes")); opt.userSetPolishPasses = true; }
+        else if (a == "--aggressive") opt.mode = RunMode::Aggressive;
+        else if (a == "--mode") {
+            const std::string m = needValue(i, "--mode");
+            if (!parseRunMode(m, opt.mode)) {
+                std::fprintf(stderr,
+                             "error: unknown mode '%s' (expected fast, standard, careful or aggressive)\n",
+                             m.c_str());
+                return 1;
+            }
+        }
+        else if (a == "--max-memory") {
+            opt.maxMemoryBytes = static_cast<long long>(std::atof(needValue(i, "--max-memory")) * 1073741824.0);
+        }
+        else if (a == "--no-gfa") opt.emitGfa = false;
+        else if (a == "--no-html") opt.emitHtml = false;
+        else if (a == "--unitigs") opt.emitUnitigs = true;
         else if (a == "--no-correct") opt.correctReads = false;
         else if (a == "--no-resolve") opt.resolveRepeats = false;
         else if (a == "--no-scaffold") opt.scaffold = false;
@@ -136,20 +169,38 @@ int main(int argc, char** argv) {
     }
 
     const AssemblyStats& st = asmb.stats();
+    const AssemblyReport& rep = asmb.report();
+    const int finalK = rep.iterations.empty() ? 0 : rep.iterations.back().k;
+
     std::fprintf(stderr,
                  "\n"
                  "  contigs      %s\n"
                  "  total length %s bp\n"
                  "  largest      %s bp\n"
-                 "  N50          %s bp\n"
-                 "  GC           %.2f%%\n"
-                 "  mean coverage %.1fx\n"
-                 "  elapsed      %.1fs   peak memory %s\n",
+                 "  N50          %s bp    N90 %s bp    L50 %s\n"
+                 "  GC           %.2f%%\n",
                  util::commify(static_cast<long long>(st.contigs)).c_str(),
                  util::commify(static_cast<long long>(st.totalLength)).c_str(),
                  util::commify(static_cast<long long>(st.largest)).c_str(),
                  util::commify(static_cast<long long>(st.n50)).c_str(),
-                 st.gcPercent, st.meanCoverage, st.seconds,
+                 util::commify(static_cast<long long>(rep.n90)).c_str(),
+                 util::commify(static_cast<long long>(rep.l50)).c_str(),
+                 st.gcPercent);
+
+    // k-mer depth and read depth differ by a factor of L/(L-k+1); reporting one
+    // as "coverage" invites reading it as the other.
+    std::fprintf(stderr, "  k-mer depth  %.1fx (k=%d)\n", st.meanCoverage, finalK);
+    if (rep.polishRun && rep.polish.meanDepth > 0) {
+        std::fprintf(stderr, "  read depth   %.1fx (measured by mapping reads back)\n",
+                     rep.polish.meanDepth);
+    }
+    if (rep.gapBases) {
+        std::fprintf(stderr, "  scaffold gaps %s joins spanning %s N bases\n",
+                     util::commify(static_cast<long long>(rep.resolve.scaffoldJoins)).c_str(),
+                     util::commify(static_cast<long long>(rep.gapBases)).c_str());
+    }
+    std::fprintf(stderr, "  elapsed      %.1fs   peak memory %s\n",
+                 st.seconds,
                  util::humanBytes(static_cast<double>(util::peakMemoryBytes())).c_str());
     return 0;
 }

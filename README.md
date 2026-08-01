@@ -126,6 +126,18 @@ rejected with a message on stderr and a non-zero exit.
 | Path | Contents |
 | --- | --- |
 | `OUTDIR/contigs.fasta` | the assembly, longest contig first, wrapped at 80 columns |
+| `OUTDIR/assembly_graph.gfa` | the simplified unitig graph in GFA1, with a `P` line per contig |
+| `OUTDIR/report.html` | self-contained run report (disable with `--no-html`) |
+| `OUTDIR/report.json` | the same data, machine-readable; always written |
+| `OUTDIR/unitigs.fasta` | pre-resolution unitigs, only with `--unitigs` |
+
+The GFA opens directly in [Bandage](https://rrwick.github.io/Bandage/). Segments
+are unitigs carrying a `dp:f:` depth tag, links carry the `(k-1)M` overlap the de
+Bruijn graph implies, and each contig appears as a `P` path recording exactly
+which oriented unitigs it walks through — so a contig that stops at a repeat is
+visible as a path ending at a branch. Bandage's own `info` on a real assembly
+reports every edge overlap as exactly `k-1` and an overlap-free total matching
+`contigs.fasta`, which is a useful independent check that the file is sound.
 
 Headers follow the SPAdes convention:
 
@@ -139,6 +151,32 @@ unitigs the contig was built from. If scaffolding joined two contigs, the gap
 appears as a run of `N`s inside the sequence. A run summary — contig count,
 total length, largest, N50, GC, mean coverage, elapsed time and peak RSS — is
 printed to stderr at the end.
+
+## Run modes
+
+`--mode` picks a preset; any flag you set explicitly still wins over it.
+
+| Mode | k ladder (150 bp reads) | Simplify rounds | Joins | Polish | Use when |
+| --- | --- | --- | --- | --- | --- |
+| `fast` | 21,55,77 | 6 | strict | off | triage, or a first look at many isolates |
+| `standard` | 21,33,55,77,95 | 12 | balanced | 1 pass | the default; what the benchmarks use |
+| `careful` | 21,33,45,55,67,77,87,95 | 24 | strictest | 2 passes | when a wrong join costs more than a break |
+| `aggressive` | 21,33,55,77,95 | 16 | loosest, collapses diverged repeats | 1 pass | maximum contiguity, accepting misassembly risk |
+
+Measured on the simulated *S. aureus* set (2.82 Mb, 100x, 5 threads), the modes
+trade off as intended:
+
+| Mode | Contigs | N50 | Wall clock |
+| --- | --- | --- | --- |
+| `fast` | 57 | 199,297 | 42 s |
+| `standard` | 43 | 294,925 | 78 s |
+| `careful` | 44 | 248,041 | 102 s |
+| `aggressive` | 36 | 304,753 | 67 s |
+
+`careful` deliberately lands below `standard` on N50: it refuses joins that
+`standard` accepts. `aggressive` buys its extra contiguity by collapsing
+diverged repeat copies, which on the benchmark panel costs about one misassembly
+per genome — see [Known issues](#known-issues).
 
 ## How it works
 
