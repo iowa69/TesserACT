@@ -161,6 +161,23 @@ will behave like is not knowable in advance, which is the argument for the
 cautious default and for keeping the aggressive mode available rather than
 tuning towards it.
 
+## Across the whole panel
+
+Batch 1 is scored against SPAdes; the rest measure whether the improvements hold
+outside the twenty isolates they were developed on. They do.
+
+| | batch 1 (20) | batches 3+ (127) |
+|---|---|---|
+| median contig NGA50 | 277,799 | 231,529 |
+| median genome fraction | 98.79% | 98.76% |
+| misassemblies per genome | 0.15 | 0.49 |
+| median mismatches / 100 kbp | 0.11 | 0.17 |
+
+Restricting to the 109 isolates whose reads and reference agree (under 1 kb
+unaligned) barely moves it: NGA50 234,832, genome fraction 98.78%, 0.15
+mismatches. So the defaults were not overfitted to batch 1 -- the numbers are
+the same shape on 127 isolates that had no part in choosing them.
+
 ## Reference-free cross-check
 
 QUAST asks how close an assembly is to the truth. Mapping the reads back asks
