@@ -234,6 +234,7 @@ measured against the closed reference on the isolate furthest behind
 | multi-k carry weight | 4 / 16 / 48: 472,260 / 451,613 / 414,314 |
 | merged fragments as spanning evidence | 361,437, worse than pairs alone |
 | unfair comparison | both have zero Ns, duplication ratio 1.000 |
+| circularity / layout constraint | built and measured; see below |
 
 The junctions SPAdes crosses and we do not are short branch nodes, 219-398 bp,
 in-degree two and out-degree two, whose sequence occurs exactly twice in the
@@ -242,20 +243,33 @@ genome. Every 40-mer of it is in our graph. No pair can span them -- read + node
 matching rule confirms there is nothing to weigh: the intended assignment scores
 zero.
 
-### The next thing to try, stated precisely
+### The circularity constraint: built, measured, and not the answer either
 
-Not "build exSPAnder". The specific global constraint that distinguishes the two
-matchings at a two-copy repeat is **circularity**. A bacterial chromosome is one
-circle; picking the wrong pairing at a 2-in/2-out repeat splits it into two
-disjoint cycles, while the right pairing leaves one. That is a property of the
-whole layout, not of any local evidence, which is exactly why no amount of
-paired-end scoring reaches it.
+A bacterial replicon is a circle, so picking the wrong pairing at a two-copy
+repeat splits it into two disjoint cycles while the right one leaves it whole.
+That is a property of the whole layout, which is exactly why local paired
+scoring cannot reach it -- so it looked like the missing ingredient.
 
-Concretely: build a graph whose nodes are resolved chains and whose edges are
-the candidate pairings at each ambiguous repeat, then choose the assignment
-minimising the number of connected components. With a handful of ambiguous
-repeats this is exhaustive; beyond that it is a matching problem. It is
-falsifiable on this panel -- the isolates have closed references, so the correct
-pairing is knowable -- and it should be validated for misassemblies before
-contiguity, since the whole value of the current defaults is three misassemblies
-across twenty isolates.
+It was implemented twice and neither version helps.
+
+The first was a standalone pass over unplaced 2-in/2-out repeat nodes, choosing
+the pairing that leaves fewer connected components. It never fired: of 58 nodes
+with the right shape, **none** had all four neighbours as free chain ends. The
+junctions are not single repeat nodes between two chains, they are small tangles
+of several short nodes, which is what path enumeration already walks through.
+
+The second put the same test inside candidate evaluation, as a last resort when
+no local evidence separates the options: prefer a candidate whose destination is
+not already in this chain's component, since taking one that is would close the
+replicon early. It fires eight times on the worst isolate and lifts joins from
+538 to 546 -- and changes NGA50 on **none** of four isolates measured, nor any
+misassembly count. The joins it makes are between small contigs that do not
+reach N50.
+
+Both are reverted. The constraint is real, but at these junctions the component
+counts of the two pairings are equal, because the four flanking chains are
+usually four distinct components at the time the decision is made. It only
+discriminates once enough of the layout is already fixed, which is a joint
+optimisation over all ambiguous repeats at once rather than the greedy,
+one-junction-at-a-time decision the resolver makes. That is the honest
+specification of the remaining work.
