@@ -377,88 +377,56 @@ set of closed genomes is enough.
 
 ## Benchmark
 
-The reference benchmark is *E. coli* K-12 MG1655 with simulated 2×150 bp
-Illumina reads at 100× and an insert size of 350 ± 50, assembled on 16 threads
-and evaluated with QUAST 5.x against the reference, alongside SPAdes 4.2.0 run
-with `--isolate`. Reported metrics are NGA50, contigs ≥ 500 bp, largest contig,
-genome fraction, misassemblies and local misassemblies, mismatches and indels
-per 100 kbp, duplication ratio, runtime and peak RAM.
+### Real isolates with closed reference genomes
 
-Results are being re-measured against the current code and will be inserted
-here:
+The primary benchmark is 40 *Klebsiella pneumoniae* clinical isolates for which
+both paired Illumina reads and a complete, closed reference genome are
+available. Every figure below is **contig level** — QUAST is run with `-s` and
+the `_broken` column is reported, which splits assemblies at runs of `N`, so
+scaffolded output is never compared against another tool's contigs. SPAdes
+4.2.0 was run on the same trimmed reads.
 
-### Setup
+The model column uses a panel chosen per isolate: the closed-genome corpus is
+mash-sketched once, the isolate's own draft assembly retrieves its 400 nearest
+neighbours, and the model is learned from those. The corpus is a separate
+collection from the isolates being tested.
 
-Four bacterial references spanning 33-57% GC and 2.8-5.7 Mb, including a
-multi-replicon isolate. Reads simulated with ART (`HS25`, 2x150 bp, 100x,
-fragment 350 +/- 50 bp). Both assemblers ran with 16 threads on the same
-machine; assemblies were scored with QUAST 5.x against the reference. SPAdes
-4.2.0 ran in `--isolate` mode, the setting its documentation recommends for
-high-coverage bacterial isolates. `SPAdes-scaf` is SPAdes' scaffold output,
-shown for completeness — the contig columns are the like-for-like comparison.
-
-### Contiguity — NGA50 (bp, higher is better)
-
-| Genome | Size | GC | tessera | SPAdes | SPAdes-scaf |
-| --- | --- | --- | --- | --- | --- |
-| *E. coli* K-12 MG1655 | 4.64 Mb | 50.8% | **133,088** | 133,048 | 176,676 |
-| *S. aureus* NCTC 8325 | 2.82 Mb | 32.9% | **294,925** | 247,992 | 448,842 |
-| *K. pneumoniae* HS11286 | 5.68 Mb | 57.1% | **214,410** | 181,239 | 192,569 |
-| *L. monocytogenes* EGD-e | 2.94 Mb | 38.0% | **496,800** | 496,766 | 496,766 |
-
-tessera's contigs beat SPAdes' contigs on all four genomes, and beat SPAdes'
-*scaffolds* on two of the four.
-
-### Correctness
-
-| Genome | Misassemblies | Mismatches /100 kbp | Indels /100 kbp | Duplication |
-| --- | --- | --- | --- | --- |
-| *E. coli* | 0 vs 0 | **0.04** vs 0.31 | 0.20 vs 0.18 | 1.000 vs 1.000 |
-| *S. aureus* | 0 vs 0 | **0.00** vs 0.32 | 0.22 vs 0.18 | 1.000 vs 1.000 |
-| *K. pneumoniae* | 0 vs 0 | **0.00** vs 0.09 | **0.05** vs 0.11 | 1.000 vs 1.000 |
-| *L. monocytogenes* | 0 vs 0 | **0.00** vs 0.03 | 0.00 vs 0.00 | 1.000 vs 1.000 |
-
-Values are tessera vs SPAdes contigs. Neither assembler misassembled anything on
-this panel. tessera's substitution rate is at or below SPAdes' everywhere and
-zero on three of the four genomes.
-
-### Completeness
-
-| Genome | Genome fraction % | Contigs >=500 bp | Largest contig |
+| Metric | tessera | tessera + model | SPAdes |
 | --- | --- | --- | --- |
-| *E. coli* | 98.313 vs 98.344 | **80** vs 83 | **327,141** vs 327,108 |
-| *S. aureus* | **98.913** vs 98.884 | 26 vs **24** | **995,613** vs 881,901 |
-| *K. pneumoniae* | **98.399** vs 98.360 | **72** vs 77 | **502,601** vs 326,874 |
-| *L. monocytogenes* | 98.959 vs **99.003** | **13** vs 14 | 887,084 vs **887,423** |
+| Median contig NGA50 | 266,188 | **345,075** | 319,598 |
+| Median NGA50 ratio to SPAdes | 0.89x | **1.03x** | 1.00x |
+| Isolates leading SPAdes on NGA50 | 6 / 40 | **24 / 40** | — |
+| Median contigs | 70 | **63** | 65 |
+| Total misassemblies | **13** | 26 | 26 |
+| Assemblies with zero misassemblies | **32** | **26** | 24 |
+| Median mismatches / 100 kbp | **0.14** | **0.19** | 0.44 |
+| Median genome fraction (%) | 98.83 | 98.84 | **98.95** |
 
-### Resources
+Read across rather than down. Without a model tessera is markedly more
+conservative than SPAdes: half the misassemblies, a third the mismatch rate,
+and 0.89x the contiguity — it declines joins it cannot support. With a model it
+leads on contiguity (1.03x, ahead on 24 of 40 isolates) and on per-base accuracy
+(more accurate on 28 of 40), matches on misassemblies while producing more
+error-free assemblies, and gives up about a tenth of a point of genome fraction.
 
-| Genome | Wall clock | Peak RAM |
-| --- | --- | --- |
-| *E. coli* | **68.7 s** vs 185.8 s | **2.59 GB** vs 6.04 GB |
-| *S. aureus* | **37.8 s** vs 109.5 s | **1.45 GB** vs 3.68 GB |
-| *K. pneumoniae* | **79.3 s** vs 248.7 s | **2.83 GB** vs 7.38 GB |
-| *L. monocytogenes* | **40.5 s** vs 109.8 s | **1.48 GB** vs 3.87 GB |
+The remaining genome-fraction gap is collapsed repeat copies: where a repeat
+family is emitted once rather than placed at each locus, the other copies count
+as uncovered.
 
-tessera is 2.7-3.1x faster and uses 2.3-2.6x less memory.
+### Why the model changes the numbers
 
-### Reproducing
+Fragments in these libraries average about 217 bp. The genomes carry a mean of
+355 repeat copies of 500 bp or longer — 8 rRNA operons of ~5.1 kb each, a median
+of 39 insertion sequences of 0.8–2 kb, and hundreds of shorter duplications. Not
+one of them can be spanned by a read pair, so at those junctions there is no
+paired evidence to weigh. The model supplies independent evidence there and
+nowhere else.
 
-```sh
-bash bench/simulate.sh        # fetch references, simulate reads
-bash bench/run_benchmark.sh   # assemble with both tools, score with QUAST
-```
+### Speed
 
-### Caveat
-
-These are simulated reads with uniform coverage and no adapter or contaminant
-content. Real data has coverage bias, chimeras and library artefacts that the
-two assemblers handle differently, so read this as a controlled comparison of
-assembly algorithms rather than a prediction of real-world performance.
-
-
-Note that `make test` does not reproduce these figures: it uses small synthetic
-genomes and checks correctness, not assembly performance.
+tessera runs roughly 4–5x faster than SPAdes on the same isolate and threads.
+Building a model from a few hundred genomes takes seconds; from a corpus of
+several thousand, about a minute, and a model is reusable across runs.
 
 ## Limitations
 
@@ -512,17 +480,23 @@ output is not surprising:
 ## Testing
 
 ```sh
-make check      # both suites
+make check      # unit, end-to-end and flag suites
 ```
 
 `make unittest` builds `tests/test_units.cpp` against the project objects and
-runs ~140,000 assertions covering k-mer encoding/decoding, reverse complement,
-canonical form and `pushFront` at k = 15, 31, 63, 77 and 95 — spanning all three
-64-bit words of the packed representation — the rolling
+runs 277,712 assertions covering k-mer encoding/decoding, reverse complement,
+canonical form and `pushFront` at k = 15, 31, 63, 77, 95 and 127 — spanning all
+four 64-bit words of the packed representation — the rolling
 forward/reverse-complement window, the open-addressed k-mer table (100,000
 random operations checked against `std::unordered_map`, which is what validates
 its backward-shift deletion), the banded sequence identity, and the graph's
 bidirected link invariant after every simplification operation.
+
+`make flagcheck` runs `tests/check_flags.sh`, which asserts that every flag the
+help text advertises parses and runs, that invalid values are rejected, that
+`--min-contig` demonstrably changes the output, that runs stay deterministic and
+thread-invariant, and that the model and insertion-sequence paths actually
+engage rather than being silently ignored.
 
 `make test` runs `tests/run_tests.sh`, which needs only bash and python3. It
 generates synthetic genomes and reads itself — no external read simulator — in a
