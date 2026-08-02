@@ -111,20 +111,51 @@ wrong as a general claim.
 * **`minLinkSupport` was a flat count.** Pairs crossing a junction scale with
   coverage, so 2 is a real bar at 40x and almost none at 100x. It became visible
   the moment better trimming raised the depth: contiguity rose and so did
-  long-range chimeric joins. Scaling it with the median unitig coverage took
-  misassemblies from 9 to 2 across the affected isolates for about 4% of NGA50.
+  long-range chimeric joins -- 4.4 Mb and 1.6 Mb inconsistencies inside single
+  contigs. It now scales with the median unitig coverage, and the factor was
+  measured across all twenty isolates rather than guessed:
+
+  | factor | median NGA50 | misassemblies |
+  |---|---|---|
+  | flat 2 | 303,624 | 12 |
+  | 0.07 | 291,265 | 7 |
+  | **0.10** | **277,799** | **3** |
+
+  The trade is close to linear, so this is a judgement rather than an optimum.
+  0.10 is the default because a chimeric contig is the worse error for what
+  these assemblies get used for -- it misplaces resistance genes relative to
+  their genomic context and corrupts cgMLST, while a shorter contig only costs
+  contiguity. The knob follows the run modes: careful 0.14, standard 0.10,
+  aggressive 0.05.
 
 ## Batch 1: the session's effect, contig level
 
 | | before | after |
 |---|---|---|
-| median NGA50 | 181,402 | **303,624** (+67%) |
-| median genome fraction | 98.67% | **98.81%** (up on 17/20) |
-| mismatches per 100 kbp | — | 0.04–0.49 |
+| median NGA50 | 181,402 | **277,799** (+53%) |
+| median genome fraction | 98.67% | **98.79%** |
+| median mismatches per 100 kbp | — | **0.11** |
+| misassemblies across 20 isolates | 10 | **3** |
 
-Seven isolates more than doubled: ERR11578909 +350%, ERR11578712 +321%,
-ERR11578757 +275%, ERR11579004 +232%, ERR11578413 +159%, ERR2631558 +133%,
-ERR11578347 +119%. One regressed: ERR11578571, −16%.
+Seven isolates more than doubled: ERR11578909 +317%, ERR11578757 +275%,
+ERR11578712 +255%, ERR11579004 +225%, ERR2631558 +133%, ERR11578347 +119%,
+ERR11578485 +106%. Two regressed: ERR11578571 −25% and ERR11578240 −4%, both
+under the depth-scaled support bar that took the panel from twelve
+misassemblies to three.
+
+## Reference-free cross-check
+
+QUAST asks how close an assembly is to the truth. Mapping the reads back asks
+how much of the evidence it accounts for, which is the question that survives
+when there is no closed reference. Both assemblers explain essentially all of
+it, so neither is discarding data:
+
+| isolate | tessera | SPAdes |
+|---|---|---|
+| ERR11578909 | 99.89% | 99.95% |
+| ERR11578837 | 99.87% | 99.94% |
+| ERR11578347 | 99.87% | 99.88% |
+| ERR11578086 | 99.94% | 99.95% |
 
 ## Runtime
 
