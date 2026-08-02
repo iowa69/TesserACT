@@ -904,8 +904,13 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         // Scaling with the observed depth keeps the evidence bar constant in
         // the units that matter, with a floor of 3 so a shallow library still
         // needs corroboration.
+        static const double scafOverride = [] {
+            const char* e = std::getenv("TESSERA_SCAF_SUPPORT");
+            return e ? std::atof(e) : 0.0;
+        }();
         const double minScaffoldSupport =
-            minScaffoldSupport_ > 0
+            scafOverride > 0 ? scafOverride
+            : minScaffoldSupport_ > 0
                 ? static_cast<double>(minScaffoldSupport_)
                 : std::min(10.0, std::max(3.0, medianCoverage_ * 0.06));
         for (uint32_t idx = 0; idx < best.size(); ++idx) {
@@ -943,6 +948,45 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         if (sz > 1) stats_.unitigsJoined += sz - 1;
     };
 
+    // A contig that stops because its only exit enters a multi-entrance repeat
+    // can absorb that repeat regardless of which copy it belongs to: every
+    // continuation the graph offers begins with the same sequence, so appending
+    // it decides nothing. This recovers the repeat copy at this locus -- which
+    // would otherwise be represented once and counted as missing everywhere
+    // else -- and lengthens the contig, without choosing between candidates.
+    static const double kPrefixBudget = [] {
+        const char* e = std::getenv("TESSERA_COMMON_PREFIX");
+        return e ? std::atof(e) : 0.0;
+    }();
+    auto extendByCommonPrefix = [&](uint64_t tail, std::string& seq,
+                                    double& covWeighted, size_t& covLen) {
+        if (kPrefixBudget <= 0) return;
+        size_t added = 0;
+        uint64_t cur = tail;
+        for (int step = 0; step < 8; ++step) {
+            const auto& exits = g_.exits(unitigOf(cur), orientOf(cur));
+            if (exits.size() != 1) break;                 // the choice is real
+            const Link& l = exits[0];
+            if (g_.nodes[l.to].deleted) break;
+            const uint64_t nxt = orientedId(l.to, UnitigGraph::enterOrient(l));
+            if (unitigOf(nxt) == unitigOf(cur)) break;    // self loop
+            const std::string piece = g_.oriented(unitigOf(nxt), orientOf(nxt));
+            if (piece.size() <= ov) break;
+            if (added + piece.size() - ov > static_cast<size_t>(kPrefixBudget)) break;
+            seq += piece.substr(ov);
+            covWeighted += g_.nodes[unitigOf(nxt)].coverage *
+                           static_cast<double>(piece.size() - ov);
+            covLen += piece.size() - ov;
+            added += piece.size() - ov;
+            curPath.oriented.push_back(nxt);
+            curPath.gaps.push_back(0);
+            cur = nxt;
+            // Stop once the sequence ahead forks: past that point the
+            // continuations no longer agree.
+            if (g_.exits(unitigOf(cur), orientOf(cur)).size() != 1) break;
+        }
+    };
+
     for (uint32_t c = 0; c < nc; ++c) {
         if (chains[c].empty() || done[c]) continue;
         // Start scaffolds at a free port so each path is walked from one end.
@@ -967,7 +1011,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             pendingGap = 0;
             const uint32_t outPort = cur * 2 + (inPort == 0 ? 1 : 0);
             const uint32_t partner = joinTo[outPort];
-            if (partner == UINT32_MAX || ++steps > nc) break;
+            if (partner == UINT32_MAX || ++steps > nc) {
+                if (!curPath.oriented.empty())
+                    extendByCommonPrefix(curPath.oriented.back(), seq, covWeighted, covLen);
+                break;
+            }
             const uint32_t nextC = partner / 2;
             if (done[nextC] || chains[nextC].empty()) break;
             seq.append(static_cast<size_t>(joinGap[outPort]), 'N');

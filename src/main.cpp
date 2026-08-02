@@ -67,6 +67,8 @@ void usage() {
         "  -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)\n"
         "      --min-link N        paired reads needed to trust a join (default: 2)\n"
         "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)\n"
+        "      --link-per-x F      paired support required per unit of median coverage\n"
+        "                          before a contested join is taken (default: 0.10)\n"
         "      --aggressive        alias for --mode aggressive\n"
         "      --simplify-rounds N max graph simplification passes per k\n"
         "      --polish-passes N   consensus polishing passes (0 disables)\n"
@@ -161,6 +163,10 @@ int main(int argc, char** argv) {
         }
         else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(std::atoi(needValue(i, "-c")));
         else if (a == "--min-link") { opt.minLinkSupport = std::atoi(needValue(i, "--min-link")); opt.userSetMinLink = true; }
+        else if (a == "--link-per-x") {
+            opt.linkSupportPerX = std::atof(needValue(i, "--link-per-x"));
+            opt.userSetLinkPerX = true;
+        }
         else if (a == "--tie-ratio") { opt.tieRatio = std::atof(needValue(i, "--tie-ratio")); opt.userSetTie = true; }
         else if (a == "--bubble-coverage") { opt.bubbleCoverageLimit = std::atof(needValue(i, "--bubble-coverage")); opt.userSetBubble = true; }
         else if (a == "--simplify-rounds") { opt.simplifyRounds = std::atoi(needValue(i, "--simplify-rounds")); opt.userSetRounds = true; }

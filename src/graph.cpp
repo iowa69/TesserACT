@@ -881,7 +881,12 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
                            std::vector<SimplifyRoundStats>* rounds) {
-    const size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
+    static const double tipLenFactor = [] {
+        const char* e = std::getenv("TESSERA_TIP_LEN_FACTOR");
+        return e ? std::atof(e) : 1.0;
+    }();
+    const size_t tipLen = static_cast<size_t>(
+        tipLenFactor * static_cast<double>(std::max(2 * k_, readLength)));
     const size_t bubbleLen = static_cast<size_t>(std::max(3 * k_, 2 * readLength));
 
     for (int round = 0; round < maxRounds; ++round) {
@@ -916,8 +921,16 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
             const char* e = std::getenv("TESSERA_CHIMERA_FACTOR");
             return e ? std::atof(e) : 0.12;
         }();
-        st.chimerasRemoved = removeErroneousConnections(meanCoverage * chimeraFactor * ramp,
-                                                        static_cast<size_t>(2 * k_));
+        // How long a low-coverage connector may be and still be treated as
+        // erroneous. Cutting long connectors risks severing real sequence, so
+        // the default is tight; the factor exists to measure that trade.
+        static const double ecLenFactor = [] {
+            const char* e = std::getenv("TESSERA_EC_LEN_FACTOR");
+            return e ? std::atof(e) : 1.0;
+        }();
+        st.chimerasRemoved = removeErroneousConnections(
+            meanCoverage * chimeraFactor * ramp,
+            static_cast<size_t>(ecLenFactor * static_cast<double>(2 * k_)));
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 
