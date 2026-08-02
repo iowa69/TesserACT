@@ -99,7 +99,7 @@ OUTPUT
 
 ASSEMBLY
   -k, --kmers LIST        comma-separated k values, e.g. 21,33,55,77
-                          (default: chosen from the read length; max 96)
+                          (default: chosen from the read length; max 128)
   -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)
       --min-link N        paired reads needed to trust a join (default: 2)
       --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)
@@ -110,6 +110,18 @@ ASSEMBLY
       --no-scaffold       skip scaffolding
       --no-polish         skip consensus polishing
 
+ORGANISM MODEL
+      --organism NAME     organism the reads come from (e.g. klebsiella)
+      --model FILE        genus model built by tessera-model, consulted only at
+                          junctions no fragment can span
+      --is-panel FILE     FASTA of known insertion sequences; contig ends lying
+                          inside one are left unjoined
+
+POLISHING
+      --map-polish NAME   polish contigs against a full read alignment:
+                          bowtie2 | bwa | none (default none)
+      --mapper-dir DIR    where to find the mapper binaries
+
 GENERAL
   -t, --threads N         worker threads (default: all cores)
   -q, --quiet             suppress progress output
@@ -118,7 +130,7 @@ GENERAL
 ```
 
 Every k given to `-k` must be odd (even k admits palindromic k-mers, which have
-no well-defined canonical form) and between 5 and 96. Invalid values are
+no well-defined canonical form) and between 5 and 128. Invalid values are
 rejected with a message on stderr and a non-zero exit.
 
 ## Output files
@@ -284,6 +296,85 @@ analysis built on the assembly. tessera reports a fragmented but correct
 assembly instead: an unresolved repeat costs contiguity — it shows up as extra
 contigs — rather than correctness.
 
+## Assembling with a genus model
+
+Paired reads settle a junction only when a fragment can span it. On a typical
+*K. pneumoniae* library the fragments run about 217 bp while the genome carries
+hundreds of repeat copies between 500 bp and 5 kb — rRNA operons, IS elements,
+duplicated loci. At those junctions there is no paired evidence to weigh, so an
+assembler either stops there or guesses from coverage.
+
+tessera takes a third route: ask closed genomes of the same organism. Core gene
+order is strongly conserved within a species, so a panel of finished genomes can
+say which flank normally follows which, and at what distance.
+
+### Building a model
+
+```sh
+tessera-model --organism klebsiella --out kleb.tsm \
+              --plasmids plasmid_db.fasta \
+              references/*.fasta
+```
+
+The builder samples canonical 31-mers at roughly 500 bp spacing, keeps those
+occurring exactly once in a replicon set — a marker seen twice names a repeat
+family, which is exactly what cannot settle a junction — and records how often
+each ordered pair of markers is observed across the panel, and at what median
+distance.
+
+Chromosome and plasmid are learned into separate tables. Core chromosomal gene
+order is close to a rule; plasmids are mosaic, recombine, and vary in copy
+number, so pooling the two would let plasmid rearrangements vote on chromosomal
+junctions. Inputs are classified by file name (`*_chr.fasta` versus
+`*_plasmid*`), and `--plasmids` takes a multi-record plasmid database in which
+each record is its own replicon.
+
+`--exclude ACC` omits an accession from the panel and records the omission
+inside the model file, so a run can prove which genomes it never saw. That is
+what makes a leave-one-out evaluation meaningful.
+
+### Assembling with it
+
+```sh
+tessera --organism klebsiella --model kleb.tsm --is-panel is_elements.fna \
+        -1 R1.fq.gz -2 R2.fq.gz -o out
+```
+
+The model stage runs after paired-end resolution, on exactly the junctions the
+reads could not reach, and in two passes: the chromosome first, then plasmids.
+A join is taken only when several independent marker pairs agree, a substantial
+share of the panel genomes carrying both markers support it, and the implied gap
+is consistent across them. The gap is sized from the panel's median distance,
+and the existing gap-closing stage then fills it with real read-derived
+sequence. Everything failing those tests is left broken.
+
+### Choosing a strain-relevant panel
+
+A whole-species panel describes what the organism does on average. Where the
+isolate carries a genuine rearrangement — an IS insertion, an inversion — the
+average is confidently wrong about it. Selecting the panel per isolate fixes
+that: sketch the closed-genome corpus once, sketch the isolate's own draft
+assembly, and learn only from its nearest neighbours, which in practice are its
+own sequence type and close relatives.
+
+```sh
+mash sketch -s 5000 -o corpus -l chromosome_list.txt
+mash dist corpus.msh draft.fasta | sort -k3,3g | head -400 | cut -f1 > near.txt
+tessera-model --organism klebsiella --out strain.tsm $(cat near.txt)
+```
+
+The number of neighbours is a dial rather than a constant: fewer makes the
+evidence more relevant to this strain, more makes it better supported.
+
+### The insertion-sequence panel
+
+`--is-panel` takes a FASTA of known insertion sequences. A contig ending inside
+a mobile element ends there *because* this isolate carries an element the panel
+need not have, so the panel's adjacency across that point describes a genome
+without the insertion. Those ends are left unjoined. A panel can be produced
+from any IS annotation — extracting the predicted element coordinates from a
+set of closed genomes is enough.
+
 ## Benchmark
 
 The reference benchmark is *E. coli* K-12 MG1655 with simulated 2×150 bp
@@ -371,13 +462,14 @@ genomes and checks correctness, not assembly performance.
 
 ## Limitations
 
-* **k is capped at 96.** k-mers are packed into three 64-bit words. SPAdes goes
-  to 127. In practice k=95 is past the point of diminishing returns for 150 bp
-  reads, but longer reads would benefit from more.
-* **Repeats longer than the fragment length cannot be resolved.** No paired-end
-  library can span them, and tessera deliberately leaves them unjoined rather
-  than guessing (see the tie-break discussion above). Longer inserts are the
-  only fix.
+* **k is capped at 128.** k-mers are packed into four 64-bit words. For 150 bp
+  reads the ladder tops out at 95; 2x250 libraries carry enough k-mer per read
+  to use 127, which is where the top rung goes automatically.
+* **Repeats longer than the fragment length cannot be resolved from the reads
+  alone.** No paired-end library can span them, and tessera leaves them unjoined
+  rather than guessing. Where a model of the organism is supplied it can settle
+  some of those junctions from independent evidence; without one, longer inserts
+  are the only fix.
 * **Scaffolding is paired-end only and conservative.** Gaps are sized from the
   fragment model and require mutually-best support from at least five pairs;
   there is no iterative gap closing, and no scaffolding across anything wider
@@ -393,29 +485,29 @@ genomes and checks correctness, not assembly performance.
 * **Single-machine, in-memory only.** No checkpointing, no resume, no
   distribution.
 
-## Known issues
+## Behaviour worth knowing
 
-These are real, observed behaviours of the current code, kept here rather than
-in the prose above so they are not mistaken for design:
+These are deliberate choices rather than accidents, described here so the
+output is not surprising:
 
-* **Erroneous-connection removal is length-limited to `2k`.** A low-coverage
-  chimeric connector longer than that survives the whole simplification schedule
-  and splits both components it touches. The threshold is deliberately tight —
-  cutting long connectors risks severing real sequence — but it is tighter than
-  the operation's description suggests.
-* **Bubble popping is deliberately restrained.** By default a bubble side is
-  only discarded when its coverage falls below 35% of the mean, which confines
-  the operation to sequencing-error bubbles. On the benchmark panel the bubbles
-  that survive the abundance cutoff are almost all genuinely diverged repeat
-  copies at comparable depth, so the default pops nothing there. `--aggressive`
-  lifts the limit and collapses them too. Measured on the panel, that raises
-  NGA50 substantially on two genomes (*E. coli* 133,088 to 174,375; *S. aureus*
-  294,925 to 304,753) but lowers it on a third (*K. pneumoniae* 214,410 to
-  203,855) and introduces one misassembly each on *E. coli* and *S. aureus*,
-  where the default has none anywhere. Contiguity is not worth a fused locus by
-  default, so it is opt-in.
-* **Only one library per run.** Passing `-1`/`-2` more than once overwrites the
-  earlier value rather than adding a second library.
+* **Erroneous-connection removal is length-limited.** Cutting long low-coverage
+  connectors risks severing real sequence, so the operation is confined to short
+  ones; a long chimeric connector is left in place and splits the components it
+  touches.
+* **Bubble popping is restrained by default.** A bubble side is discarded only
+  when its coverage falls well below the mean, which confines the operation to
+  sequencing-error bubbles. Bubbles between genuinely diverged repeat copies sit
+  at comparable depth and are kept, because collapsing them fuses distinct loci.
+  `--aggressive` lifts the limit and collapses them, trading that risk for
+  contiguity.
+* **The consensus polisher is a guard, not a corrector.** It requires
+  near-unanimity before rewriting a base, and on clean isolate data it is
+  expected to change nothing. Inside a repeat the pileup is fed by several
+  copies at once, so a simple majority would rewrite one copy into another.
+* **Alignment polishing is off by default** for the same reason, and uses a
+  0.99 agreement threshold when enabled.
+* **One library per run.** Passing `-1`/`-2` more than once replaces the earlier
+  value rather than adding a second library.
 
 ## Testing
 

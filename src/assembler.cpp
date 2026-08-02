@@ -424,6 +424,16 @@ bool Assembler::run(std::string& error) {
             std::fprintf(stderr, "      warning: %s\n", err.c_str());
         }
     }
+    if (!opt_.isPanelPath.empty() && !isPanel_.loaded()) {
+        std::string err;
+        if (!isPanel_.load(opt_.isPanelPath, err) && opt_.verbose) {
+            std::fprintf(stderr, "      warning: %s\n", err.c_str());
+        } else if (opt_.verbose) {
+            std::fprintf(stderr, "      insertion-sequence panel: %s copies, %s k-mers\n",
+                         util::commify(static_cast<long long>(isPanel_.copies())).c_str(),
+                         util::commify(static_cast<long long>(isPanel_.size())).c_str());
+        }
+    }
     if (organismModel_.loaded() && !seqs.empty()) {
         if (opt_.verbose) {
             std::fprintf(stderr, "[4b/7] %s model joining (%u genomes, %u plasmid sets)\n",
@@ -431,7 +441,8 @@ bool Assembler::run(std::string& error) {
                          organismModel_.genomes(Replicon::Chromosome),
                          organismModel_.genomes(Replicon::Plasmid));
         }
-        report_.organism = joinByModel(organismModel_, seqs, covs, finalK, opt_.verbose);
+        report_.organism = joinByModel(organismModel_, seqs, covs, finalK, opt_.verbose,
+                                      isPanel_.loaded() ? &isPanel_ : nullptr);
         report_.organismRun = true;
         report_.organismName = organismModel_.organism();
         report_.organismGenomes = organismModel_.genomes(Replicon::Chromosome);

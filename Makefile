@@ -26,7 +26,7 @@ CXXFLAGS  += $(CXXSTD) $(WARN) $(OPT) -pthread -MMD -MP
 LDFLAGS   += -pthread
 LDLIBS    += -lz
 
-.PHONY: all native debug asan clean install uninstall test unittest check model
+.PHONY: all native debug asan clean install uninstall test unittest check model flagcheck
 
 all: $(BIN) $(MODELBIN)
 
@@ -60,6 +60,9 @@ $(BUILDDIR):
 test: $(BIN)
 	@bash tests/run_tests.sh
 
+flagcheck: $(BIN) $(MODELBIN)
+	@bash tests/check_flags.sh ./$(BIN) ./$(MODELBIN)
+
 unittest: $(UNITBIN)
 	@$(UNITBIN)
 
@@ -67,7 +70,7 @@ $(UNITBIN): $(UNITSRC) $(UNITOBJS) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(UNITSRC) $(UNITOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 # Everything: unit tests then the end-to-end suite.
-check: unittest test
+check: unittest test flagcheck
 
 install: $(BIN)
 	@install -d $(DESTDIR)$(PREFIX)/bin

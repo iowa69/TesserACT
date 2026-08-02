@@ -6,6 +6,7 @@
 
 #include "graph.h"
 #include "mappolish.h"
+#include "organism_join.h"
 #include "organism.h"
 #include "report.h"
 #include "seqio.h"
@@ -58,6 +59,9 @@ struct AssemblyOptions {
     // rather than guessing, which is the default.
     std::string organism;            // informational; names the expected model
     std::string organismModelPath;
+    // Known insertion sequences. Contig ends inside one are left unjoined,
+    // because that is where this isolate differs from the panel by construction.
+    std::string isPanelPath;
 
     // Polishing against a full read alignment, after the k-mer polisher has
     // done what it can. Off unless a mapper is named, since it shells out.
@@ -101,6 +105,7 @@ private:
     AssemblyOptions opt_;
     SequenceStore reads_;
     OrganismModel organismModel_;
+    IsPanel isPanel_;
     AssemblyStats stats_;
     AssemblyReport report_;
 };

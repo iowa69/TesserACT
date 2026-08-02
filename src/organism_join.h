@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "organism.h"
@@ -32,11 +33,32 @@ struct OrganismJoinStats {
     size_t rejectedWeak = 0;    // support below the panel threshold
     size_t rejectedNotMutual = 0;
     size_t rejectedInconsistent = 0;   // no agreeing gap cluster
+    size_t rejectedInsertionSeq = 0;   // an end sitting inside a mobile element
+};
+
+// Canonical 31-mers of known insertion sequences. A contig that ends inside a
+// mobile element is ending there *because* this isolate carries an IS the panel
+// may not, and the panel's adjacency across that point describes a genome
+// without the insertion. Joining on it deletes the element and misassembles.
+class IsPanel {
+public:
+    bool load(const std::string& fastaPath, std::string& error);
+    bool loaded() const { return !kmers_.empty(); }
+    size_t size() const { return kmers_.size(); }
+    size_t copies() const { return copies_; }
+    // Fraction of sampled positions in `window` that fall in a known IS.
+    double density(const std::string& seq, size_t from, size_t len) const;
+
+private:
+    std::unordered_set<uint64_t> kmers_;
+    size_t copies_ = 0;
 };
 
 // Joins `contigs` in place using the model. `covs` is reordered to match.
-// `k` is the assembly's k, used only to bound a negative gap.
+// `k` is the assembly's k, used only to bound a negative gap. When `isPanel` is
+// supplied, ends sitting inside a mobile element are left alone.
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
-                              std::vector<double>& covs, int k, bool verbose);
+                              std::vector<double>& covs, int k, bool verbose,
+                              const IsPanel* isPanel = nullptr);
 
 }  // namespace ts

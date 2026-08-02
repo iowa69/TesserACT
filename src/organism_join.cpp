@@ -37,6 +37,12 @@ constexpr double kMinFractionPls = 0.7;
 // with itself is not agreement.
 constexpr size_t kMinAgreeingPairs = 3;
 
+// How much of a contig end is inspected for insertion-sequence content, and
+// how much of that window must match before the end is considered to be inside
+// a mobile element rather than merely near one.
+constexpr size_t kIsWindow = 600;
+constexpr double kIsDensity = 0.30;
+
 constexpr int32_t kGapTolerance = 500;    // gaps within this are the same cluster
 constexpr int32_t kMaxGap = 20000;
 
@@ -55,7 +61,8 @@ struct Hit { size_t contig; uint32_t pos; int orient; uint32_t id; };
 // One pass of model joining, restricted to a single replicon class. Returns
 // the number of joins made and rewrites `contigs` in place.
 size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::string>& contigs,
-                std::vector<double>& covs, int k, OrganismJoinStats& st) {
+                std::vector<double>& covs, int k, OrganismJoinStats& st,
+                const IsPanel* isPanel) {
     const size_t n = contigs.size();
     if (n < 2) return 0;
 
@@ -144,6 +151,23 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         const int32_t dIn = L - pos - kMarkerK;
         if (dIn >= 0 && dIn <= static_cast<int32_t>(kWindow))
             entryM[h.contig * 2 + 1].push_back({rev, dIn});
+    }
+
+    // An end lying inside a known insertion sequence is where it is *because*
+    // this isolate carries an element the panel need not have. The panel's
+    // adjacency across that point describes a genome without the insertion, so
+    // acting on it deletes the element. Silence those ports entirely.
+    std::vector<char> isFlanked(nports, 0);
+    if (isPanel && isPanel->loaded()) {
+        for (size_t c = 0; c < n; ++c) {
+            const std::string& seq = contigs[c];
+            const size_t w = std::min<size_t>(kIsWindow, seq.size());
+            if (isPanel->density(seq, 0, w) >= kIsDensity) isFlanked[c * 2 + 0] = 1;
+            if (isPanel->density(seq, seq.size() - w, w) >= kIsDensity) isFlanked[c * 2 + 1] = 1;
+        }
+        for (size_t p = 0; p < nports; ++p) {
+            if (isFlanked[p]) { exitM[p].clear(); entryM[p].clear(); ++st.rejectedInsertionSeq; }
+        }
     }
 
     struct EntryRef { uint64_t oriented; int32_t offset; uint32_t port; };
@@ -282,10 +306,67 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     return made;
 }
 
+
 }  // namespace
 
+bool IsPanel::load(const std::string& fastaPath, std::string& error) {
+    std::FILE* f = std::fopen(fastaPath.c_str(), "r");
+    if (!f) { error = "cannot open IS panel: " + fastaPath; return false; }
+    kmers_.clear();
+    copies_ = 0;
+    std::string cur;
+    char buf[1 << 16];
+    auto absorb = [&]() {
+        if (cur.empty()) return;
+        ++copies_;
+        // Every 31-mer of the element, not a sample: the query window is short
+        // and a missed k-mer is a missed veto.
+        const uint64_t mask = (1ULL << (2 * kMarkerK)) - 1;
+        uint64_t fwd = 0, rev = 0;
+        int valid = 0;
+        for (char c : cur) {
+            const int b = markerBaseCode(c);
+            if (b < 0) { valid = 0; fwd = rev = 0; continue; }
+            fwd = ((fwd << 2) | static_cast<uint64_t>(b)) & mask;
+            rev = (rev >> 2) | (static_cast<uint64_t>(3 - b) << (2 * (kMarkerK - 1)));
+            if (++valid < kMarkerK) continue;
+            kmers_.insert(fwd <= rev ? fwd : rev);
+        }
+        cur.clear();
+    };
+    while (std::fgets(buf, sizeof(buf), f)) {
+        if (buf[0] == '>') { absorb(); continue; }
+        for (char* p = buf; *p && *p != '\n' && *p != '\r'; ++p) cur.push_back(*p);
+    }
+    absorb();
+    std::fclose(f);
+    if (kmers_.empty()) { error = "IS panel contained no usable sequence: " + fastaPath; return false; }
+    return true;
+}
+
+double IsPanel::density(const std::string& seq, size_t from, size_t len) const {
+    if (kmers_.empty() || seq.size() < static_cast<size_t>(kMarkerK)) return 0.0;
+    const size_t end = std::min(seq.size(), from + len);
+    if (end < from + static_cast<size_t>(kMarkerK)) return 0.0;
+    const uint64_t mask = (1ULL << (2 * kMarkerK)) - 1;
+    uint64_t fwd = 0, rev = 0;
+    int valid = 0;
+    size_t total = 0, hit = 0;
+    for (size_t i = from; i < end; ++i) {
+        const int b = markerBaseCode(seq[i]);
+        if (b < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | static_cast<uint64_t>(b)) & mask;
+        rev = (rev >> 2) | (static_cast<uint64_t>(3 - b) << (2 * (kMarkerK - 1)));
+        if (++valid < kMarkerK) continue;
+        ++total;
+        if (kmers_.count(fwd <= rev ? fwd : rev)) ++hit;
+    }
+    return total ? static_cast<double>(hit) / static_cast<double>(total) : 0.0;
+}
+
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
-                              std::vector<double>& covs, int k, bool verbose) {
+                              std::vector<double>& covs, int k, bool verbose,
+                              const IsPanel* isPanel) {
     OrganismJoinStats st;
     st.contigsIn = contigs.size();
     st.contigsOut = contigs.size();
@@ -294,8 +375,8 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
     // The chromosome first: its evidence is the stronger of the two, and
     // resolving it removes chromosomal ends from contention before the weaker
     // plasmid table is consulted at all.
-    st.chromosomeJoins = joinPass(model, Replicon::Chromosome, contigs, covs, k, st);
-    st.plasmidJoins = joinPass(model, Replicon::Plasmid, contigs, covs, k, st);
+    st.chromosomeJoins = joinPass(model, Replicon::Chromosome, contigs, covs, k, st, isPanel);
+    st.plasmidJoins = joinPass(model, Replicon::Plasmid, contigs, covs, k, st, isPanel);
     st.contigsOut = contigs.size();
 
     if (verbose) {
@@ -306,9 +387,9 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
         if (std::getenv("TESSERA_DEBUG_ORGANISM")) {
             std::fprintf(stderr,
                          "      [debug] organism join: candidates=%zu weak=%zu "
-                         "inconsistent=%zu not-mutual=%zu\n",
+                         "inconsistent=%zu not-mutual=%zu is-flanked=%zu\n",
                          st.candidates, st.rejectedWeak, st.rejectedInconsistent,
-                         st.rejectedNotMutual);
+                         st.rejectedNotMutual, st.rejectedInsertionSeq);
         }
     }
     return st;
