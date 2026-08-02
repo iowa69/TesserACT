@@ -59,8 +59,17 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     const size_t n = contigs.size();
     if (n < 2) return 0;
 
-    const uint32_t minPanel = cls == Replicon::Chromosome ? kMinPanelChr : kMinPanelPls;
-    const double minFraction = cls == Replicon::Chromosome ? kMinFractionChr : kMinFractionPls;
+    // Tunable for the threshold sweep; the shipped values are the measured
+    // ones, not the first ones that worked on a single isolate.
+    auto envNum = [](const char* name, double dflt) {
+        const char* e = std::getenv(name);
+        return e ? std::atof(e) : dflt;
+    };
+    const uint32_t minPanel = static_cast<uint32_t>(envNum(
+        "TESSERA_MODEL_MIN_PANEL", cls == Replicon::Chromosome ? kMinPanelChr : kMinPanelPls));
+    const double minFraction = envNum(
+        "TESSERA_MODEL_MIN_FRACTION", cls == Replicon::Chromosome ? kMinFractionChr : kMinFractionPls);
+    const size_t minPairs = static_cast<size_t>(envNum("TESSERA_MODEL_MIN_PAIRS", kMinAgreeingPairs));
 
     // ---- locate model markers in the assembly ----------------------------
     // A marker occurring more than once across the assembly names a repeat
@@ -188,7 +197,7 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
             uint32_t strongest = 0;
             for (size_t i = bestBegin; i < bestBegin + bestLen; ++i)
                 strongest = std::max(strongest, v[i].support);
-            if (bestLen < kMinAgreeingPairs) { ++st.rejectedInconsistent; continue; }
+            if (bestLen < minPairs) { ++st.rejectedInconsistent; continue; }
             if (strongest < minPanel) { ++st.rejectedWeak; continue; }
             if (bestLen > best[p].pairs ||
                 (bestLen == best[p].pairs && strongest > best[p].support)) {

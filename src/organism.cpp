@@ -45,7 +45,9 @@ uint32_t OrganismModel::internMarker(uint64_t canonicalKmer) {
 
 void OrganismModel::addObservation(uint64_t fromOriented, uint64_t toOriented, int32_t dist,
                                    Replicon r) {
-    pending_[static_cast<int>(r)][(fromOriented << 32) | toOriented].push_back(dist);
+    Pending& p = pending_[static_cast<int>(r)][(fromOriented << 32) | toOriented];
+    if (p.count < static_cast<uint32_t>(kDistSamples)) p.dist[p.count] = dist;
+    ++p.count;
 }
 
 void OrganismModel::finalise(uint32_t minSupportChr, uint32_t minSupportPls) {
@@ -54,12 +56,13 @@ void OrganismModel::finalise(uint32_t minSupportChr, uint32_t minSupportPls) {
         edges_[c].clear();
         edges_[c].reserve(pending_[c].size());
         for (auto& kv : pending_[c]) {
-            auto& dists = kv.second;
-            if (dists.size() < minSupport) continue;
-            std::sort(dists.begin(), dists.end());
+            Pending& p = kv.second;
+            if (p.count < minSupport) continue;
+            const int n = static_cast<int>(std::min<uint32_t>(p.count, kDistSamples));
+            std::sort(p.dist, p.dist + n);
             MarkerEdge e;
-            e.support = static_cast<uint32_t>(dists.size());
-            e.medianDist = dists[dists.size() / 2];
+            e.support = p.count;
+            e.medianDist = p.dist[n / 2];
             edges_[c].emplace(kv.first, e);
         }
         pending_[c].clear();

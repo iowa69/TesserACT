@@ -113,8 +113,17 @@ private:
     std::vector<uint32_t> genomesPerMarker_[2];
     std::unordered_map<uint64_t, MarkerEdge> edges_[2];
 
-    // Only populated while building.
-    std::unordered_map<uint64_t, std::vector<int32_t>> pending_[2];
+    // Only populated while building. A reservoir of a few distances rather
+    // than every one: the median of eight samples is well inside the 500 bp
+    // tolerance the query applies, and a heap-allocated vector per pair costs
+    // more memory than the whole rest of the model at panel sizes in the
+    // thousands.
+    static constexpr int kDistSamples = 8;
+    struct Pending {
+        uint32_t count = 0;
+        int32_t dist[kDistSamples] = {0, 0, 0, 0, 0, 0, 0, 0};
+    };
+    std::unordered_map<uint64_t, Pending> pending_[2];
 };
 
 // Hash used both to sample markers and to key the tables. Splitmix64.

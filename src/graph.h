@@ -42,6 +42,8 @@ struct SimplifyRoundStats {
     size_t bubblesPopped = 0;
     size_t chimerasRemoved = 0;
     size_t isolatedRemoved = 0;
+    size_t lowDepthRemoved = 0;
+    size_t deadEnds = 0;
     size_t merged = 0;
     size_t unitigs = 0;
     size_t n50 = 0;
@@ -86,6 +88,30 @@ public:
     size_t removeErroneousConnections(double covThreshold, size_t maxLen);
     // Drops isolated short low-coverage fragments.
     size_t removeIsolated(double covThreshold, size_t maxLen);
+
+    // How many of a unitig's two ends lead nowhere.
+    int deadEnds(uint32_t u) const;
+    // Net change in the graph's dead-end count if `u` were deleted: removing a
+    // unitig closes its own loose ends but strands any neighbour that was
+    // attached only through it. Negative means deleting tidies the graph.
+    int deadEndChangeIfDeleted(uint32_t u) const;
+    size_t totalDeadEnds() const;
+
+    // Connected components, as lists of live unitig ids.
+    std::vector<std::vector<uint32_t>> components() const;
+
+    // Length-weighted median coverage of the longest `topN` unitigs in `ids`.
+    // Anchoring on the longest rather than on every unitig is what stops a
+    // swarm of short low-depth fragments from dragging the estimate down.
+    double weightedMedianCoverage(const std::vector<uint32_t>& ids, size_t topN = 10) const;
+
+    // Removes unitigs whose coverage falls below `fraction` of the local
+    // median, judged both against the whole graph and against their own
+    // connected component -- a low-copy plasmid is well below the global
+    // median without being spurious, and only the component-relative test
+    // tells the two apart. A unitig is kept regardless if deleting it would
+    // strand its neighbours.
+    size_t filterByReadDepth(double fraction);
     // Runs the full simplification schedule until it converges.
     // `bubbleCoverageLimit` is the fraction of mean coverage below which a
     // bubble side may be discarded; raising it collapses diverged repeat

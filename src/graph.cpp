@@ -636,6 +636,124 @@ size_t UnitigGraph::popBubbles(size_t maxLen, double minIdentity, double maxLose
     return popped;
 }
 
+
+int UnitigGraph::deadEnds(uint32_t u) const {
+    if (nodes[u].deleted) return 0;
+    return (nodes[u].ends[0].empty() ? 1 : 0) + (nodes[u].ends[1].empty() ? 1 : 0);
+}
+
+int UnitigGraph::deadEndChangeIfDeleted(uint32_t u) const {
+    if (nodes[u].deleted) return 0;
+    const int before = deadEnds(u);
+    int after = 0;
+    for (int e = 0; e < 2; ++e) {
+        for (const Link& l : nodes[u].ends[e]) {
+            if (nodes[l.to].deleted) continue;
+            // The neighbour keeps a connection only if something other than
+            // `u` attaches to that end of it.
+            size_t live = 0;
+            for (const Link& back : nodes[l.to].ends[l.toEnd]) {
+                if (!nodes[back.to].deleted && back.to != u) ++live;
+            }
+            if (live == 0) ++after;
+        }
+    }
+    return after - before;
+}
+
+size_t UnitigGraph::totalDeadEnds() const {
+    size_t n = 0;
+    for (uint32_t u = 0; u < nodes.size(); ++u) {
+        if (!nodes[u].deleted) n += static_cast<size_t>(deadEnds(u));
+    }
+    return n;
+}
+
+std::vector<std::vector<uint32_t>> UnitigGraph::components() const {
+    std::vector<std::vector<uint32_t>> out;
+    std::vector<char> seen(nodes.size(), 0);
+    std::vector<uint32_t> stack;
+    for (uint32_t start = 0; start < nodes.size(); ++start) {
+        if (nodes[start].deleted || seen[start]) continue;
+        out.emplace_back();
+        stack.push_back(start);
+        seen[start] = 1;
+        while (!stack.empty()) {
+            const uint32_t u = stack.back();
+            stack.pop_back();
+            out.back().push_back(u);
+            for (int e = 0; e < 2; ++e) {
+                for (const Link& l : nodes[u].ends[e]) {
+                    if (nodes[l.to].deleted || seen[l.to]) continue;
+                    seen[l.to] = 1;
+                    stack.push_back(l.to);
+                }
+            }
+        }
+    }
+    return out;
+}
+
+double UnitigGraph::weightedMedianCoverage(const std::vector<uint32_t>& ids, size_t topN) const {
+    std::vector<uint32_t> live;
+    live.reserve(ids.size());
+    for (uint32_t u : ids) {
+        if (!nodes[u].deleted) live.push_back(u);
+    }
+    if (live.empty()) return 0.0;
+    std::sort(live.begin(), live.end(), [&](uint32_t a, uint32_t b) {
+        return nodes[a].seq.size() > nodes[b].seq.size();
+    });
+    if (live.size() > topN) live.resize(topN);
+    std::sort(live.begin(), live.end(), [&](uint32_t a, uint32_t b) {
+        return nodes[a].coverage < nodes[b].coverage;
+    });
+    size_t total = 0;
+    for (uint32_t u : live) total += nodes[u].seq.size();
+    if (total == 0) return 0.0;
+    size_t acc = 0;
+    for (uint32_t u : live) {
+        acc += nodes[u].seq.size();
+        if (acc * 2 >= total) return nodes[u].coverage;
+    }
+    return nodes[live.back()].coverage;
+}
+
+size_t UnitigGraph::filterByReadDepth(double fraction) {
+    if (fraction <= 0) return 0;
+
+    std::vector<uint32_t> all;
+    all.reserve(nodes.size());
+    for (uint32_t u = 0; u < nodes.size(); ++u) {
+        if (!nodes[u].deleted) all.push_back(u);
+    }
+    if (all.size() < 2) return 0;
+
+    const double globalCut = fraction * weightedMedianCoverage(all);
+    if (globalCut <= 0) return 0;
+
+    size_t removed = 0;
+    for (const std::vector<uint32_t>& comp : components()) {
+        const double compMedian = weightedMedianCoverage(comp);
+        const double compCut = fraction * compMedian;
+        // A whole component sitting under the global bar is contamination or
+        // an error cloud rather than a low-copy replicon, and may go wholesale.
+        const bool wholeComponentLow = compMedian < globalCut;
+
+        for (uint32_t u : comp) {
+            if (nodes[u].deleted) continue;
+            const double cov = nodes[u].coverage;
+            if (cov >= globalCut && cov >= compCut) continue;
+            // Keep anything whose removal would strand a neighbour, unless the
+            // component was already condemned.
+            if (!wholeComponentLow && deadEnds(u) == 0 && deadEndChangeIfDeleted(u) > 0) continue;
+            deleteNode(u);
+            ++removed;
+        }
+    }
+    return removed;
+}
+
 size_t UnitigGraph::removeErroneousConnections(double covThreshold, size_t maxLen) {
     size_t removed = 0;
     for (uint32_t u = 0; u < nodes.size(); ++u) {
@@ -685,6 +803,19 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.merged += compact();
         // A true error bubble sits well below even the half-depth a two-copy
         // split would give, which is what separates it from real divergence.
+        // Coverage-based pruning, judged against the local median rather than a
+        // global one. This is orthogonal to everything else here: it cannot
+        // affect a junction the reads already settle, so it trims the graph
+        // without trading contiguity for it.
+        static const double depthFilter = [] {
+            const char* e = std::getenv("TESSERA_DEPTH_FILTER");
+            return e ? std::atof(e) : 0.0;
+        }();
+        if (depthFilter > 0) {
+            st.lowDepthRemoved = filterByReadDepth(depthFilter);
+            st.merged += compact();
+        }
+
         st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
         st.merged += compact();
         static const double chimeraFactor = [] {
@@ -699,6 +830,9 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
 
         st.unitigs = liveCount();
         st.n50 = n50();
+        // A rising dead-end count means cleaning is fragmenting the graph
+        // rather than tidying it, which is worth seeing in the report.
+        st.deadEnds = totalDeadEnds();
         st.totalLength = totalLength();
         const size_t changes = st.tipsRemoved + st.bubblesPopped +
                                st.chimerasRemoved + st.isolatedRemoved;
@@ -707,9 +841,11 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         if (verbose) {
             std::fprintf(stderr,
                          "    round %-2d tips=%-6zu bubbles=%-5zu chimeras=%-5zu isolated=%-5zu"
+                         "lowdepth=%-5zu deadends=%-5zu "
                          "  unitigs=%-8zu N50=%zu\n",
                          round + 1, st.tipsRemoved, st.bubblesPopped, st.chimerasRemoved,
-                         st.isolatedRemoved, st.unitigs, st.n50);
+                         st.isolatedRemoved, st.lowDepthRemoved, st.deadEnds,
+                         st.unitigs, st.n50);
         }
         if (changes == 0) break;
     }
