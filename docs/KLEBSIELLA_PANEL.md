@@ -322,8 +322,34 @@ version found 58 repeat nodes with the right shape and none with four free chain
 ends; the third found no ambiguous junction with two clean chain-end
 destinations.
 
-So the gap is not reachable from the chain abstraction, by any decision rule
-layered on top of it. Closing it means path extension over the unitig graph
-itself, carrying global constraints as it goes -- which is exSPAnder's design,
-and is why that is a rewrite of the resolver rather than an addition to it.
-Three measured attempts say so, rather than one argument.
+That looked like proof the chain abstraction was the limiter, and that closing
+the gap needed path extension over the unitig graph itself -- a rewrite rather
+than an addition.
+
+**That was wrong, and building it is what showed so.** An alternative resolver
+that walks the graph edge by edge, with a per-unitig traversal budget from
+coverage so a repeat can be used as often as its depth says it occurs, is worse
+on five isolates:
+
+| isolate | chain NGA50 | extend NGA50 | misassemblies |
+|---|---|---|---|
+| ERR5056466 | 451,301 | 362,493 | 0 -> 0 |
+| ERR11578413 | 184,767 | 135,007 | 0 -> 3 |
+| ERR11578909 | 149,192 | 139,096 | 0 -> 5 |
+| ERR11578347 | 99,464 | 92,200 | 0 -> 9 |
+| ERR11578086 | 282,003 | 188,136 | 0 -> 14 |
+
+Lower contiguity on every one, and thirty-one misassemblies where the chain
+resolver makes none. It does recover more of the genome -- 0.4 to 0.8 points of
+genome fraction, on one isolate beating SPAdes -- but pays for it with exactly
+those errors, which is the same guessing trade seen everywhere else in this
+study rather than a free win.
+
+Adding look-ahead so the walk pools evidence the way chain enumeration does
+changed almost nothing (362,493 against 361,930). Spending the traversal budget
+per path rather than globally produced an assembly 3.4x the size of the genome.
+
+So the chain abstraction is not what limits contiguity here. Where the limit
+actually lies is, after all of this, still unidentified -- which is a more
+honest place to stop than a confident architectural claim that measurement
+contradicts.
