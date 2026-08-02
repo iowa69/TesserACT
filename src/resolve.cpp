@@ -554,7 +554,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                                scoreCandidate(other, alt, interLen);
         const double crossed = scoreCandidate(from, alt, interLen) +
                                scoreCandidate(other, terminal, interLen);
-        return matched >= 1.0 && matched >= kMatchDominance * crossed;
+        static const double dom = [] {
+            const char* e = std::getenv("TESSERA_MATCH_DOMINANCE");
+            return e ? std::atof(e) : kMatchDominance;
+        }();
+        return matched >= 1.0 && matched >= dom * crossed;
     };
 
     // Start with every anchorable unitig as a chain of one, then repeatedly

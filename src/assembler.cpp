@@ -133,7 +133,11 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // Contigs from the previous, smaller k are trusted sequence: weighting them
     // keeps them above the abundance cutoff without letting them dominate the
     // histogram that cutoff is chosen from.
-    const uint32_t carryWeight = carryOver.empty() ? 0 : 4;
+    static const uint32_t kCarryWeight = [] {
+        const char* e = std::getenv("TESSERA_CARRY_WEIGHT");
+        return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
+    }();
+    const uint32_t carryWeight = carryOver.empty() ? 0 : kCarryWeight;
     counter.count(reads_, carryOver, carryWeight);
 
     if (counter.exceededMemory()) {

@@ -687,7 +687,11 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // split would give, which is what separates it from real divergence.
         st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
         st.merged += compact();
-        st.chimerasRemoved = removeErroneousConnections(meanCoverage * 0.12 * ramp,
+        static const double chimeraFactor = [] {
+            const char* e = std::getenv("TESSERA_CHIMERA_FACTOR");
+            return e ? std::atof(e) : 0.12;
+        }();
+        st.chimerasRemoved = removeErroneousConnections(meanCoverage * chimeraFactor * ramp,
                                                         static_cast<size_t>(2 * k_));
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
