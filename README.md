@@ -422,17 +422,17 @@ neighbours, and the model is learned from those. That corpus is a separate
 collection from the isolates being tested, so no assembly is scored against a
 model that has seen its own genome.
 
-Measured on 37 isolates:
+Measured on 39 isolates:
 
 | Metric | tessera | tessera + model | SPAdes |
 | --- | --- | --- | --- |
-| Median contig NGA50 | 262,251 | **348,781** | 318,884 |
-| Median NGA50 ratio to SPAdes | 0.89x | **1.03x** | 1.00x |
-| Isolates leading SPAdes on NGA50 | 8 | **26 / 37** | — |
-| Median contigs | 75 | 68 | **66** |
-| Total misassemblies | **17** | **22** | 24 |
-| Median mismatches / 100 kbp | **0.21** | **0.22** | 0.39 |
-| Median genome fraction (%) | **99.02** | **99.02** | 98.95 |
+| Median contig NGA50 | 270,133 | **349,179** | 320,313 |
+| Median NGA50 ratio to SPAdes | 0.89x | **1.02x** | 1.00x |
+| Isolates leading SPAdes on NGA50 | 6 | **27 / 39** | — |
+| Median contigs | 69 | 67 | **64** |
+| Total misassemblies | **12** | **22** | 24 |
+| Median mismatches / 100 kbp | **0.13** | **0.22** | 0.42 |
+| Median genome fraction (%) | 98.84 | **99.03** | 98.95 |
 
 Read across rather than down. Without a model tessera is the more conservative
 assembler: fewer misassemblies, half the mismatch rate, higher genome fraction,
