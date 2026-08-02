@@ -558,6 +558,22 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             else if (sc > second) second = sc;
         }
 
+        // Gating this bar on whether the route passes through a repeat was
+        // tried and does not work. The reasoning was sound -- every misassembly
+        // the bar was introduced to stop was a relocation through a repeat, and
+        // a continuation that reaches its destination through unique sequence
+        // has no other copy to be confused with, so charging it the same bar
+        // should buy nothing. Measured across eight isolates it bought a mean
+        // +15,153 of NGA50 and four extra misassemblies, which is no better
+        // than simply lowering the factor and is worse than leaving it alone.
+        //
+        // The reason is the proxy, not the idea: isRepeat is depth-only
+        // (coverage > 1.6x median), and the unitigs that actually carry a
+        // chimeric join through are frequently not flagged by it -- a long
+        // repeat's unitig coverage is diluted, and a two-copy repeat with one
+        // copy in a thin region never reaches the threshold. Identifying the
+        // risky joins needs a structural signal rather than a depth one.
+
         // Whether the paired reads decided this, or coverage had to.
         bool byCoverage = false;
         if (cands.size() > 1 && best < linkBar) {
