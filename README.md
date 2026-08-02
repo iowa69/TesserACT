@@ -382,15 +382,17 @@ runner-up. Lowering both takes more joins. Measured on five closed-reference
 isolates, this moves median contig NGA50 from 261,117 to 273,595 and genome
 fraction from 98.94% to 98.97%, for one additional misassembly across the set.
 
-`TESSERA_COMMON_PREFIX=3000` additionally lets a contig absorb up to 3 kb of
-sequence beyond its end when the graph offers only one way forward into a
-multi-entrance repeat. Every continuation begins with that same sequence, so
-appending it decides nothing; it recovers the repeat copy at that locus, which
-would otherwise be represented once in the assembly and counted as missing at
-every other copy. Genome fraction rises to 99.05% with the duplication ratio
-unchanged at 1.000.
+Separately, a contig may absorb up to 3 kb beyond its end when the graph offers
+only one way forward into a multi-entrance repeat. Every continuation begins
+with that same sequence, so appending it decides nothing; it recovers the repeat
+copy at that locus, which would otherwise be represented once in the assembly
+and counted as missing at every other copy. Measured across 37 closed-reference
+isolates this raises genome fraction from 98.83% to 99.02% with the duplication
+ratio unchanged at 1.000, so it is **on by default**; `TESSERA_COMMON_PREFIX=0`
+disables it and any other value sets the budget in bases.
 
-Both are off by default because the default trades contiguity for certainty.
+The join-bar flags are off by default because the default trades contiguity for
+certainty.
 Whether that trade is right depends on what the assembly is for: a contiguity
 number, or a sequence you intend to trust base by base.
 
