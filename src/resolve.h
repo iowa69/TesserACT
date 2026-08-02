@@ -101,6 +101,15 @@ private:
     // separates a real continuation from a coincidental link.
     double scoreCandidate(uint64_t from, uint64_t terminal, int interLen) const;
 
+    // How many pairs *could* have spanned this junction, given the depth, the
+    // read length and the fragment distribution. A raw count means different
+    // things at different interior lengths: where the interior nearly fills a
+    // fragment only a handful of pairs can exist, so demanding six is
+    // demanding the impossible, while where the interior is short dozens
+    // should appear and seeing six is evidence against the join, not for it.
+    double expectedPairs(int interLen) const;
+    void buildInsertCdf();
+
     const UnitigGraph& g_;
     const SequenceStore& reads_;
     int threads_;
@@ -123,6 +132,8 @@ private:
     InsertModel insert_;
     std::vector<ResolvedPath> paths_;
     std::vector<uint64_t> insertHistogram_;
+    // P(fragment length >= i), indexed by length.
+    std::vector<double> insertTail_;
     ResolveStats stats_;
     double medianCoverage_ = 0;
     int minLinkSupport_;

@@ -261,6 +261,7 @@ void PairedResolver::buildSupport() {
         insert_.maxPlausible = static_cast<int>(insert_.mean + 4 * insert_.stddev);
         insert_.usable = true;
     }
+    buildInsertCdf();
 
     size_t distinct = 0;
     for (auto& kv : support_) distinct += kv.second.size();
@@ -268,6 +269,49 @@ void PairedResolver::buildSupport() {
     stats_.pairsLinking = linkCount.load();
     stats_.distinctLinks = distinct;
     stats_.insert = insert_;
+}
+
+
+void PairedResolver::buildInsertCdf() {
+    insertTail_.clear();
+    if (insertHistogram_.empty()) return;
+    const size_t n = insertHistogram_.size();
+    insertTail_.assign(n + 1, 0.0);
+    double total = 0;
+    for (uint64_t c : insertHistogram_) total += static_cast<double>(c);
+    if (total <= 0) { insertTail_.clear(); return; }
+    // Survival function, accumulated from the long tail downwards.
+    double acc = 0;
+    for (size_t i = n; i-- > 0;) {
+        acc += static_cast<double>(insertHistogram_[i]);
+        insertTail_[i] = acc / total;
+    }
+}
+
+double PairedResolver::expectedPairs(int interLen) const {
+    if (insertTail_.empty() || !insert_.usable) return 0.0;
+    const int rl = reads_.size() ? static_cast<int>(reads_.totalBases() / reads_.size()) : 150;
+    if (rl <= kMap_) return 0.0;
+    // Pairs whose left mate starts at a given base, per base of unique sequence.
+    const double perBase = medianCoverage_ / (2.0 * static_cast<double>(rl));
+    if (perBase <= 0) return 0.0;
+
+    auto tail = [&](int len) -> double {
+        if (len < 0) return 1.0;
+        if (static_cast<size_t>(len) >= insertTail_.size()) return 0.0;
+        return insertTail_[static_cast<size_t>(len)];
+    };
+
+    // A pair anchored `d` bases back from the junction has to reach interLen +
+    // d + the anchoring k-mer before its mate lands beyond the repeat.
+    double expected = 0;
+    const int reachLimit = insert_.maxPlausible;
+    for (int d = 0; d <= reachLimit; ++d) {
+        const double p = tail(interLen + d + kMap_);
+        if (p <= 0) break;
+        expected += perBase * p;
+    }
+    return expected;
 }
 
 double PairedResolver::scoreCandidate(uint64_t from, uint64_t terminal, int interLen) const {
@@ -284,6 +328,18 @@ double PairedResolver::scoreCandidate(uint64_t from, uint64_t terminal, int inte
     for (int32_t span : jt->second) {
         const int implied = span + interLen;
         if (implied >= insert_.minPlausible && implied <= insert_.maxPlausible) score += 1;
+    }
+
+    // Optionally expressed as a fraction of what the library could have
+    // produced here rather than as a raw count. The same six pairs mean very
+    // different things across a 200 bp interior and a 600 bp one.
+    static const double kNormalise = [] {
+        const char* e = std::getenv("TESSERA_NORM_SCORE");
+        return e ? std::atof(e) : 0.0;
+    }();
+    if (kNormalise > 0) {
+        const double expect = expectedPairs(interLen);
+        if (expect >= 1.0) score = kNormalise * score / expect;
     }
     return score;
 }
