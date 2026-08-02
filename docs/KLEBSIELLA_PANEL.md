@@ -143,6 +143,24 @@ ERR11578485 +106%. Two regressed: ERR11578571 −25% and ERR11578240 −4%, both
 under the depth-scaled support bar that took the panel from twelve
 misassemblies to three.
 
+## Does `--mode aggressive` buy the contiguity back?
+
+The two isolates furthest behind SPAdes are also the two that gave up most to
+the depth-scaled support bar, so the obvious question is whether the mode built
+for that trade recovers it. Sometimes, and sometimes it is simply worse:
+
+| isolate | standard | aggressive |
+|---|---|---|
+| ERR11578413 | 184,767 · 0 misasm · 0.08 mm | **262,699** · 0 misasm · 0.21 mm |
+| ERR11578610 | **170,619** · **0** misasm · **0.22** mm | 162,645 · **3** misasm · **4.72** mm |
+
+On the first it recovers the whole gap for nothing -- higher genome fraction
+too. On the second it loses on every axis at once: shorter contigs, three
+misassemblies, and twenty times the mismatch rate. Which of the two an isolate
+will behave like is not knowable in advance, which is the argument for the
+cautious default and for keeping the aggressive mode available rather than
+tuning towards it.
+
 ## Reference-free cross-check
 
 QUAST asks how close an assembly is to the truth. Mapping the reads back asks
