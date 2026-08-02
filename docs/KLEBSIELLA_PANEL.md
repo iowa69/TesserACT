@@ -178,6 +178,32 @@ unaligned) barely moves it: NGA50 234,832, genome fraction 98.78%, 0.15
 mismatches. So the defaults were not overfitted to batch 1 -- the numbers are
 the same shape on 127 isolates that had no part in choosing them.
 
+## Head to head with vanilla SPAdes, two independent batches
+
+Forty isolates, same fastplus-trimmed reads for both assemblers, contig level
+throughout. Batch 3 played no part in choosing any parameter.
+
+| | batch 1 (20) | batch 3 (20) |
+|---|---|---|
+| median NGA50 ratio | 0.86x | 0.87x |
+| NGA50 wins | 4/20 | 1/20 |
+| genome fraction | 98.78% vs 98.94% | 98.74% vs 98.89% |
+| **misassemblies** | **3 vs 6** | **9 vs 20** |
+| wall clock | ~70 s vs ~340 s | same |
+
+**SPAdes leads contiguity by about 15% at the median, on both batches.** That is
+the position and it is stable: the ratio measured on isolates used for tuning
+and on isolates that were not is the same to within a percentage point.
+
+Against that, tessera makes **less than half the structural errors** -- 12
+against 26 across the forty -- and wins per-base accuracy on most isolates,
+while running four to five times faster.
+
+The mechanism behind both halves of that trade is the same one traced in the
+elimination study above: SPAdes joins at ambiguous repeats where the paired
+evidence is zero, and is usually but not always right. Its misassembly rate is
+what "usually" costs.
+
 ## Reference-free cross-check
 
 QUAST asks how close an assembly is to the truth. Mapping the reads back asks
