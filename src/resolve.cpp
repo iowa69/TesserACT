@@ -823,6 +823,15 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     const size_t nc = chains.size();
     std::vector<uint32_t> joinTo(nc * 2, UINT32_MAX);   // port -> port
     std::vector<int> joinGap(nc * 2, 0);
+    // Interior unitigs to splice when the partner is reachable through the
+    // graph, so the join carries real sequence instead of a run of Ns.
+    std::vector<std::vector<uint64_t>> joinInterior(nc * 2);
+    // Chain extension rejects most junctions for want of support on one
+    // from->terminal pair. This stage pools every pair landing within a
+    // fragment of the chain end, which is strictly more evidence about the
+    // same junction -- so refusing to look at graph-reachable partners here
+    // throws that evidence away and leaves the junction unjoined by anyone.
+    const bool scaffoldOverGraph = getenv("TESSERA_SCAF_NOGRAPH") == nullptr;
 
     if (scaffolding_ && insert_.usable) {
         reindex();
@@ -856,27 +865,45 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             entryOf[flip(chains[c].back())] = c * 2 + 1;
         }
 
-        struct Best { uint32_t partner = UINT32_MAX; double score = 0; int gap = 0; };
+        struct Best {
+            uint32_t partner = UINT32_MAX;
+            double score = 0;
+            int gap = 0;
+            std::vector<uint64_t> interior;   // empty = span it with Ns
+        };
         std::vector<Best> best(ends.size());
         for (size_t idx = 0; idx < ends.size(); ++idx) {
             const End& E = ends[idx];
             if (E.members.empty()) continue;
-            // Anything reachable through the graph was already handled by chain
-            // extension; scaffolding only spans true gaps.
+            // Where the graph offers exactly one way to a partner, remember the
+            // interior so an accepted join can splice it. Two ways to the same
+            // partner means this stage cannot say which, and the junction is
+            // left alone rather than guessed at.
             std::vector<std::vector<uint64_t>> reachable;
             enumerate(E.oriented, reachable);
-            std::unordered_map<uint64_t, char> viaGraph;
-            for (const auto& r : reachable) viaGraph[r.back()] = 1;
+            std::unordered_map<uint64_t, std::vector<uint64_t>> viaGraph;
+            std::unordered_map<uint64_t, char> forked;
+            for (const auto& r : reachable) {
+                std::vector<uint64_t> interior(r.begin(), r.end() - 1);
+                auto ins = viaGraph.emplace(r.back(), interior);
+                if (!ins.second && ins.first->second != interior) forked[r.back()] = 1;
+            }
 
             std::unordered_map<uint32_t, std::vector<int>> gaps;
+            std::unordered_map<uint32_t, std::vector<uint64_t>> interiorFor;
             for (size_t m = 0; m < E.members.size(); ++m) {
                 auto it = support_.find(E.members[m]);
                 if (it == support_.end()) continue;
                 for (const auto& kv : it->second) {
-                    if (viaGraph.count(kv.first)) continue;
+                    auto vg = viaGraph.find(kv.first);
+                    const bool reachableHere = vg != viaGraph.end();
+                    if (reachableHere && (!scaffoldOverGraph || forked.count(kv.first))) continue;
                     auto pt = entryOf.find(kv.first);
                     if (pt == entryOf.end()) continue;
                     if (pt->second / 2 == idx / 2) continue;   // same chain
+                    // Only the end unitig can vouch for a spliced path; a pair
+                    // landing further back says nothing about which exit to take.
+                    if (reachableHere && m == 0) interiorFor[pt->second] = vg->second;
                     for (int32_t span : kv.second) {
                         const int gap = static_cast<int>(insert_.mean) - span -
                                         static_cast<int>(E.dist[m]);
@@ -891,6 +918,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     best[idx].score = static_cast<double>(kv.second.size());
                     best[idx].partner = kv.first;
                     best[idx].gap = kv.second[kv.second.size() / 2];
+                    auto ip = interiorFor.find(kv.first);
+                    if (ip != interiorFor.end()) best[idx].interior = ip->second;
+                    else best[idx].interior.clear();
                 }
             }
         }
@@ -908,15 +938,44 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             minScaffoldSupport_ > 0
                 ? static_cast<double>(minScaffoldSupport_)
                 : std::min(10.0, std::max(3.0, medianCoverage_ * 0.06));
+        long long sNoPartner = 0, sLowSupport = 0, sNotMutual = 0, sTaken = 0, sSpliced = 0,
+                  sNoMirror = 0;
         for (uint32_t idx = 0; idx < best.size(); ++idx) {
             const Best& b = best[idx];
-            if (b.partner == UINT32_MAX || b.score < minScaffoldSupport) continue;
-            if (best[b.partner].partner != idx) continue;      // must be mutual
+            if (b.partner == UINT32_MAX) { ++sNoPartner; continue; }
+            if (b.score < minScaffoldSupport) { ++sLowSupport; continue; }
+            if (best[b.partner].partner != idx) { ++sNotMutual; continue; }   // must be mutual
             if (joinTo[idx] != UINT32_MAX || joinTo[b.partner] != UINT32_MAX) continue;
+            ++sTaken;
             joinTo[idx] = b.partner;
             joinTo[b.partner] = idx;
             joinGap[idx] = std::max(1, b.gap);
             joinGap[b.partner] = joinGap[idx];
+            // Splice only when both ends agree on the same stretch of graph,
+            // read from their own side; one-sided evidence is a guess.
+            const std::vector<uint64_t>& fwd = b.interior;
+            const std::vector<uint64_t>& bwd = best[b.partner].interior;
+            if (!fwd.empty() && fwd.size() == bwd.size()) {
+                bool mirror = true;
+                for (size_t i = 0; i < fwd.size(); ++i)
+                    if (fwd[i] != flip(bwd[bwd.size() - 1 - i])) { mirror = false; break; }
+                if (mirror) {
+                    joinInterior[idx] = fwd;
+                    joinInterior[b.partner] = bwd;
+                    ++sSpliced;
+                } else {
+                    ++sNoMirror;
+                }
+            } else if (!fwd.empty() || !bwd.empty()) {
+                ++sNoMirror;
+            }
+        }
+        if (getenv("TESSERA_DEBUG_RESOLVE")) {
+            std::fprintf(stderr,
+                         "      [debug] scaffold ends: no-partner=%lld low-support=%lld "
+                         "not-mutual=%lld taken=%lld (spliced=%lld no-mirror=%lld) bar=%.1f\n",
+                         sNoPartner, sLowSupport, sNotMutual, sTaken, sSpliced, sNoMirror,
+                         minScaffoldSupport);
         }
     }
 
@@ -970,10 +1029,26 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             if (partner == UINT32_MAX || ++steps > nc) break;
             const uint32_t nextC = partner / 2;
             if (done[nextC] || chains[nextC].empty()) break;
-            seq.append(static_cast<size_t>(joinGap[outPort]), 'N');
-            stats_.gapBases += static_cast<size_t>(joinGap[outPort]);
-            ++stats_.scaffoldJoins;
-            pendingGap = joinGap[outPort];
+            if (!joinInterior[outPort].empty()) {
+                for (uint64_t oid : joinInterior[outPort]) {
+                    curPath.oriented.push_back(oid);
+                    curPath.gaps.push_back(0);
+                    const uint32_t u = unitigOf(oid);
+                    const std::string piece = g_.oriented(u, orientOf(oid));
+                    if (seq.empty()) seq = piece;
+                    else seq += piece.substr(ov);
+                    covWeighted += g_.nodes[u].coverage * static_cast<double>(piece.size());
+                    covLen += piece.size();
+                    placed[u] = 1;
+                }
+                stats_.unitigsJoined += joinInterior[outPort].size() + 1;
+                ++stats_.scaffoldJoins;
+            } else {
+                seq.append(static_cast<size_t>(joinGap[outPort]), 'N');
+                stats_.gapBases += static_cast<size_t>(joinGap[outPort]);
+                ++stats_.scaffoldJoins;
+                pendingGap = joinGap[outPort];
+            }
             cur = nextC;
             inPort = static_cast<int>(partner % 2);
         }
