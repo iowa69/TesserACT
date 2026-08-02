@@ -515,10 +515,11 @@ kbad() { # kbad LABEL KSPEC
     fi
 }
 kbad "even k (-k 22)" 22
-kbad "k above the 96 cap (-k 97)" 97
+kbad "k above the 127 cap (-k 129)" 129
 kbad "k < 5 (-k 3)" 3
 
-# The boundary value the cap allows must still assemble.
+# The boundary value the cap allows must still assemble. k-mers are packed into
+# four 64-bit words, so 127 is the largest odd k the representation holds.
 if asm "$TMP/t10ok" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" -k 95 -t 4; then
     eval "$(gen stats "$TMP/t10ok/contigs.fasta")"
     check "largest legal k (-k 95) accepted" $([ "$n" -ge 1 ] && echo 0 || echo 1) \
