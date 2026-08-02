@@ -419,3 +419,42 @@ misassemblies.
 So the gap is real, it is measured, and it is a choice rather than a defect.
 Closing it means buying contiguity with error. That is worth stating plainly
 rather than continuing to search for a decision rule that cannot exist.
+
+## The scaffold splice, and why it was reverted
+
+One defect was real. The scaffold stage refused any partner reachable
+through the graph, on the grounds that chain extension had handled it; chain
+extension had in fact rejected those junctions for want of support on a single
+from->terminal pair, while this stage pools every pair landing within a
+fragment of the chain end. The evidence was being dropped twice and the
+junction joined by nobody. Letting it act there, splicing the interior unitigs
+rather than a run of Ns and only when both ends independently see the same
+unique path, gained contiguity on five isolates with no misassembly.
+
+Widening the test to every batch-1 isolate with a baseline reversed the
+verdict:
+
+| isolate | dNGA50 | misassemblies | mismatches/100 kbp |
+|---|---|---|---|
+| ERR10447223 | +9,754 | 0 -> 1 | 0.11 -> **0.46** |
+| ERR11578413 | +2,910 | 0 -> 0 | 0.08 -> 0.08 |
+| ERR11578571 | 0 | 1 -> 1 | 0.78 -> 0.78 |
+| ERR11578610 | 0 | 0 -> **1** | 0.22 -> 0.22 |
+| ERR11578909 | 0 | 0 -> 0 | 0.28 -> 0.28 |
+| ERR5056466 | +509 | 0 -> 0 | 0.12 -> 0.12 |
+
++13,173 bp of NGA50 across six isolates, bought with two misassemblies and a
+fourfold per-base accuracy regression on one of them -- and on ERR11578610,
+bought with no contiguity gain at all.
+
+The obvious repair does not work. A pair can only vouch for a junction it could
+physically span, so requiring the spliced interior to fit inside the largest
+plausible fragment should have removed the coincidental support. It changes
+nothing: both regressing isolates come out byte-identical, because the
+offending interiors were already within reach. The joins are spannable and
+still wrong.
+
+So the change was reverted. It is the same trade this document argues against
+everywhere else, and the fact that it was our own change does not make the
+trade a better one. Five isolates were not enough to see it; the honest sample
+here is every isolate with a baseline.
