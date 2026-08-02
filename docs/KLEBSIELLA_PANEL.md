@@ -266,10 +266,21 @@ replicon early. It fires eight times on the worst isolate and lifts joins from
 misassembly count. The joins it makes are between small contigs that do not
 reach N50.
 
-Both are reverted. The constraint is real, but at these junctions the component
-counts of the two pairings are equal, because the four flanking chains are
-usually four distinct components at the time the decision is made. It only
-discriminates once enough of the layout is already fixed, which is a joint
-optimisation over all ambiguous repeats at once rather than the greedy,
-one-junction-at-a-time decision the resolver makes. That is the honest
-specification of the remaining work.
+A third version did the joint optimisation the second one implied: collect every
+ambiguous junction, enumerate all 2^m combinations of pairings, count the
+components each leaves, and act only when the minimum is achieved by exactly one
+combination. It collected **zero** junctions.
+
+All three fail the same way, and that is the real finding. Each is built on the
+resolver's abstraction -- a chain end, a repeat, another chain end -- and at the
+junctions that matter the terminals are not clean chain ends at all. They are
+tangles of several short unitigs, some unanchorable, some mid-chain. The first
+version found 58 repeat nodes with the right shape and none with four free chain
+ends; the third found no ambiguous junction with two clean chain-end
+destinations.
+
+So the gap is not reachable from the chain abstraction, by any decision rule
+layered on top of it. Closing it means path extension over the unitig graph
+itself, carrying global constraints as it goes -- which is exSPAnder's design,
+and is why that is a rewrite of the resolver rather than an addition to it.
+Three measured attempts say so, rather than one argument.
