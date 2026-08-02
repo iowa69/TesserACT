@@ -9,6 +9,8 @@
 #include "correct.h"
 #include "counter.h"
 #include "gapfill.h"
+#include "mappolish.h"
+#include "organism_join.h"
 #include "gfa.h"
 #include "polish.h"
 #include "resolve.h"
@@ -411,11 +413,37 @@ bool Assembler::run(std::string& error) {
         graph.toContigs(minLen, seqs, covs);
     }
 
+    // What is left unjoined at this point is not weakly supported -- it is
+    // unsupported. The repeats that break these contigs are longer than a
+    // fragment, so no pair could have spoken to them either way. Where a model
+    // of the organism is supplied, those junctions get asked of closed genomes
+    // of the same species instead of guessed at from coverage.
+    if (!organismModel_.loaded() && !opt_.organismModelPath.empty()) {
+        std::string err;
+        if (!organismModel_.load(opt_.organismModelPath, err) && opt_.verbose) {
+            std::fprintf(stderr, "      warning: %s\n", err.c_str());
+        }
+    }
+    if (organismModel_.loaded() && !seqs.empty()) {
+        if (opt_.verbose) {
+            std::fprintf(stderr, "[4b/7] %s model joining (%u genomes, %u plasmid sets)\n",
+                         organismModel_.organism().c_str(),
+                         organismModel_.genomes(Replicon::Chromosome),
+                         organismModel_.genomes(Replicon::Plasmid));
+        }
+        report_.organism = joinByModel(organismModel_, seqs, covs, finalK, opt_.verbose);
+        report_.organismRun = true;
+        report_.organismName = organismModel_.organism();
+        report_.organismGenomes = organismModel_.genomes(Replicon::Chromosome);
+        report_.organismPlasmids = organismModel_.genomes(Replicon::Plasmid);
+        report_.organismExcluded = organismModel_.excluded();
+    }
+
     // Scaffolding wrote the joins it trusts as Ns. Those Ns are a statement
     // about the graph, not about the data: the reads that cross the join are
     // still in memory. Closing them here, before polishing, means the bases
     // that come back are polished with everything else.
-    if (opt_.gapFill && opt_.scaffold && !seqs.empty()) {
+    if (opt_.gapFill && !seqs.empty()) {
         if (opt_.verbose) std::fprintf(stderr, "[5/7] scaffold gap closing\n");
         const GapFillStats gs = closeGaps(seqs, reads_, opt_.threads, 31, 300);
         report_.gapFill = gs;
@@ -480,6 +508,33 @@ bool Assembler::run(std::string& error) {
         report_.polishSeconds = t.elapsed();
         report_.polishRun = true;
     }
+
+    if (opt_.mapPolisher != Mapper::None) util::makeDirs(opt_.outDir);
+    // The k-mer polisher is blind wherever a base is wrong consistently across
+    // every read covering it: those wrong k-mers are themselves solid. A real
+    // alignment is independent evidence about every position, so it runs last.
+    if (opt_.mapPolisher != Mapper::None && !seqs.empty()) {
+        if (opt_.verbose) {
+            std::fprintf(stderr, "[6b/7] alignment polishing (%s)\n",
+                         mapperName(opt_.mapPolisher));
+        }
+        MapPolishOptions mp;
+        mp.mapper = opt_.mapPolisher;
+        mp.mapperDir = opt_.mapperDir;
+        mp.workDir = opt_.outDir;
+        mp.threads = opt_.threads;
+        mp.verbose = opt_.verbose;
+        for (const Library& lib : opt_.libraries) {
+            if (!lib.r1.empty()) mp.reads1.push_back(lib.r1);
+            if (!lib.r2.empty()) mp.reads2.push_back(lib.r2);
+        }
+        report_.mapPolish = mapPolish(seqs, mp);
+        if (!report_.mapPolish.error.empty() && opt_.verbose) {
+            std::fprintf(stderr, "      warning: alignment polishing skipped: %s\n",
+                         report_.mapPolish.error.c_str());
+        }
+    }
+
 
     // ---- order and name -------------------------------------------------
     std::vector<size_t> order(seqs.size());

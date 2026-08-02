@@ -8,6 +8,8 @@
 
 #include "correct.h"
 #include "gapfill.h"
+#include "mappolish.h"
+#include "organism_join.h"
 #include "graph.h"
 #include "polish.h"
 #include "resolve.h"
@@ -80,6 +82,16 @@ struct AssemblyReport {
 
     bool gapFillRun = false;
     GapFillStats gapFill;
+
+    // The organism model stage: which panel it consulted, what it joined,
+    // and which accessions the model was built without.
+    MapPolishStats mapPolish;
+    bool organismRun = false;
+    OrganismJoinStats organism;
+    std::string organismName;
+    uint32_t organismGenomes = 0;
+    uint32_t organismPlasmids = 0;
+    std::vector<std::string> organismExcluded;
 
     bool polishRun = false;
     PolishStats polish;

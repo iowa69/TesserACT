@@ -1,0 +1,186 @@
+#include "organism.h"
+
+#include <algorithm>
+#include <cstdio>
+#include <cstring>
+
+namespace ts {
+
+namespace {
+
+constexpr char kMagic[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '2'};
+
+template <typename T>
+bool writePod(std::FILE* f, const T& v) {
+    return std::fwrite(&v, sizeof(T), 1, f) == 1;
+}
+template <typename T>
+bool readPod(std::FILE* f, T& v) {
+    return std::fread(&v, sizeof(T), 1, f) == 1;
+}
+
+}  // namespace
+
+void OrganismModel::beginBuild(const std::string& organism, int k) {
+    organism_ = organism;
+    k_ = k;
+    genomesChr_ = genomesPls_ = 0;
+    index_.clear();
+    for (int i = 0; i < 2; ++i) {
+        genomesPerMarker_[i].clear();
+        edges_[i].clear();
+        pending_[i].clear();
+    }
+}
+
+uint32_t OrganismModel::internMarker(uint64_t canonicalKmer) {
+    auto it = index_.find(canonicalKmer);
+    if (it != index_.end()) return it->second;
+    const uint32_t id = static_cast<uint32_t>(genomesPerMarker_[0].size());
+    index_.emplace(canonicalKmer, id);
+    genomesPerMarker_[0].push_back(0);
+    genomesPerMarker_[1].push_back(0);
+    return id;
+}
+
+void OrganismModel::addObservation(uint64_t fromOriented, uint64_t toOriented, int32_t dist,
+                                   Replicon r) {
+    pending_[static_cast<int>(r)][(fromOriented << 32) | toOriented].push_back(dist);
+}
+
+void OrganismModel::finalise(uint32_t minSupportChr, uint32_t minSupportPls) {
+    for (int c = 0; c < 2; ++c) {
+        const uint32_t minSupport = c == 0 ? minSupportChr : minSupportPls;
+        edges_[c].clear();
+        edges_[c].reserve(pending_[c].size());
+        for (auto& kv : pending_[c]) {
+            auto& dists = kv.second;
+            if (dists.size() < minSupport) continue;
+            std::sort(dists.begin(), dists.end());
+            MarkerEdge e;
+            e.support = static_cast<uint32_t>(dists.size());
+            e.medianDist = dists[dists.size() / 2];
+            edges_[c].emplace(kv.first, e);
+        }
+        pending_[c].clear();
+    }
+    loaded_ = true;
+}
+
+bool OrganismModel::save(const std::string& path, std::string& error) const {
+    std::FILE* f = std::fopen(path.c_str(), "wb");
+    if (!f) { error = "cannot write model file: " + path; return false; }
+    bool ok = std::fwrite(kMagic, 1, 8, f) == 8;
+
+    const uint32_t kk = static_cast<uint32_t>(k_);
+    ok = ok && writePod(f, kk) && writePod(f, genomesChr_) && writePod(f, genomesPls_);
+
+    const uint32_t nameLen = static_cast<uint32_t>(organism_.size());
+    ok = ok && writePod(f, nameLen) &&
+         (nameLen == 0 || std::fwrite(organism_.data(), 1, nameLen, f) == nameLen);
+
+    const uint32_t nExcluded = static_cast<uint32_t>(excluded_.size());
+    ok = ok && writePod(f, nExcluded);
+    for (const std::string& acc : excluded_) {
+        const uint32_t n = static_cast<uint32_t>(acc.size());
+        ok = ok && writePod(f, n) && (n == 0 || std::fwrite(acc.data(), 1, n, f) == n);
+    }
+
+    const uint64_t nMarkers = genomesPerMarker_[0].size();
+    ok = ok && writePod(f, nMarkers);
+    // Markers are written in id order so ids survive the round trip.
+    std::vector<uint64_t> byId(nMarkers, 0);
+    for (const auto& kv : index_) byId[kv.second] = kv.first;
+    for (uint64_t i = 0; i < nMarkers && ok; ++i) {
+        ok = writePod(f, byId[i]) && writePod(f, genomesPerMarker_[0][i]) &&
+             writePod(f, genomesPerMarker_[1][i]);
+    }
+
+    for (int c = 0; c < 2 && ok; ++c) {
+        const uint64_t nEdges = edges_[c].size();
+        ok = writePod(f, nEdges);
+        for (const auto& kv : edges_[c]) {
+            if (!ok) break;
+            ok = writePod(f, kv.first) && writePod(f, kv.second.support) &&
+                 writePod(f, kv.second.medianDist);
+        }
+    }
+    std::fclose(f);
+    if (!ok) error = "short write on model file: " + path;
+    return ok;
+}
+
+bool OrganismModel::load(const std::string& path, std::string& error) {
+    std::FILE* f = std::fopen(path.c_str(), "rb");
+    if (!f) { error = "cannot open model file: " + path; return false; }
+
+    char magic[8];
+    if (std::fread(magic, 1, 8, f) != 8 || std::memcmp(magic, kMagic, 8) != 0) {
+        std::fclose(f);
+        error = "not a tessera model file (or a model from an older version): " + path;
+        return false;
+    }
+
+    uint32_t kk = 0;
+    bool ok = readPod(f, kk) && readPod(f, genomesChr_) && readPod(f, genomesPls_);
+    k_ = static_cast<int>(kk);
+
+    uint32_t nameLen = 0;
+    ok = ok && readPod(f, nameLen);
+    if (ok) {
+        organism_.assign(nameLen, '\0');
+        ok = nameLen == 0 || std::fread(&organism_[0], 1, nameLen, f) == nameLen;
+    }
+
+    uint32_t nExcluded = 0;
+    ok = ok && readPod(f, nExcluded);
+    excluded_.clear();
+    for (uint32_t i = 0; i < nExcluded && ok; ++i) {
+        uint32_t n = 0;
+        ok = readPod(f, n);
+        std::string acc(n, '\0');
+        ok = ok && (n == 0 || std::fread(&acc[0], 1, n, f) == n);
+        if (ok) excluded_.push_back(acc);
+    }
+
+    uint64_t nMarkers = 0;
+    ok = ok && readPod(f, nMarkers);
+    index_.clear();
+    if (ok) {
+        index_.reserve(nMarkers * 2);
+        genomesPerMarker_[0].resize(nMarkers);
+        genomesPerMarker_[1].resize(nMarkers);
+    }
+    for (uint64_t i = 0; i < nMarkers && ok; ++i) {
+        uint64_t km = 0;
+        uint32_t gc = 0, gp = 0;
+        ok = readPod(f, km) && readPod(f, gc) && readPod(f, gp);
+        if (!ok) break;
+        index_.emplace(km, static_cast<uint32_t>(i));
+        genomesPerMarker_[0][i] = gc;
+        genomesPerMarker_[1][i] = gp;
+    }
+
+    for (int c = 0; c < 2 && ok; ++c) {
+        uint64_t nEdges = 0;
+        ok = readPod(f, nEdges);
+        edges_[c].clear();
+        if (ok) edges_[c].reserve(nEdges * 2);
+        for (uint64_t i = 0; i < nEdges && ok; ++i) {
+            uint64_t key = 0;
+            MarkerEdge e;
+            ok = readPod(f, key) && readPod(f, e.support) && readPod(f, e.medianDist);
+            if (ok) edges_[c].emplace(key, e);
+        }
+    }
+
+    std::fclose(f);
+    if (!ok) {
+        error = "truncated model file: " + path;
+        return false;
+    }
+    loaded_ = true;
+    return true;
+}
+
+}  // namespace ts

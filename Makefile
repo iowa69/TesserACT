@@ -1,18 +1,22 @@
 # tessera - de novo short-read assembler
 
 BIN       := tessera
+MODELBIN  := tessera-model
 SRCDIR    := src
 BUILDDIR  := build
 PREFIX    ?= /usr/local
 
 SOURCES   := $(wildcard $(SRCDIR)/*.cpp)
-OBJECTS   := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SOURCES))
-DEPS      := $(OBJECTS:.o=.d)
+ALLOBJS   := $(patsubst $(SRCDIR)/%.cpp,$(BUILDDIR)/%.o,$(SOURCES))
+# model_main.o owns a second main(); it links only into the model builder.
+OBJECTS   := $(filter-out $(BUILDDIR)/model_main.o,$(ALLOBJS))
+MODELOBJS := $(filter-out $(BUILDDIR)/main.o,$(ALLOBJS))
+DEPS      := $(ALLOBJS:.o=.d)
 
-# The unit tests link against everything but main.o, which owns main().
+# The unit tests link against everything but the two files that own main().
 UNITSRC   := tests/test_units.cpp
 UNITBIN   := $(BUILDDIR)/test_units
-UNITOBJS  := $(filter-out $(BUILDDIR)/main.o,$(OBJECTS))
+UNITOBJS  := $(filter-out $(BUILDDIR)/main.o $(BUILDDIR)/model_main.o,$(ALLOBJS))
 
 CXX       ?= g++
 CXXSTD    := -std=c++17
@@ -22,9 +26,9 @@ CXXFLAGS  += $(CXXSTD) $(WARN) $(OPT) -pthread -MMD -MP
 LDFLAGS   += -pthread
 LDLIBS    += -lz
 
-.PHONY: all native debug asan clean install uninstall test unittest check
+.PHONY: all native debug asan clean install uninstall test unittest check model
 
-all: $(BIN)
+all: $(BIN) $(MODELBIN)
 
 native: OPT := -O3 -march=native -mtune=native
 native: clean $(BIN)
@@ -38,6 +42,11 @@ asan: clean $(BIN)
 
 $(BIN): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
+
+model: $(MODELBIN)
+
+$(MODELBIN): $(MODELOBJS)
+	$(CXX) $(MODELOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -c $< -o $@

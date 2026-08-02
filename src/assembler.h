@@ -5,6 +5,8 @@
 #include <vector>
 
 #include "graph.h"
+#include "mappolish.h"
+#include "organism.h"
 #include "report.h"
 #include "seqio.h"
 
@@ -51,6 +53,17 @@ struct AssemblyOptions {
     long long maxMemoryBytes = 0;   // 0 = 80% of physical RAM
     QualityTrim qtrim;              // 3' trimming applied as reads are loaded
 
+    // A prior learned from closed genomes of the same organism, used only at
+    // junctions no fragment can span. Empty means the assembly stops there
+    // rather than guessing, which is the default.
+    std::string organism;            // informational; names the expected model
+    std::string organismModelPath;
+
+    // Polishing against a full read alignment, after the k-mer polisher has
+    // done what it can. Off unless a mapper is named, since it shells out.
+    Mapper mapPolisher = Mapper::None;
+    std::string mapperDir;
+
     // Set when the user named the knob explicitly, so applyMode() leaves it be.
     bool userSetK = false, userSetMinLink = false, userSetTie = false, userSetLinkPerX = false,
          userSetBubble = false, userSetRounds = false, userSetPolishPasses = false;
@@ -87,6 +100,7 @@ private:
 
     AssemblyOptions opt_;
     SequenceStore reads_;
+    OrganismModel organismModel_;
     AssemblyStats stats_;
     AssemblyReport report_;
 };
