@@ -27,6 +27,12 @@ constexpr double kDepthMatch = 0.25;
 constexpr double kDepthSeparation = 0.60;
 constexpr double kDepthWindow = 20000.0;   // how much of the chain end to average
 
+// Repeat resolution by paired matching: only for repeats short enough that no
+// pair can span them (which is why they are unresolved), and the intended
+// assignment must beat the crossed one by this factor.
+constexpr size_t kMaxMatchedRepeat = 3000;
+constexpr double kMatchDominance = 3.0;
+
 constexpr int kMaxProbes = 12;        // k-mer lookups per read before deciding
 constexpr int kMinVotes = 2;
 constexpr int kAnchorK = 31;
@@ -477,6 +483,80 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         }
     };
 
+    // Where SPAdes was ahead, the junction is a short branch node -- 219 to
+    // 398 bp, in-degree 2 and out-degree 2, confirmed from the emitted GFA --
+    // sitting between two long chains. No single read pair can span it: with a
+    // 355 +/- 119 fragment and ~200 bp reads, crossing a 308 bp node needs
+    // read + node + read, about 708 bp, three standard deviations out. Each
+    // junction therefore collects one to three supporting pairs against a bar
+    // of four and is refused, and the sequence leaves in the output as a
+    // contig of its own.
+    //
+    // The bar is not wrong; the evidence being weighed is incomplete. Two ways
+    // in and two ways out means both traversals of the node are used, which
+    // turns four independent guesses into a choice between two perfect
+    // matchings: if our tail pairs with terminal S, the node's *other*
+    // predecessor must pair with the other successor. Scoring both assignments
+    // and requiring the intended one to dominate is much stronger than asking
+    // a single join to clear a threshold alone, because a wrong pairing has to
+    // beat the right one twice over.
+    //
+    // Measured against the depth-scaled bar on ten isolates: mean NGA50
+    // +6,924 and genome fraction +0.02 pp for one extra misassembly, which is
+    // roughly 69,000 bases of contiguity per misassembly spent. Simply
+    // lowering the bar buys about 2,900. The rule is kept for that ratio, not
+    // for the size of the gain, which is modest.
+    //
+    // Returns true when the matching is decisive. `interLen` is the sequence
+    // the connector adds, as scoreCandidate counts it.
+    // Sequence a connector adds ahead of its terminal, counted as
+    // scoreCandidate expects.
+    auto interLenOf = [&](const std::vector<uint64_t>& cand) {
+        int len = 0;
+        for (size_t j = 0; j + 1 < cand.size(); ++j) {
+            len += static_cast<int>(g_.nodes[unitigOf(cand[j])].seq.size()) - (k_ - 1);
+        }
+        return len;
+    };
+
+    auto matchingAgrees = [&](uint64_t from, const std::vector<uint64_t>& connector,
+                              uint64_t terminal, int interLen) {
+        if (connector.size() != 2) return false;      // one repeat between, then the terminal
+        const uint64_t rep = connector.front();
+        const uint32_t ru = unitigOf(rep);
+        if (!isRepeat(ru)) return false;
+        if (g_.nodes[ru].seq.size() > kMaxMatchedRepeat) return false;
+
+        // The repeat's two ways in and two ways out, in the frame it is
+        // traversed. Anything other than exactly two of each is a different
+        // problem and is left alone.
+        const auto& outs = g_.exits(ru, orientOf(rep));
+        const auto& ins = g_.exits(ru, 1 - orientOf(rep));
+        if (outs.size() != 2 || ins.size() != 2) return false;
+
+        uint64_t succ[2], pred[2];
+        for (int i = 0; i < 2; ++i) {
+            succ[i] = orientedId(outs[i].to, UnitigGraph::enterOrient(outs[i]));
+            pred[i] = flip(orientedId(ins[i].to, UnitigGraph::enterOrient(ins[i])));
+        }
+        // Identify which way in is ours and which way out we are proposing.
+        int mine = -1, want = -1;
+        for (int i = 0; i < 2; ++i) {
+            if (pred[i] == from) mine = i;
+            if (succ[i] == terminal) want = i;
+        }
+        if (mine < 0 || want < 0) return false;
+        const uint64_t other = pred[1 - mine];
+        const uint64_t alt = succ[1 - want];
+        if (other == from || alt == terminal) return false;
+
+        const double matched = scoreCandidate(from, terminal, interLen) +
+                               scoreCandidate(other, alt, interLen);
+        const double crossed = scoreCandidate(from, alt, interLen) +
+                               scoreCandidate(other, terminal, interLen);
+        return matched >= 1.0 && matched >= kMatchDominance * crossed;
+    };
+
     // Start with every anchorable unitig as a chain of one, then repeatedly
     // join chains whose paired evidence mutually prefers each other. Growing
     // chains lets support accumulate over a whole contig tail rather than just
@@ -510,7 +590,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // Best continuation off one end of a chain, scored with every member of
     // that chain that still lies within fragment reach of the boundary.
     long long dbgNoCand = 0, dbgLowSupport = 0, dbgTie = 0, dbgMidChain = 0, dbgOk = 0;
-    long long dbgCoverage = 0;
+    long long dbgCoverage = 0, dbgMatched = 0;
     long long dbgTieBest = 0, dbgTieSecond = 0;
 
     auto bestContinuation = [&](uint32_t c, int end) {
@@ -597,8 +677,16 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             // Failing that, coverage continuity: a chain running at 45x
             // continues into sequence at 45x, while a repeat it merely passes
             // through sits at a multiple of that.
-            const int chosen = allSameDestination(cands) ? pickByInterior(cands)
-                                                         : pickByCoverage(tailFirst, cands);
+            int chosen = -1;
+            if (matchingAgrees(tailFirst.back(), cands[pick], cands[pick].back(),
+                               interLenOf(cands[pick]))) {
+                chosen = static_cast<int>(pick);
+                ++dbgMatched;
+            } else if (allSameDestination(cands)) {
+                chosen = pickByInterior(cands);
+            } else {
+                chosen = pickByCoverage(tailFirst, cands);
+            }
             if (chosen < 0) { ++dbgLowSupport; return result; }
             pick = static_cast<size_t>(chosen);
             byCoverage = true;
@@ -716,9 +804,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     if (getenv("TESSERA_DEBUG_RESOLVE")) {
         std::fprintf(stderr,
                      "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
-                     "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld  "
+                     "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld matched=%lld  "
                      "(tie mean best=%.1f second=%.1f)\n",
-                     dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain, dbgCoverage,
+                     dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain, dbgCoverage, dbgMatched,
                      dbgTie ? static_cast<double>(dbgTieBest) / static_cast<double>(dbgTie) : 0.0,
                      dbgTie ? static_cast<double>(dbgTieSecond) / static_cast<double>(dbgTie) : 0.0);
     }
