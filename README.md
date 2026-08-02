@@ -420,21 +420,29 @@ neighbours, and the model is learned from those. That corpus is a separate
 collection from the isolates being tested, so no assembly is scored against a
 model that has seen its own genome.
 
+Measured on 37 isolates:
+
 | Metric | tessera | tessera + model | SPAdes |
 | --- | --- | --- | --- |
-| Median contig NGA50 | 248,606 | **309,660** | 301,368 |
-| Median NGA50 ratio to SPAdes | 0.85x | **1.08x** | 1.00x |
-| Isolates leading SPAdes on NGA50 | 4 | **10 / 14** | — |
-| Median contigs | 69 | **64** | 66 |
-| Total misassemblies | **6** | 8 | 8 |
-| Median mismatches / 100 kbp | **0.14** | **0.21** | 0.36 |
-| Median genome fraction (%) | **99.02** | **99.02** | 98.92 |
+| Median contig NGA50 | 262,251 | **348,781** | 318,884 |
+| Median NGA50 ratio to SPAdes | 0.89x | **1.03x** | 1.00x |
+| Isolates leading SPAdes on NGA50 | 8 | **26 / 37** | — |
+| Median contigs | 75 | 68 | **66** |
+| Total misassemblies | **17** | **22** | 24 |
+| Median mismatches / 100 kbp | **0.21** | **0.22** | 0.39 |
+| Median genome fraction (%) | **99.02** | **99.02** | 98.95 |
 
 Read across rather than down. Without a model tessera is the more conservative
-assembler: fewer misassemblies, a third the mismatch rate, higher genome
-fraction, and 0.85x the contiguity, because it declines joins it cannot support.
-With a model it leads on every column — contiguity, contig count, per-base
-accuracy and completeness — while matching SPAdes on misassemblies.
+assembler: fewer misassemblies, half the mismatch rate, higher genome fraction,
+and 0.89x the contiguity, because it declines joins it cannot support. With a
+model it leads on contiguity (1.03x, ahead on 26 of 37 isolates), on
+misassemblies, on per-base accuracy and on completeness. It reports slightly
+more contigs than SPAdes, which is what higher genome fraction looks like when
+the extra sequence is short: the pieces are counted, and they are also present.
+
+Both columns use the same trimmed reads, the same QUAST invocation and the same
+closed references, and the model is always learned from a corpus that excludes
+the genome being assembled.
 
 ### Reconstructing the chromosome
 
