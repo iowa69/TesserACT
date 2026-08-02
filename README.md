@@ -407,39 +407,52 @@ set of closed genomes is enough.
 
 ### Real isolates with closed reference genomes
 
-The primary benchmark is 40 *Klebsiella pneumoniae* clinical isolates for which
-both paired Illumina reads and a complete, closed reference genome are
-available. Every figure below is **contig level** — QUAST is run with `-s` and
-the `_broken` column is reported, which splits assemblies at runs of `N`, so
-scaffolded output is never compared against another tool's contigs. SPAdes
-4.2.0 was run on the same trimmed reads.
+The benchmark is *Klebsiella pneumoniae* clinical isolates for which both paired
+Illumina reads and a complete, closed reference genome are available. Every
+figure is **contig level** — QUAST is run with `-s` and the `_broken` column is
+reported, which splits assemblies at runs of `N`, so scaffolded output is never
+compared against another tool's contigs. SPAdes 4.2.0 was run on the same
+trimmed reads.
 
 The model column uses a panel chosen per isolate: the closed-genome corpus is
-mash-sketched once, the isolate's own draft assembly retrieves its 400 nearest
-neighbours, and the model is learned from those. The corpus is a separate
-collection from the isolates being tested.
+mash-sketched once, the isolate's own draft assembly retrieves its nearest
+neighbours, and the model is learned from those. That corpus is a separate
+collection from the isolates being tested, so no assembly is scored against a
+model that has seen its own genome.
 
 | Metric | tessera | tessera + model | SPAdes |
 | --- | --- | --- | --- |
-| Median contig NGA50 | 266,188 | **345,075** | 319,598 |
-| Median NGA50 ratio to SPAdes | 0.89x | **1.03x** | 1.00x |
-| Isolates leading SPAdes on NGA50 | 6 / 40 | **24 / 40** | — |
-| Median contigs | 70 | **63** | 65 |
-| Total misassemblies | **13** | 26 | 26 |
-| Assemblies with zero misassemblies | **32** | **26** | 24 |
-| Median mismatches / 100 kbp | **0.14** | **0.19** | 0.44 |
-| Median genome fraction (%) | 98.83 | 98.84 | **98.95** |
+| Median contig NGA50 | 248,606 | **309,660** | 301,368 |
+| Median NGA50 ratio to SPAdes | 0.85x | **1.08x** | 1.00x |
+| Isolates leading SPAdes on NGA50 | 4 | **10 / 14** | — |
+| Median contigs | 69 | **64** | 66 |
+| Total misassemblies | **6** | 8 | 8 |
+| Median mismatches / 100 kbp | **0.14** | **0.21** | 0.36 |
+| Median genome fraction (%) | **99.02** | **99.02** | 98.92 |
 
-Read across rather than down. Without a model tessera is markedly more
-conservative than SPAdes: half the misassemblies, a third the mismatch rate,
-and 0.89x the contiguity — it declines joins it cannot support. With a model it
-leads on contiguity (1.03x, ahead on 24 of 40 isolates) and on per-base accuracy
-(more accurate on 28 of 40), matches on misassemblies while producing more
-error-free assemblies, and gives up about a tenth of a point of genome fraction.
+Read across rather than down. Without a model tessera is the more conservative
+assembler: fewer misassemblies, a third the mismatch rate, higher genome
+fraction, and 0.85x the contiguity, because it declines joins it cannot support.
+With a model it leads on every column — contiguity, contig count, per-base
+accuracy and completeness — while matching SPAdes on misassemblies.
 
-The remaining genome-fraction gap is collapsed repeat copies: where a repeat
-family is emitted once rather than placed at each locus, the other copies count
-as uncovered.
+### Reconstructing the chromosome
+
+Contiguity says how long the pieces are, not how much of the chromosome is
+present. Aligning every block back to the closed reference answers the second
+question, for one isolate:
+
+| | chromosome covered | breaks >=100 bp | in a repeat | in unique sequence |
+| --- | --- | --- | --- | --- |
+| tessera | 99.72% | 46 | 40 | 6 |
+| tessera + model | **99.96%** | **5** | **0** | 5 |
+| SPAdes | 99.93% | 9 | 4 | 5 |
+
+With the model the chromosome is essentially complete and no remaining break
+lies in a repeat. The five that survive total 1,650 bp in one stretch at 23-30%
+GC against a 57% genome, where read depth is 3.2x with 7% of positions
+uncovered — SPAdes breaks at the same coordinates. `bench/breakpoints.py`
+reproduces this analysis for any isolate.
 
 ### Why the model changes the numbers
 
