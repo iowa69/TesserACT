@@ -5,6 +5,7 @@
 #include <thread>
 
 #include "assembler.h"
+#include "kmer.h"
 #include "util.h"
 
 namespace {
@@ -63,7 +64,7 @@ void usage() {
         "\n"
         "ASSEMBLY\n"
         "  -k, --kmers LIST        comma-separated k values, e.g. 21,33,55,77\n"
-        "                          (default: chosen from the read length; max 96)\n"
+        "                          (default: chosen from the read length; max 127)\n"
         "  -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)\n"
         "      --min-link N        paired reads needed to trust a join (default: 2)\n"
         "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)\n"
@@ -149,8 +150,11 @@ int main(int argc, char** argv) {
             opt.kValues.clear();
             for (const std::string& tok : util::split(needValue(i, "-k"), ',')) {
                 int k = std::atoi(tok.c_str());
-                if (k < 5 || k > 96) {
-                    std::fprintf(stderr, "error: k must be between 5 and 96 (got %d)\n", k);
+                // Odd k only: an even k admits palindromic k-mers, which have
+                // no well-defined canonical form.
+                if (k < 5 || k > kMaxK - 1) {
+                    std::fprintf(stderr, "error: k must be between 5 and %d (got %d)\n",
+                                 kMaxK - 1, k);
                     return 1;
                 }
                 if (k % 2 == 0) {

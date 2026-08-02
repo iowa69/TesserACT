@@ -44,7 +44,7 @@ run () {   # run OUTDIR extra-args...
 for spec in \
   "--mode fast" "--mode standard" "--mode careful" "--mode aggressive" \
   "--aggressive" "--no-correct" "--no-resolve" "--no-scaffold" "--no-polish" \
-  "--min-contig 500" "-k 21,33" "-c 2" "--min-link 3" "--tie-ratio 1.3" \
+  "--min-contig 500" "-k 21,33" "-k 21,55,127" "-c 2" "--min-link 3" "--tie-ratio 1.3" \
   "--quiet" "--map-polish none"
 do
   d="$TMP/f$(echo "$spec" | tr -d ' /,.-')"

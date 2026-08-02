@@ -21,7 +21,7 @@ namespace ts {
 
 constexpr int kKmerWords = 4;
 constexpr int kKmerBits = 64 * kKmerWords;
-constexpr int kMaxK = kKmerBits / 2;   // 96
+constexpr int kMaxK = kKmerBits / 2;   // 128 with four 64-bit words
 
 struct Kmer {
     uint64_t w[kKmerWords];
