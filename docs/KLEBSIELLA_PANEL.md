@@ -353,3 +353,69 @@ So the chain abstraction is not what limits contiguity here. Where the limit
 actually lies is, after all of this, still unidentified -- which is a more
 honest place to stop than a confident architectural claim that measurement
 contradicts.
+
+## Where the limit actually lies
+
+The claim above -- that the limit was unidentified -- lasted until the
+resolver was asked what it was rejecting rather than what it was choosing.
+
+On ERR11578413, of 498 chain ends:
+
+    no-partner=461  low-support=35  not-mutual=0  taken=2
+
+and of 1,635 continuation decisions:
+
+    ok=665  no-candidate=405  low-support=387  tie=0  by-coverage=125
+
+Ninety-three percent of chain ends have **no paired partner at all**, and 405
+continuations have **no graph candidate at all**. Neither number is a decision
+the resolver got wrong; both are the absence of anything to decide. Every knob
+tried over this study -- the link bar, the tie ratio, matching dominance, risk
+appetite -- adjudicates the 387 low-support cases, which is a quarter of the
+problem at most.
+
+Aligning what the assembly fails to cover against the reads shows what sits at
+those dead ends. 44,662 bp of ERR11578413 is covered by reads and missing from
+the assembly, and the largest pieces are eight stretches of 3.5-4.0 kb at ~52%
+GC and 1.3-2.4x typical depth: the rRNA operons. They are not absent from the
+assembly. They are shattered:
+
+| | tessera | SPAdes |
+|---|---|---|
+| operon at chr 4,151,374-4,155,420 | five contigs, 365-428 bp, cov 212-280x | one contig, 2,801 bp, cov 211x |
+
+Two mechanisms were tested and both are innocent. Disabling read correction
+entirely leaves the gap boundaries **byte-identical**, so the corrector is not
+collapsing the copies. Bubble popping never fires there at all -- zero bubbles
+in the late simplification rounds -- because an operon tangle is not a
+two-branch bubble, and neither raising the length cap fourfold and tenfold nor
+adding a rule that collapses bubbles whose both sides are multi-copy changes a
+single contig. Both knobs were reverted as inert.
+
+What is left is arithmetic. The fragments in this library are 230-355 bp; the
+repeats are ~4,000 bp. `scoreCandidate` accepts a continuation only when the
+fragment length it implies is plausible, so a pair can never vouch for a walk
+across an operon -- not because the bar is too high, but because no such
+fragment exists. **The remaining contiguity is not reachable from paired-end
+evidence on this library by any decision rule.**
+
+SPAdes crosses them anyway, on coverage multiplicity rather than evidence, and
+the price is visible in the same reports: on ERR11578413, contig level,
+
+| | tessera | SPAdes |
+|---|---|---|
+| NGA50 | 234,964 | 320,313 |
+| genome fraction | 98.95 | 99.14 |
+| contigs | 65 | 53 |
+| misassemblies | 0 | 0 |
+| mismatches per 100 kbp | **0.08** | 0.72 |
+
+Nine times the per-base error rate for 36% more NGA50. Across the 40-isolate
+head-to-head the same trade shows up as 26 misassemblies against our 12. And
+when that heuristic was implemented here -- the extension resolver above -- it
+reproduced the trade exactly: more genome fraction, thirty-one new
+misassemblies.
+
+So the gap is real, it is measured, and it is a choice rather than a defect.
+Closing it means buying contiguity with error. That is worth stating plainly
+rather than continuing to search for a decision rule that cannot exist.
