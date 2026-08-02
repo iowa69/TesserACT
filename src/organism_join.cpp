@@ -46,6 +46,45 @@ constexpr double kIsDensity = 0.30;
 constexpr int32_t kGapTolerance = 500;    // gaps within this are the same cluster
 constexpr int32_t kMaxGap = 20000;
 
+// Canonical 31-mer of a sequence's first k bases, or UINT64_MAX if it contains
+// anything but ACGT.
+uint64_t canonicalHead(const std::string& seq) {
+    if (seq.size() < static_cast<size_t>(kMarkerK)) return UINT64_MAX;
+    const uint64_t mask = (1ULL << (2 * kMarkerK)) - 1;
+    uint64_t fwd = 0, rev = 0;
+    for (int i = 0; i < kMarkerK; ++i) {
+        const int b = markerBaseCode(seq[static_cast<size_t>(i)]);
+        if (b < 0) return UINT64_MAX;
+        fwd = ((fwd << 2) | static_cast<uint64_t>(b)) & mask;
+        rev = (rev >> 2) | (static_cast<uint64_t>(3 - b) << (2 * (kMarkerK - 1)));
+    }
+    return fwd <= rev ? fwd : rev;
+}
+
+uint64_t canonicalTail(const std::string& seq) {
+    if (seq.size() < static_cast<size_t>(kMarkerK)) return UINT64_MAX;
+    return canonicalHead(seq.substr(seq.size() - static_cast<size_t>(kMarkerK)));
+}
+
+
+
+// Every canonical 31-mer of `seq`, with its start position.
+template <typename F>
+void forEachKmer31(const std::string& seq, F&& fn) {
+    if (seq.size() < static_cast<size_t>(kMarkerK)) return;
+    const uint64_t mask = (1ULL << (2 * kMarkerK)) - 1;
+    uint64_t fwd = 0, rev = 0;
+    int valid = 0;
+    for (size_t i = 0; i < seq.size(); ++i) {
+        const int b = markerBaseCode(seq[i]);
+        if (b < 0) { valid = 0; fwd = rev = 0; continue; }
+        fwd = ((fwd << 2) | static_cast<uint64_t>(b)) & mask;
+        rev = (rev >> 2) | (static_cast<uint64_t>(3 - b) << (2 * (kMarkerK - 1)));
+        if (++valid < kMarkerK) continue;
+        fn(fwd <= rev ? fwd : rev, static_cast<int32_t>(i + 1 - static_cast<size_t>(kMarkerK)));
+    }
+}
+
 struct MarkerAt {
     uint64_t oriented;   // (marker id << 1) | orientation as walked
     int32_t offset;      // bases from the port to the marker's start
@@ -157,8 +196,14 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     // this isolate carries an element the panel need not have. The panel's
     // adjacency across that point describes a genome without the insertion, so
     // acting on it deletes the element. Silence those ports entirely.
+    // The two replicons are not the same problem. Chromosomal insertion sites
+    // recur across the panel, so an end lying on one can be *placed*: the
+    // element's length is known and the join can be sized. Plasmids are mosaic,
+    // their insertion sites are not stable, and there the only safe move is to
+    // leave the end alone. So placement runs on the chromosome and the veto on
+    // the plasmid.
     std::vector<char> isFlanked(nports, 0);
-    if (isPanel && isPanel->loaded()) {
+    if (isPanel && isPanel->loaded() && cls == Replicon::Plasmid) {
         for (size_t c = 0; c < n; ++c) {
             const std::string& seq = contigs[c];
             const size_t w = std::min<size_t>(kIsWindow, seq.size());
@@ -167,6 +212,81 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         }
         for (size_t p = 0; p < nports; ++p) {
             if (isFlanked[p]) { exitM[p].clear(); entryM[p].clear(); ++st.rejectedInsertionSeq; }
+        }
+    }
+
+    // ---- place elements at known insertion sites (chromosome only) --------
+    // A contig ending on the left flank of a recurrent site, and another
+    // starting on its right flank, are the two halves of a locus the panel has
+    // seen intact. The element between them has a known length, so the join can
+    // be made and sized rather than refused.
+    std::vector<uint32_t> siteJoin(nports, UINT32_MAX);
+    std::vector<int32_t> siteGap(nports, 0);
+    if (isPanel && isPanel->siteCount() && cls == Replicon::Chromosome) {
+        // A contig stops wherever the graph broke, which is rarely the flank
+        // boundary itself, so the signature is looked for across a window and
+        // its offset from the end is carried into the gap arithmetic.
+        constexpr size_t kSiteWindow = 3000;
+        struct Occ { uint64_t kmer; int32_t offset; uint32_t port; };
+        std::vector<Occ> tails, heads;
+        for (size_t c = 0; c < n; ++c) {
+            const std::string& seq = contigs[c];
+            if (seq.size() < static_cast<size_t>(kMarkerK)) continue;
+            const std::string rc = reverseComplement(seq);
+            const int32_t L = static_cast<int32_t>(seq.size());
+            forEachKmer31(seq, [&](uint64_t km, int32_t pos) {
+                const int32_t fromRight = L - pos - kMarkerK;
+                if (fromRight >= 0 && fromRight <= static_cast<int32_t>(kSiteWindow))
+                    tails.push_back({km, fromRight, static_cast<uint32_t>(c * 2 + 1)});
+                if (pos <= static_cast<int32_t>(kSiteWindow))
+                    heads.push_back({km, pos, static_cast<uint32_t>(c * 2 + 0)});
+            });
+            forEachKmer31(rc, [&](uint64_t km, int32_t pos) {
+                const int32_t fromRight = L - pos - kMarkerK;
+                if (fromRight >= 0 && fromRight <= static_cast<int32_t>(kSiteWindow))
+                    tails.push_back({km, fromRight, static_cast<uint32_t>(c * 2 + 0)});
+                if (pos <= static_cast<int32_t>(kSiteWindow))
+                    heads.push_back({km, pos, static_cast<uint32_t>(c * 2 + 1)});
+            });
+        }
+        std::unordered_map<uint64_t, std::vector<const Occ*>> headIdx;
+        for (const Occ& h : heads) headIdx[h.kmer].push_back(&h);
+
+        struct Cand { uint32_t port = UINT32_MAX; int32_t gap = 0; uint32_t support = 0; uint32_t hits = 0; };
+        std::vector<Cand> cand(nports);
+        for (const Occ& t : tails) {
+            const std::vector<IsSite>* sites = isPanel->sitesFor(t.kmer);
+            if (!sites) continue;
+            for (const IsSite& site : *sites) {
+                auto it = headIdx.find(site.rightKmer);
+                if (it == headIdx.end()) continue;
+                for (const Occ* h : it->second) {
+                    if (h->port / 2 == t.port / 2) continue;
+                    // Panel distance runs flank-signature to flank-signature
+                    // through the element; here it is spent on this contig's
+                    // tail, the gap, and the next contig's head.
+                    const int32_t gap = site.elementLen - t.offset - h->offset;
+                    if (gap < 1 || gap > 20000) continue;
+                    Cand& c = cand[t.port];
+                    ++c.hits;
+                    if (site.genomes > c.support) {
+                        c.support = site.genomes;
+                        c.port = h->port;
+                        c.gap = gap;
+                    }
+                }
+            }
+        }
+        for (uint32_t p = 0; p < nports; ++p) {
+            // One partner only: several means the site does not name a locus here.
+            if (cand[p].port != UINT32_MAX && cand[p].hits >= 1) {
+                bool unique = true;
+                for (uint32_t q = 0; q < nports && unique; ++q) {
+                    if (q != p && cand[q].port == cand[p].port && cand[q].support > cand[p].support)
+                        unique = false;
+                }
+                if (unique) { siteJoin[p] = cand[p].port; siteGap[p] = cand[p].gap; }
+            }
         }
     }
 
@@ -241,6 +361,18 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     std::vector<uint32_t> joinTo(nports, UINT32_MAX);
     std::vector<int32_t> joinGap(nports, 0);
     size_t made = 0;
+    // Insertion-site placements first: they are the more specific evidence,
+    // naming a locus rather than an adjacency, and both ends must agree.
+    for (uint32_t p = 0; p < nports; ++p) {
+        const uint32_t q = siteJoin[p];
+        if (q == UINT32_MAX || siteJoin[q] != p) continue;
+        if (joinTo[p] != UINT32_MAX || joinTo[q] != UINT32_MAX) continue;
+        joinTo[p] = q;
+        joinTo[q] = p;
+        joinGap[p] = joinGap[q] = std::max(1, siteGap[p]);
+        ++made;
+        ++st.insertionSiteJoins;
+    }
     for (uint32_t p = 0; p < nports; ++p) {
         const Best& b = best[p];
         if (b.port == UINT32_MAX) continue;
@@ -308,6 +440,46 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
 
 
 }  // namespace
+
+bool IsPanel::loadSites(const std::string& tsvPath, std::string& error) {
+    std::FILE* f = std::fopen(tsvPath.c_str(), "r");
+    if (!f) { error = "cannot open insertion-site table: " + tsvPath; return false; }
+    char buf[1 << 16];
+    bool header = true;
+    size_t kept = 0;
+    while (std::fgets(buf, sizeof(buf), f)) {
+        if (header) { header = false; continue; }
+        // family, genomes_sharing_site, median_element_len, left_sig, right_sig
+        std::string line(buf);
+        std::vector<std::string> col;
+        size_t pos = 0;
+        while (col.size() < 5) {
+            const size_t tab = line.find('\t', pos);
+            if (tab == std::string::npos) { col.push_back(line.substr(pos)); break; }
+            col.push_back(line.substr(pos, tab - pos));
+            pos = tab + 1;
+        }
+        if (col.size() < 5) continue;
+        while (!col[4].empty() && (col[4].back() == '\n' || col[4].back() == '\r')) col[4].pop_back();
+
+        const uint32_t genomes = static_cast<uint32_t>(std::atoi(col[1].c_str()));
+        // A site seen in one genome is that genome's accident, not a site.
+        if (genomes < 2) continue;
+        const int32_t elen = static_cast<int32_t>(std::atoi(col[2].c_str()));
+        if (elen <= 0 || elen > 20000) continue;
+
+        const uint64_t left = canonicalTail(col[3]);
+        const uint64_t right = canonicalHead(col[4]);
+        if (left == UINT64_MAX || right == UINT64_MAX) continue;
+        sites_[left].push_back(IsSite{right, elen, genomes});
+        // The mirrored walk: arriving from the other side, the roles swap.
+        sites_[right].push_back(IsSite{left, elen, genomes});
+        ++kept;
+    }
+    std::fclose(f);
+    if (kept == 0) { error = "no recurrent insertion sites in " + tsvPath; return false; }
+    return true;
+}
 
 bool IsPanel::load(const std::string& fastaPath, std::string& error) {
     std::FILE* f = std::fopen(fastaPath.c_str(), "r");
@@ -381,9 +553,10 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
 
     if (verbose) {
         std::fprintf(stderr,
-                     "      %zu markers placed, %zu joins (%zu chromosomal, %zu plasmid) "
-                     "spanning %zu gap bases\n",
-                     st.markersFound, st.joins, st.chromosomeJoins, st.plasmidJoins, st.gapBases);
+                     "      %zu markers placed, %zu joins (%zu chromosomal, %zu plasmid, "
+                     "%zu placed at known insertion sites) spanning %zu gap bases\n",
+                     st.markersFound, st.joins, st.chromosomeJoins, st.plasmidJoins,
+                     st.insertionSiteJoins, st.gapBases);
         if (std::getenv("TESSERA_DEBUG_ORGANISM")) {
             std::fprintf(stderr,
                          "      [debug] organism join: candidates=%zu weak=%zu "

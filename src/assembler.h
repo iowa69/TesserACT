@@ -62,6 +62,9 @@ struct AssemblyOptions {
     // Known insertion sequences. Contig ends inside one are left unjoined,
     // because that is where this isolate differs from the panel by construction.
     std::string isPanelPath;
+    // Recurrent insertion sites: flank signatures that let an element be
+    // placed on the chromosome rather than merely avoided.
+    std::string isSitesPath;
 
     // Polishing against a full read alignment, after the k-mer polisher has
     // done what it can. Off unless a mapper is named, since it shells out.

@@ -42,6 +42,9 @@ void usage() {
         "      --is-panel FILE     FASTA of known insertion sequences. Contig ends\n"
         "                          lying inside one are left unjoined: that is where\n"
         "                          this isolate differs from the panel by construction.\n"
+        "      --is-sites FILE     table of recurrent insertion sites (flank\n"
+        "                          signatures); lets an element be placed on the\n"
+        "                          chromosome instead of leaving the end unjoined\n"
         "      --map-polish NAME   polish the finished contigs against a full read\n"
         "                          alignment: bowtie2 | bwa | none (default none)\n"
         "      --mapper-dir DIR    where to find the mapper binaries\n"
@@ -131,6 +134,7 @@ int main(int argc, char** argv) {
         else if (a == "--model") opt.organismModelPath = needValue(i, "--model");
         else if (a == "--mapper-dir") opt.mapperDir = needValue(i, "--mapper-dir");
         else if (a == "--is-panel") opt.isPanelPath = needValue(i, "--is-panel");
+        else if (a == "--is-sites") opt.isSitesPath = needValue(i, "--is-sites");
         else if (a == "--map-polish") {
             const std::string m = needValue(i, "--map-polish");
             if (!parseMapper(m, opt.mapPolisher)) {

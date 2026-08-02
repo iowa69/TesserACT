@@ -13,6 +13,7 @@
 
 #include <cstddef>
 #include <string>
+#include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
@@ -34,15 +35,33 @@ struct OrganismJoinStats {
     size_t rejectedNotMutual = 0;
     size_t rejectedInconsistent = 0;   // no agreeing gap cluster
     size_t rejectedInsertionSeq = 0;   // an end sitting inside a mobile element
+    size_t insertionSiteJoins = 0;     // joins placed from a known insertion site
 };
 
 // Canonical 31-mers of known insertion sequences. A contig that ends inside a
 // mobile element is ending there *because* this isolate carries an IS the panel
 // may not, and the panel's adjacency across that point describes a genome
 // without the insertion. Joining on it deletes the element and misassembles.
+// A recurrent insertion site: two unique flanks that, across the panel, sit
+// either side of an element of a known length. Where an isolate's contigs end
+// on those flanks, the element can be placed and the join sized -- which is
+// what the flanks buy over the element alone.
+struct IsSite {
+    uint64_t rightKmer = 0;    // canonical 31-mer opening the right flank
+    int32_t elementLen = 0;    // median element length between the flanks
+    uint32_t genomes = 0;      // panel genomes sharing this site
+};
+
 class IsPanel {
 public:
     bool load(const std::string& fastaPath, std::string& error);
+    // Recurrent insertion sites, keyed by the 31-mer closing the left flank.
+    bool loadSites(const std::string& tsvPath, std::string& error);
+    size_t siteCount() const { return sites_.size(); }
+    const std::vector<IsSite>* sitesFor(uint64_t leftKmer) const {
+        auto it = sites_.find(leftKmer);
+        return it == sites_.end() ? nullptr : &it->second;
+    }
     bool loaded() const { return !kmers_.empty(); }
     size_t size() const { return kmers_.size(); }
     size_t copies() const { return copies_; }
@@ -51,6 +70,7 @@ public:
 
 private:
     std::unordered_set<uint64_t> kmers_;
+    std::unordered_map<uint64_t, std::vector<IsSite>> sites_;
     size_t copies_ = 0;
 };
 

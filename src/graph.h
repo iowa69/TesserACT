@@ -43,6 +43,7 @@ struct SimplifyRoundStats {
     size_t chimerasRemoved = 0;
     size_t isolatedRemoved = 0;
     size_t lowDepthRemoved = 0;
+    size_t deadEndsJoined = 0;
     size_t deadEnds = 0;
     size_t merged = 0;
     size_t unitigs = 0;
@@ -112,6 +113,19 @@ public:
     // tells the two apart. A unitig is kept regardless if deleting it would
     // strand its neighbours.
     size_t filterByReadDepth(double fraction);
+
+    // Joins pairs of dead ends whose sequences overlap exactly.
+    //
+    // A de Bruijn graph breaks wherever a single k-mer is missing -- one
+    // uncorrected error in a low-coverage stretch is enough -- and no decision
+    // rule can repair that, because there is no edge to choose. The two
+    // unitigs still overlap in sequence, though, so an exact overlap of at
+    // least `minOverlap` between one's tail and another's head is evidence the
+    // graph lost an edge that the reads support. Low-complexity overlaps are
+    // refused: a run of a single base matches everywhere and means nothing.
+    //
+    // Returns the number of edges added.
+    size_t joinDeadEnds(size_t minOverlap);
     // Runs the full simplification schedule until it converges.
     // `bubbleCoverageLimit` is the fraction of mean coverage below which a
     // bubble side may be discarded; raising it collapses diverged repeat

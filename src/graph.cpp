@@ -784,6 +784,100 @@ size_t UnitigGraph::removeIsolated(double covThreshold, size_t maxLen) {
     return removed;
 }
 
+
+namespace {
+
+// An overlap made mostly of one base carries no information: it matches
+// anywhere, so accepting it would wire the graph together arbitrarily.
+bool lowComplexity(const std::string& s) {
+    if (s.empty()) return true;
+    size_t counts[4] = {0, 0, 0, 0};
+    size_t total = 0;
+    for (char c : s) {
+        switch (c) {
+            case 'A': ++counts[0]; ++total; break;
+            case 'C': ++counts[1]; ++total; break;
+            case 'G': ++counts[2]; ++total; break;
+            case 'T': ++counts[3]; ++total; break;
+            default: break;
+        }
+    }
+    if (total == 0) return true;
+    size_t best = 0;
+    for (size_t c : counts) best = std::max(best, c);
+    // A longer overlap is allowed to be more skewed, since it is that much
+    // less likely to occur by chance.
+    const double limit = total >= 40 ? 0.90 : (total >= 20 ? 0.82 : 0.75);
+    return static_cast<double>(best) > limit * static_cast<double>(total);
+}
+
+}  // namespace
+
+size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
+    if (minOverlap < 8) minOverlap = 8;
+    const size_t maxOverlap = static_cast<size_t>(k_ - 1);
+    if (maxOverlap < minOverlap) return 0;
+
+    // Collect every loose end as the oriented sequence leaving it, so a tail
+    // and a head can be compared directly.
+    struct End { uint32_t u; int end; };
+    std::vector<End> ends;
+    for (uint32_t u = 0; u < nodes.size(); ++u) {
+        if (nodes[u].deleted) continue;
+        if (nodes[u].seq.size() < maxOverlap) continue;
+        for (int e = 0; e < 2; ++e) {
+            if (nodes[u].ends[e].empty()) ends.push_back({u, e});
+        }
+    }
+    if (ends.size() < 2) return 0;
+
+    // Index candidate heads by their first `minOverlap` bases, so each tail
+    // only compares against ends that could possibly match.
+    std::unordered_map<std::string, std::vector<size_t>> byPrefix;
+    std::vector<std::string> headSeq(ends.size());
+    for (size_t i = 0; i < ends.size(); ++i) {
+        const Unitig& U = nodes[ends[i].u];
+        // Leaving end 0 means the unitig is read reverse-complemented, so the
+        // sequence that *arrives* at this end is the reverse complement.
+        headSeq[i] = ends[i].end == 0 ? U.seq : reverseComplement(U.seq);
+        byPrefix[headSeq[i].substr(0, minOverlap)].push_back(i);
+    }
+
+    size_t added = 0;
+    std::vector<char> used(ends.size(), 0);
+    for (size_t i = 0; i < ends.size(); ++i) {
+        if (used[i]) continue;
+        const Unitig& U = nodes[ends[i].u];
+        if (U.deleted) continue;
+        // The sequence running *out* of this end.
+        const std::string tail = ends[i].end == 1 ? U.seq : reverseComplement(U.seq);
+
+        bool joined = false;
+        for (size_t ov = maxOverlap; ov >= minOverlap && !joined; --ov) {
+            if (tail.size() < ov) continue;
+            const std::string suffix = tail.substr(tail.size() - ov);
+            auto it = byPrefix.find(suffix.substr(0, minOverlap));
+            if (it == byPrefix.end()) continue;
+            for (size_t j : it->second) {
+                if (j == i || used[j] || used[i]) continue;
+                if (ends[j].u == ends[i].u) continue;          // no self-join
+                if (nodes[ends[j].u].deleted) continue;
+                if (headSeq[j].size() < ov) continue;
+                // Exact overlap only: a mismatch here is a different locus.
+                if (headSeq[j].compare(0, ov, suffix) != 0) continue;
+                if (lowComplexity(suffix)) continue;
+                addLink(ends[i].u, ends[i].end, ends[j].u, ends[j].end);
+                used[i] = used[j] = 1;
+                ++added;
+                joined = true;
+                break;
+            }
+            if (ov == minOverlap) break;
+        }
+    }
+    return added;
+}
+
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
                            std::vector<SimplifyRoundStats>* rounds) {
@@ -826,6 +920,18 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                                                         static_cast<size_t>(2 * k_));
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
+
+        // A missing k-mer breaks the graph where the sequence itself does not.
+        // Rejoining loose ends that overlap exactly recovers edges no decision
+        // rule could, because there was no edge to decide between.
+        static const size_t joinOverlap = [] {
+            const char* e = std::getenv("TESSERA_JOIN_DEADENDS");
+            return e ? static_cast<size_t>(std::atoi(e)) : 0u;
+        }();
+        if (joinOverlap > 0) {
+            st.deadEndsJoined = joinDeadEnds(joinOverlap);
+            st.merged += compact();
+        }
         st.merged += compact();
 
         st.unitigs = liveCount();

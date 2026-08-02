@@ -434,6 +434,15 @@ bool Assembler::run(std::string& error) {
                          util::commify(static_cast<long long>(isPanel_.size())).c_str());
         }
     }
+    if (!opt_.isSitesPath.empty() && isPanel_.siteCount() == 0) {
+        std::string err;
+        if (!isPanel_.loadSites(opt_.isSitesPath, err)) {
+            if (opt_.verbose) std::fprintf(stderr, "      warning: %s\n", err.c_str());
+        } else if (opt_.verbose) {
+            std::fprintf(stderr, "      insertion sites: %s recurrent loci\n",
+                         util::commify(static_cast<long long>(isPanel_.siteCount())).c_str());
+        }
+    }
     if (organismModel_.loaded() && !seqs.empty()) {
         if (opt_.verbose) {
             std::fprintf(stderr, "[4b/7] %s model joining (%u genomes, %u plasmid sets)\n",
