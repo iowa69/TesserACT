@@ -366,6 +366,34 @@ tessera-model --organism klebsiella --out strain.tsm $(cat near.txt)
 The number of neighbours is a dial rather than a constant: fewer makes the
 evidence more relevant to this strain, more makes it better supported.
 
+### Tuning for contiguity without a model
+
+Two knobs move the conservative default toward contiguity, and they are
+independent of each other:
+
+```sh
+tessera -1 R1.fq.gz -2 R2.fq.gz -o out \
+        --link-per-x 0.04 --tie-ratio 1.05
+```
+
+`--link-per-x` sets how much paired support a contested join must have per unit
+of median coverage, and `--tie-ratio` how far the winning branch must beat the
+runner-up. Lowering both takes more joins. Measured on five closed-reference
+isolates, this moves median contig NGA50 from 261,117 to 273,595 and genome
+fraction from 98.94% to 98.97%, for one additional misassembly across the set.
+
+`TESSERA_COMMON_PREFIX=3000` additionally lets a contig absorb up to 3 kb of
+sequence beyond its end when the graph offers only one way forward into a
+multi-entrance repeat. Every continuation begins with that same sequence, so
+appending it decides nothing; it recovers the repeat copy at that locus, which
+would otherwise be represented once in the assembly and counted as missing at
+every other copy. Genome fraction rises to 99.05% with the duplication ratio
+unchanged at 1.000.
+
+Both are off by default because the default trades contiguity for certainty.
+Whether that trade is right depends on what the assembly is for: a contiguity
+number, or a sequence you intend to trust base by base.
+
 ### The insertion-sequence panel
 
 `--is-panel` takes a FASTA of known insertion sequences. A contig ending inside
