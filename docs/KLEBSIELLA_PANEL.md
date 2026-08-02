@@ -214,3 +214,48 @@ strain/reference pairing in the public dataset, not an assembler defect. Those
 eight carry 11 of that batch's 19 misassemblies and a mean 2.19 mismatches per
 100 kbp against 0.27 for the twelve cleanly paired ones. Scoring should report
 the clean subset separately.
+
+## The remaining contiguity gap, and what it is not
+
+SPAdes leads contig NGA50 by about 14% at the median. Eleven explanations were
+measured against the closed reference on the isolate furthest behind
+(ERR5056466: ours 472,260, SPAdes 739,807) and none of them is the cause:
+
+| tested | result |
+|---|---|
+| SPAdes' read correction | tessera on their BayesHammer reads: 461,007 |
+| k ceiling | k<=95: 268,882 against k=127's 472,260 |
+| bubble popping | disabled entirely: NGA50 identical |
+| chimera removal | 0.12 / 0.30 / 0.50: all 472,260 |
+| repeat-gated support bar | four extra misassemblies, no better trade |
+| support-bar level | flat 2 / 0.07 / 0.10 trade linearly |
+| matching dominance | 3.0 and 1.5 both fire exactly ten times |
+| risk appetite | `--mode aggressive`: 460,761, below the default |
+| multi-k carry weight | 4 / 16 / 48: 472,260 / 451,613 / 414,314 |
+| merged fragments as spanning evidence | 361,437, worse than pairs alone |
+| unfair comparison | both have zero Ns, duplication ratio 1.000 |
+
+The junctions SPAdes crosses and we do not are short branch nodes, 219-398 bp,
+in-degree two and out-degree two, whose sequence occurs exactly twice in the
+genome. Every 40-mer of it is in our graph. No pair can span them -- read + node
++ read is about 708 bp against a 355 +/- 119 fragment distribution -- and the
+matching rule confirms there is nothing to weigh: the intended assignment scores
+zero.
+
+### The next thing to try, stated precisely
+
+Not "build exSPAnder". The specific global constraint that distinguishes the two
+matchings at a two-copy repeat is **circularity**. A bacterial chromosome is one
+circle; picking the wrong pairing at a 2-in/2-out repeat splits it into two
+disjoint cycles, while the right pairing leaves one. That is a property of the
+whole layout, not of any local evidence, which is exactly why no amount of
+paired-end scoring reaches it.
+
+Concretely: build a graph whose nodes are resolved chains and whose edges are
+the candidate pairings at each ambiguous repeat, then choose the assignment
+minimising the number of connected components. With a handful of ambiguous
+repeats this is exhaustive; beyond that it is a matching problem. It is
+falsifiable on this panel -- the isolates have closed references, so the correct
+pairing is knowable -- and it should be validated for misassemblies before
+contiguity, since the whole value of the current defaults is three misassemblies
+across twenty isolates.
