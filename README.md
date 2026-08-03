@@ -516,6 +516,25 @@ Both columns use the same trimmed reads, the same QUAST invocation and the same
 closed references, and the model is always learned from a corpus that excludes
 the genome being assembled.
 
+### Plasmids
+
+Genome fraction is dominated by the chromosome, so a plasmid can be missing
+entirely and barely move it. Scored per replicon across 78 plasmids in the
+panel:
+
+| | Recovered >=99% | >=90% | Below 50% | Median |
+| --- | --- | --- | --- | --- |
+| tessera | 59 / 78 | **78** | **0** | 99.6% |
+| SPAdes | **68 / 78** | **78** | **0** | 99.7% |
+
+Small plasmids are the hard case, and for a reason worth knowing: a 2.5 kb
+multicopy plasmid can sit at twenty times the genome's median depth, where its
+own sequencing errors clear an abundance cutoff chosen for the chromosome. Those
+errors become real unitigs and shatter the replicon -- one came out of the graph
+as fifty-seven pieces. tessera judges each unitig against its own neighbours as
+well as against the genome, which recovers most of them; `TESSERA_LOCAL_WEAK=0`
+turns that off and costs 18 of the 78.
+
 ### Reconstructing the chromosome
 
 Contiguity says how long the pieces are, not how much of the chromosome is

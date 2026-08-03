@@ -966,13 +966,14 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 
         // Local weakness, for the replicons a global cutoff cannot serve.
-        // On by default. The abundance cutoff is chosen once from the whole
-        // histogram and cannot serve every replicon: a small multicopy plasmid
-        // at twenty times the genome's median produces its own errors above a
-        // cutoff set for the chromosome, and shatters. Measured over six
-        // isolates this raises genome fraction 98.59 -> 98.81 (past SPAdes),
-        // NGA50 220,286 -> 233,552, and plasmids recovered at 99% or better
-        // from 8 of 17 to 14 of 17.
+        // On by default, and it is a trade rather than a free win. Measured
+        // over the whole 40-isolate panel: genome fraction 98.83 -> 99.05,
+        // past SPAdes' 98.95, and of 78 plasmids those recovered at 99% or
+        // better rise from 41 to 59 while the four that fell below half
+        // recovery drop to none -- matching SPAdes at the 90% mark, 78 of 78.
+        // It costs 1.3% of contig NGA50 and takes misassemblies from 13 to 18,
+        // which is still well under SPAdes' 26. Worth it where plasmid content
+        // is the point; set TESSERA_LOCAL_WEAK=0 where contiguity is.
         static const double localWeak = [] {
             const char* e = std::getenv("TESSERA_LOCAL_WEAK");
             return e ? std::atof(e) : 0.10;
