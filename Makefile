@@ -36,9 +36,13 @@ native: clean $(BIN)
 debug: OPT := -O0 -g3 -fno-omit-frame-pointer
 debug: clean $(BIN)
 
-asan: OPT := -O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer
-asan: LDFLAGS += -fsanitize=address,undefined
-asan: clean $(BIN)
+# Sub-makes rather than prerequisites: "clean $(BIN)" leaves the two
+# unordered, so `make asan -j8` raced and could finish with no binary at all,
+# silently and with status 0.
+asan:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory OPT="-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer" \
+	         LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined" $(BIN)
 
 $(BIN): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@

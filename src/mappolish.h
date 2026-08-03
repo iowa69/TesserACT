@@ -30,6 +30,7 @@ struct MapPolishStats {
     std::string mapper;
     size_t reads = 0;             // alignment records consumed
     size_t alignedReads = 0;
+    size_t malformed = 0;         // records rejected as unparseable
     size_t positions = 0;         // contig bases covered at all
     size_t substitutions = 0;
     size_t deletions = 0;

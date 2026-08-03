@@ -4,6 +4,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <sys/wait.h>
 #include <unordered_map>
 
 #include "util.h"
@@ -150,29 +151,39 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
     // rather than costing a slot at every base.
     std::unordered_map<uint64_t, std::unordered_map<std::string, uint32_t>> insertions;
 
-    std::string line;
-    line.reserve(1 << 16);
-    char buf[1 << 16];
-    while (std::fgets(buf, sizeof(buf), pipe)) {
+    // getline rather than a fixed buffer: a SAM record longer than the buffer
+    // was split, and its remainder parsed as a fresh alignment.
+    char* buf = nullptr;
+    size_t bufCap = 0;
+    ssize_t lineLen = 0;
+    while ((lineLen = getline(&buf, &bufCap, pipe)) > 0) {
         if (buf[0] == '@') continue;
         ++st.reads;
 
-        // qname flag rname pos mapq cigar rnext pnext tlen seq qual
-        char* p = buf;
-        auto field = [&]() -> char* {
-            char* start = p;
-            while (*p && *p != '\t') ++p;
-            if (*p == '\t') *p++ = '\0';
-            return start;
-        };
-        field();                              // qname
-        const int flag = std::atoi(field());
-        const char* rname = field();
-        const long pos = std::atol(field());  // 1-based
-        const int mapq = std::atoi(field());
-        const char* cigar = field();
-        field(); field(); field();            // rnext pnext tlen
-        const char* seq = field();
+        // qname flag rname pos mapq cigar rnext pnext tlen seq qual.
+        // All eleven are mandatory; a short record used to yield empty strings
+        // for the missing ones and was then parsed as though it were real.
+        char* f[11] = {nullptr};
+        int nf = 0;
+        for (char* p = buf; p != nullptr && nf < 11;) {
+            f[nf++] = p;
+            char* tab = std::strchr(p, '\t');
+            if (tab) { *tab = '\0'; p = tab + 1; }
+            else {
+                size_t L = std::strlen(p);
+                while (L > 0 && (p[L - 1] == '\n' || p[L - 1] == '\r')) p[--L] = '\0';
+                p = nullptr;
+            }
+        }
+        if (nf < 11) { ++st.malformed; continue; }
+
+        const int flag = std::atoi(f[1]);
+        const char* rname = f[2];
+        const long pos = std::atol(f[3]);     // 1-based
+        const int mapq = std::atoi(f[4]);
+        const char* cigar = f[5];
+        const char* seq = f[9];
+        const size_t seqLen = std::strlen(seq);
 
         if (flag & 0x4) continue;             // unmapped
         if (flag & 0x100 || flag & 0x800) continue;   // secondary or supplementary
@@ -183,6 +194,34 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
         const size_t ci = static_cast<size_t>(std::atoll(rname + 1));
         if (ci >= contigs.size() || pos < 1) continue;
         ++st.alignedReads;
+
+        // Validate the CIGAR before walking it. This single check is what makes
+        // every seq[qpos] below in bounds: the loop that follows advances qpos
+        // only through the same operators counted here, so if the total agrees
+        // with SEQ it can never run off the end. Previously the M loop was
+        // bounded by the reference cursor alone and I/S advanced qpos freely,
+        // so a crafted CIGAR read past the record -- and the I case copies what
+        // it reads straight into the contig.
+        {
+            uint64_t qlen = 0;
+            bool wellFormed = true;
+            for (const char* c = cigar; *c && wellFormed;) {
+                if (*c < '0' || *c > '9') { wellFormed = false; break; }
+                uint64_t len = 0;
+                while (*c >= '0' && *c <= '9') {
+                    len = len * 10 + static_cast<uint64_t>(*c++ - '0');
+                    if (len > (1ull << 32)) { wellFormed = false; break; }
+                }
+                if (!wellFormed) break;
+                if (!*c) { wellFormed = false; break; }   // length with no operator
+                switch (*c++) {
+                    case 'M': case 'I': case 'S': case '=': case 'X': qlen += len; break;
+                    case 'D': case 'N': case 'H': case 'P': break;
+                    default: wellFormed = false; break;
+                }
+            }
+            if (!wellFormed || qlen != seqLen) { ++st.malformed; continue; }
+        }
 
         size_t rpos = static_cast<size_t>(pos - 1);   // reference cursor
         size_t qpos = 0;                              // query cursor
@@ -221,9 +260,15 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
             }
         }
     }
+    std::free(buf);
     const int rc = pclose(pipe);
-    if (st.alignedReads == 0) {
-        st.error = rc == 0 ? "no reads aligned" : "mapper failed";
+    // A mapper that aligns some reads and then dies -- out of memory, truncated
+    // input, full disk -- leaves a partial pileup. Its exit status was consulted
+    // only when nothing aligned at all, so a half-finished run silently rewrote
+    // the contigs from incomplete evidence, with its stderr sent to /dev/null.
+    const bool mapperOk = rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0;
+    if (!mapperOk || st.alignedReads == 0) {
+        st.error = !mapperOk ? "mapper failed" : "no reads aligned";
         st.seconds = timer.elapsed();
         return st;
     }
