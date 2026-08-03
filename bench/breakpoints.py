@@ -14,8 +14,8 @@ import subprocess
 import sys
 from collections import Counter
 
-R = "/media/iowa/WD_BLACK/kle_bench"
-MM = "/home/iowa/miniconda3/envs/benchtools/bin/minimap2"
+R = os.environ.get("TESSERA_BENCH", os.path.dirname(os.path.abspath(__file__)))
+MM = os.environ.get("MINIMAP2", "minimap2")
 
 
 def load_fasta(path):

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Every configuration against SPAdes, on the isolates where all are scored."""
 import os, statistics, sys
-R="/media/iowa/WD_BLACK/kle_bench"
+R = os.environ.get("TESSERA_BENCH", os.path.dirname(os.path.abspath(__file__)))
 TAGS=sys.argv[1:] or ["vanilla","vcp","combo","kmodel","mcp","spades"]
 def read(p):
     if not os.path.exists(p): return None

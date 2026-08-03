@@ -17,15 +17,15 @@ import subprocess
 import sys
 from collections import defaultdict
 
-R = "/media/iowa/WD_BLACK/kle_bench"
-BARRNAP = "/home/iowa/miniconda3/envs/bsi/bin/barrnap"
+R = os.environ.get("TESSERA_BENCH", os.path.dirname(os.path.abspath(__file__)))
+BARRNAP = os.environ.get("BARRNAP", "barrnap")
 # barrnap is a Perl script; without its own lib on PERL5LIB it aborts at load.
 import glob as _glob
-_ENV = "/home/iowa/miniconda3/envs/bsi"
+_ENV = os.environ.get("BARRNAP_PREFIX", "")
 _ENVIRON = dict(os.environ)
 _ENVIRON["PERL5LIB"] = ":".join(_glob.glob(f"{_ENV}/lib/perl5/*/"))
 _ENVIRON["PATH"] = f"{_ENV}/bin:" + _ENVIRON.get("PATH", "")
-MM = "/home/iowa/miniconda3/envs/benchtools/bin/minimap2"
+MM = os.environ.get("MINIMAP2", "minimap2")
 THREADS = 4
 
 
