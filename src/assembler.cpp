@@ -469,8 +469,11 @@ bool Assembler::run(std::string& error) {
     }
     if (!opt_.isSitesPath.empty() && isPanel_.siteCount() == 0) {
         std::string err;
+        // Fatal for the same reason --model is: a site table the user asked
+        // for and tessera could not read changes where contigs are placed.
         if (!isPanel_.loadSites(opt_.isSitesPath, err)) {
-            if (opt_.verbose) std::fprintf(stderr, "      warning: %s\n", err.c_str());
+            error = err;
+            return false;
         } else if (opt_.verbose) {
             std::fprintf(stderr, "      insertion sites: %s recurrent loci\n",
                          util::commify(static_cast<long long>(isPanel_.siteCount())).c_str());

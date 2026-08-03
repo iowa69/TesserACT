@@ -170,7 +170,7 @@ OUTPUT
 
 ASSEMBLY
   -k, --kmers LIST        comma-separated k values, e.g. 21,33,55,77
-                          (default: chosen from the read length; max 128)
+                          (default: chosen from the read length; max 127)
   -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)
       --min-link N        paired reads needed to trust a join (default: 2)
       --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)
@@ -179,7 +179,20 @@ ASSEMBLY
       --no-correct        skip read error correction
       --no-resolve        skip paired-end repeat resolution
       --no-scaffold       skip scaffolding
+      --no-gapfill        skip gap closing inside scaffolds
       --no-polish         skip consensus polishing
+      --polish-passes N   consensus polishing passes (default: 1)
+      --simplify-rounds N graph simplification rounds (default: 12)
+      --link-per-x F      extra paired support required per unit of median
+                          coverage before a contested join is taken
+                          (default: 0.10)
+      --bubble-coverage F a bubble branch below this fraction of its twin's
+                          coverage is dropped (default: 0.35)
+
+READ TRIMMING
+      --no-qtrim          do not quality-trim read 3' ends
+      --qtrim-quality N   3' trim threshold (default: 12)
+      --qtrim-window N    3' trim window (default: 4)
 
 ORGANISM MODEL
       --organism NAME     organism the reads come from (e.g. klebsiella)
@@ -187,6 +200,12 @@ ORGANISM MODEL
                           junctions no fragment can span
       --is-panel FILE     FASTA of known insertion sequences; contig ends lying
                           inside one are left unjoined
+      --is-sites FILE     table of recurrent insertion sites, which lets an
+                          element be placed rather than only avoided
+
+A --model or --is-panel that cannot be read is a fatal error, not a warning:
+the assembly it would have produced differs from the one without it in exactly
+the junctions the model exists to settle.
 
 POLISHING
       --map-polish NAME   polish contigs against a full read alignment:
@@ -195,13 +214,17 @@ POLISHING
 
 GENERAL
   -t, --threads N         worker threads (default: all cores)
+      --max-memory G      memory ceiling in GB (default: 80% of physical RAM)
+      --no-gfa            do not write assembly_graph.gfa
+      --no-html           do not write report.html
+      --unitigs           also write unitigs.fasta
   -q, --quiet             suppress progress output
   -v, --version           print version
   -h, --help              print this message
 ```
 
 Every k given to `-k` must be odd (even k admits palindromic k-mers, which have
-no well-defined canonical form) and between 5 and 128. Invalid values are
+no well-defined canonical form) and between 5 and 127. Invalid values are
 rejected with a message on stderr and a non-zero exit.
 
 ## Output files

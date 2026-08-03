@@ -21,7 +21,7 @@ while [ $# -gt 0 ]; do
     case "$1" in
         --prefix)     prefix="${2:?--prefix needs a directory}"; shift 2 ;;
         --conda-env)  env_name="${2:?--conda-env needs a name}"; shift 2 ;;
-        -h|--help)    sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        -h|--help)    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)            echo "unknown option: $1" >&2; exit 2 ;;
     esac
 done

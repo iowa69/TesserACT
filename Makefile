@@ -76,10 +76,12 @@ $(UNITBIN): $(UNITSRC) $(UNITOBJS) | $(BUILDDIR)
 # Everything: unit tests then the end-to-end suite.
 check: unittest test flagcheck
 
-install: $(BIN)
+install: $(BIN) $(MODELBIN)
 	@install -d $(DESTDIR)$(PREFIX)/bin
 	@install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	@install -m 755 $(MODELBIN) $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)
 	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BIN)"
+	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)"
 
 uninstall:
 	@rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)

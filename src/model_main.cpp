@@ -1,7 +1,7 @@
 // tessera-model: builds a genus prior from closed reference genomes.
 //
 //   tessera-model --organism klebsiella --out kleb.tsm ref/*.fasta
-//   tessera-model --organism klebsiella --out kleb.tsm --exclude ERR123 \
+//   tessera-model --organism klebsiella --out kleb.tsm --exclude ERR123
 //                 --plasmids plasmid_db.fasta ref/*.fasta
 //
 // Inputs are classified by file name: `*_chr.fasta` is chromosome, anything
