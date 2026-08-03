@@ -123,7 +123,7 @@ The pipeline, in the order it runs:
    per-position majority fixes residual substitutions (`--no-polish`).
 7. **Output.** Contigs are written longest-first to `OUTDIR/contigs.fasta`.
 
-k-mers are packed into three 64-bit words (192 bits), so **k can go up to 96**
+k-mers are packed into four 64-bit words (256 bits), so **k can go up to 127**
 and must be odd.
 
 ## Building from source
@@ -239,12 +239,12 @@ printed to stderr at the end.
 
 `--mode` picks a preset; any flag you set explicitly still wins over it.
 
-| Mode | k ladder (150 bp reads) | Simplify rounds | Joins | Polish | Use when |
+| Mode | k ladder (150 bp reads; longer reads top out at 127) | Simplify rounds | Joins | Polish | Use when |
 | --- | --- | --- | --- | --- | --- |
 | `fast` | 21,55,77 | 6 | strict | off | triage, or a first look at many isolates |
-| `standard` | 21,33,55,77,127 | 12 | balanced | 1 pass | the default; what the benchmarks use |
+| `standard` | 21,33,55,77,95 | 12 | balanced | 1 pass | the default; what the benchmarks use |
 | `careful` | 21,33,45,55,67,77,87,95 | 24 | strictest | 2 passes | when a wrong join costs more than a break |
-| `aggressive` | 21,33,55,77,95 | 16 | loosest, collapses diverged repeats | 1 pass | maximum contiguity, accepting misassembly risk |
+| `aggressive` | same as `standard` | 16 | loosest, collapses diverged repeats | 1 pass | maximum contiguity, accepting misassembly risk |
 
 Measured on the simulated *S. aureus* set (2.82 Mb, 100x, 5 threads), the modes
 trade off as intended:
@@ -259,7 +259,7 @@ trade off as intended:
 `careful` deliberately lands below `standard` on N50: it refuses joins that
 `standard` accepts. `aggressive` buys its extra contiguity by collapsing
 diverged repeat copies, which on the benchmark panel costs about one misassembly
-per genome — see [Known issues](#known-issues).
+per genome — see [Behaviour worth knowing](#behaviour-worth-knowing).
 
 ## How it works
 
@@ -571,7 +571,7 @@ several thousand, about a minute, and a model is reusable across runs.
 
 ## Limitations
 
-* **k is capped at 128.** k-mers are packed into four 64-bit words. For 150 bp
+* **k is capped at 127** (odd values only). k-mers are packed into four 64-bit words. For 150 bp
   reads the ladder tops out at 95; 2x250 libraries carry enough k-mer per read
   to use 127, which is where the top rung goes automatically.
 * **Repeats longer than the fragment length cannot be resolved from the reads
@@ -580,7 +580,8 @@ several thousand, about a minute, and a model is reusable across runs.
   some of those junctions from independent evidence; without one, longer inserts
   are the only fix.
 * **Scaffolding is paired-end only and conservative.** Gaps are sized from the
-  fragment model and require mutually-best support from at least five pairs;
+  fragment model and require mutually-best support scaled with depth --
+  `min(10, max(3, median coverage x 0.06))` pairs, so a floor of three;
   there is no iterative gap closing, and no scaffolding across anything wider
   than one fragment.
 * **No mate-pair or long-read support**, and only one library per run.
