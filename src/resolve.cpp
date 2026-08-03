@@ -1041,12 +1041,33 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             std::string headExt;
             double hCov = 0;
             size_t hLen = 0;
+            const size_t beforeHead = curPath.oriented.size();
             extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen);
-            if (headExt.size() > ov) {
-                const std::string add = reverseComplement(headExt);
-                seq.insert(0, add.substr(0, add.size() - ov));
+            if (!headExt.empty()) {
+                // extendByCommonPrefix already drops each piece's overlap as it
+                // appends, so headExt is novel sequence only and is prepended
+                // whole -- exactly as the tail case appends whole. Taking ov off
+                // a second time here deleted k-1 bases that are really in the
+                // genome and spliced together two stretches that are not
+                // adjacent to each other.
+                seq.insert(0, reverseComplement(headExt));
                 covWeighted += hCov;
                 covLen += hLen;
+            }
+            // That walk ran outward from the front in the flipped frame, so the
+            // unitigs it recorded landed at the end of the path facing the wrong
+            // way. Move them to the front, reversed and flipped, or the GFA walk
+            // describes a contig the FASTA does not contain.
+            if (curPath.oriented.size() > beforeHead) {
+                std::vector<uint64_t> head(curPath.oriented.begin() +
+                                               static_cast<std::ptrdiff_t>(beforeHead),
+                                           curPath.oriented.end());
+                curPath.oriented.resize(beforeHead);
+                curPath.gaps.resize(beforeHead);
+                for (uint64_t& u : head) u = flip(u);
+                std::reverse(head.begin(), head.end());
+                curPath.oriented.insert(curPath.oriented.begin(), head.begin(), head.end());
+                curPath.gaps.insert(curPath.gaps.begin(), head.size(), 0);
             }
         }
         contigs.push_back(std::move(seq));

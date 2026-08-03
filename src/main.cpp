@@ -179,14 +179,12 @@ int main(int argc, char** argv) {
         else if (a == "-k" || a == "--kmers") {
             opt.kValues.clear();
             for (const std::string& tok : util::split(needValue(i, "-k"), ',')) {
-                int k = std::atoi(tok.c_str());
+                // Range-checked before narrowing: atoi() truncates to int, so a
+                // value congruent to a legal k modulo 2^32 would pass a check
+                // applied afterwards and assemble at a k nobody asked for.
+                int k = static_cast<int>(intInRange(tok, "-k/--kmers", 5, kMaxK - 1));
                 // Odd k only: an even k admits palindromic k-mers, which have
                 // no well-defined canonical form.
-                if (k < 5 || k > kMaxK - 1) {
-                    std::fprintf(stderr, "error: k must be between 5 and %d (got %d)\n",
-                                 kMaxK - 1, k);
-                    return 1;
-                }
                 if (k % 2 == 0) {
                     std::fprintf(stderr, "error: k must be odd to avoid palindromic k-mers (got %d)\n", k);
                     return 1;
@@ -216,7 +214,12 @@ int main(int argc, char** argv) {
             }
         }
         else if (a == "--max-memory") {
-            opt.maxMemoryBytes = static_cast<long long>(std::atof(needValue(i, "--max-memory")) * 1073741824.0);
+            // Validated before the cast: atof() cannot report failure, so
+            // "--max-memory abc" silently meant "use the default", and a value
+            // that overflows to inf made the cast to long long undefined.
+            opt.maxMemoryBytes = static_cast<long long>(
+                numInRange(needValue(i, "--max-memory"), "--max-memory", 0.001, 1048576.0) *
+                1073741824.0);
         }
         else if (a == "--no-gfa") opt.emitGfa = false;
         else if (a == "--no-html") opt.emitHtml = false;
