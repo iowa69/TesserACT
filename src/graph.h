@@ -114,6 +114,18 @@ public:
     // strand its neighbours.
     size_t filterByReadDepth(double fraction);
 
+    // Removes unitigs far weaker than the sequence they sit among.
+    //
+    // The abundance cutoff is chosen once, from the whole k-mer histogram, and
+    // it cannot serve every replicon at once: a small multicopy plasmid carried
+    // at twenty times the genome's median produces its own sequencing errors at
+    // several-fold coverage, comfortably above a cutoff set for a 40x
+    // chromosome. Those error k-mers become real unitigs and shatter the
+    // plasmid -- one 2.5 kb replicon at 845x came out as fifty-seven tangled
+    // pieces. Judged against its own neighbours rather than against the genome,
+    // each of them is plainly spurious.
+    size_t removeLocallyWeak(double fraction);
+
     // Joins pairs of dead ends whose sequences overlap exactly.
     //
     // A de Bruijn graph breaks wherever a single k-mer is missing -- one
