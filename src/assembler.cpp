@@ -1,6 +1,7 @@
 #include "assembler.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstdlib>
 #include <ctime>
@@ -241,6 +242,29 @@ bool Assembler::run(std::string& error) {
         error = "cannot create output directory " + opt_.outDir;
         return false;
     }
+    // The model, panel and site table are not consulted until stage 4b, by which
+    // point a real isolate has cost several minutes of read loading, correction
+    // and de Bruijn iteration. A path that cannot be opened is knowable now.
+    if (opt_.organismModelPath.empty() &&
+        (!opt_.isPanelPath.empty() || !opt_.isSitesPath.empty())) {
+        error = "--is-panel and --is-sites are only consulted while joining with a model; "
+                "add --model FILE, or drop them";
+        return false;
+    }
+    const std::pair<const char*, const std::string*> namedInputs[] = {
+        {"--model", &opt_.organismModelPath},
+        {"--is-panel", &opt_.isPanelPath},
+        {"--is-sites", &opt_.isSitesPath},
+    };
+    for (const auto& named : namedInputs) {
+        if (named.second->empty()) continue;
+        std::FILE* probe = std::fopen(named.second->c_str(), "rb");
+        if (!probe) {
+            error = std::string("cannot open ") + named.first + " file: " + *named.second;
+            return false;
+        }
+        std::fclose(probe);
+    }
     {
         const std::string probe = opt_.outDir + "/.tessera_write_test";
         std::FILE* f = std::fopen(probe.c_str(), "w");
@@ -453,6 +477,20 @@ bool Assembler::run(std::string& error) {
         std::string err;
         if (!organismModel_.load(opt_.organismModelPath, err)) {
             error = err;
+            return false;
+        }
+        // --organism names what the reads are; the model names what it was built
+        // from. If they disagree the model is the wrong one for these reads, and
+        // its joins would be placed from another species' gene order.
+        auto lower = [](std::string v) {
+            for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return v;
+        };
+        if (!opt_.organism.empty() && !organismModel_.organism().empty() &&
+            lower(opt_.organism) != lower(organismModel_.organism())) {
+            error = "--organism says '" + opt_.organism + "' but " + opt_.organismModelPath +
+                    " was built for '" + organismModel_.organism() +
+                    "'; use a model for this organism, or drop --organism";
             return false;
         }
     }

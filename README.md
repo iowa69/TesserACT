@@ -203,7 +203,9 @@ READ TRIMMING
       --qtrim-window N    3' trim window (default: 4)
 
 ORGANISM MODEL
-      --organism NAME     organism the reads come from (e.g. klebsiella)
+      --organism NAME     organism the reads come from (e.g. klebsiella). With
+                          --model, the two must agree: a model built for another
+                          organism would place joins from the wrong gene order
       --model FILE        genus model built by tessera-model, consulted only at
                           junctions no fragment can span
       --is-panel FILE     FASTA of known insertion sequences; contig ends lying

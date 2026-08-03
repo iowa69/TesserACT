@@ -127,7 +127,7 @@ PY
   mkdir -p "$TMP/badmodel"
   if run "$TMP/badmodel" --model "$TMP/does-not-exist.tsm"; then
     bad "missing model" "should have failed, not assembled without the model"
-  elif grep -qi "cannot open model file" "$TMP/badmodel.log"; then
+  elif grep -qiE "cannot open (--model file|model file)" "$TMP/badmodel.log"; then
     ok "an unreadable --model is a fatal error"
   else
     bad "missing model" "failed without saying the model could not be read"

@@ -23,6 +23,10 @@
 #include <vector>
 
 #include "organism.h"
+
+namespace {
+constexpr const char* kVersion = "1.1.0";
+}  // namespace
 #include "util.h"
 
 namespace {
@@ -112,8 +116,8 @@ void learnReplicons(ts::OrganismModel& model, const std::vector<std::vector<Mark
     }
 }
 
-void usage() {
-    std::fprintf(stderr,
+void usage(std::FILE* to = stderr) {
+    std::fprintf(to,
                  "tessera-model -- build a genus prior from closed genomes\n\n"
                  "usage: tessera-model --organism NAME --out FILE [options] FASTA...\n\n"
                  "  --organism NAME     organism the model describes (e.g. klebsiella)\n"
@@ -130,7 +134,9 @@ void usage() {
 }  // namespace
 
 int main(int argc, char** argv) {
-    std::string organism = "klebsiella", outPath, plasmidDb;
+    // No default organism: a model built from arbitrary genomes and stamped
+    // "klebsiella" is worse than one that refuses to build.
+    std::string organism, outPath, plasmidDb;
     std::vector<std::string> inputs, excludes;
     uint32_t minSupport = 5, minSupportPls = 3;
 
@@ -143,20 +149,42 @@ int main(int argc, char** argv) {
             }
             return argv[++i];
         };
+        // Range-checked: atoi cannot report failure, so "abc" and an overflowing
+        // value both became 0, which means "keep every pair", and a negative one
+        // wrapped to about four billion, which drops all of them.
+        auto count = [&](const char* what) -> uint32_t {
+            const std::string t = value(what);
+            char* end = nullptr;
+            const long long v = std::strtoll(t.c_str(), &end, 10);
+            if (end == t.c_str() || (end && *end != '\0') || v < 1 || v > 1000000) {
+                std::fprintf(stderr, "error: %s must be between 1 and 1000000 (got '%s')\n",
+                             what, t.c_str());
+                std::exit(2);
+            }
+            return static_cast<uint32_t>(v);
+        };
         if (a == "--organism") organism = value("--organism");
         else if (a == "--out") outPath = value("--out");
         else if (a == "--exclude") excludes.push_back(value("--exclude"));
         else if (a == "--plasmids") plasmidDb = value("--plasmids");
-        else if (a == "--min-support") minSupport = static_cast<uint32_t>(std::atoi(value("--min-support").c_str()));
-        else if (a == "--min-support-plasmid") minSupportPls = static_cast<uint32_t>(std::atoi(value("--min-support-plasmid").c_str()));
-        else if (a == "-h" || a == "--help") { usage(); return 0; }
+        else if (a == "--min-support") minSupport = count("--min-support");
+        else if (a == "--min-support-plasmid") minSupportPls = count("--min-support-plasmid");
+        else if (a == "-h" || a == "--help") { usage(stdout); return 0; }
+        else if (a == "-v" || a == "--version") {
+            std::printf("tessera-model %s\n", kVersion);
+            return 0;
+        }
         else if (!a.empty() && a[0] == '-') {
             std::fprintf(stderr, "error: unknown option %s\n", a.c_str());
             return 2;
         } else inputs.push_back(a);
     }
 
-    if (outPath.empty() || (inputs.empty() && plasmidDb.empty())) { usage(); return 2; }
+    if (organism.empty()) {
+        std::fprintf(stderr, "error: --organism is required\n");
+        return 2;
+    }
+    if (outPath.empty() || (inputs.empty() && plasmidDb.empty())) { usage(stderr); return 2; }
 
     // Group the panel files by accession and class: a genome's chromosome and
     // its plasmids are learned separately, and marker adjacency must never run
@@ -251,6 +279,16 @@ int main(int argc, char** argv) {
     }
 
     model.finalise(minSupport, minSupportPls);
+
+    // Every input unreadable, or none carrying a usable marker, produces a file
+    // that loads without complaint and can never place anything. That is worse
+    // than no file, because the run that uses it looks like it worked.
+    if (model.markerCount() == 0) {
+        std::fprintf(stderr,
+                     "error: no markers could be learned -- check the input FASTA paths "
+                     "and that they hold closed replicons\n");
+        return 1;
+    }
 
     std::string error;
     if (!model.save(outPath, error)) {

@@ -54,7 +54,7 @@ PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& re
     : g_(graph), reads_(reads), threads_(threads > 0 ? threads : 1), k_(graph.k()),
       kMap_(std::min(kAnchorK, graph.k())),
       minLinkSupport_(minLinkSupport), tieRatio_(tieRatio),
-      linkSupportPerX_(linkSupportPerX > 0 ? linkSupportPerX : 0.10),
+      linkSupportPerX_(linkSupportPerX >= 0 ? linkSupportPerX : 0.10),
       minScaffoldSupport_(minScaffoldSupport) {
     medianCoverage_ = graph.medianCoverage();
 }
