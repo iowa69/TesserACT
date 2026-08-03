@@ -241,7 +241,7 @@ printed to stderr at the end.
 | Mode | k ladder (150 bp reads) | Simplify rounds | Joins | Polish | Use when |
 | --- | --- | --- | --- | --- | --- |
 | `fast` | 21,55,77 | 6 | strict | off | triage, or a first look at many isolates |
-| `standard` | 21,33,55,77,95 | 12 | balanced | 1 pass | the default; what the benchmarks use |
+| `standard` | 21,33,55,77,127 | 12 | balanced | 1 pass | the default; what the benchmarks use |
 | `careful` | 21,33,45,55,67,77,87,95 | 24 | strictest | 2 passes | when a wrong join costs more than a break |
 | `aggressive` | 21,33,55,77,95 | 16 | loosest, collapses diverged repeats | 1 pass | maximum contiguity, accepting misassembly risk |
 

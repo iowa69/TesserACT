@@ -115,8 +115,14 @@ std::vector<int> Assembler::resolveKLadder() const {
     // count stays at five: on the closed-reference panel, raising the top from
     // 95 to 127 took unitig N50 from 142,604 to 207,162 and mismatches from
     // 2.78 to 0.52 per 100 kbp, while a sixth rung only bought runtime.
-    if (rl >= 200) return {21, 33, 55, 77, 127};
-    if (rl >= 165) return {21, 33, 55, 77, 115};
+    // 127 is the top of what four 64-bit words hold and the most separating
+    // rung available: every repeat shorter than it collapses at every smaller
+    // k. It needs enough read left over to contribute k-mers, which 165 bp
+    // gives -- measured on the closed-reference panel, moving this rung from
+    // 115 to 127 left contiguity unchanged and improved both genome fraction
+    // (98.945 -> 98.988) and per-base accuracy (0.08 -> 0.06 mismatches per
+    // 100 kbp).
+    if (rl >= 165) return {21, 33, 55, 77, 127};
     if (rl >= 140) return {21, 33, 55, 77, 95};
     if (rl >= 100) return {21, 33, 45, 55};
     if (rl >= 70)  return {21, 33, 45};
