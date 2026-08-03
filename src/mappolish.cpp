@@ -57,11 +57,17 @@ std::string shellQuote(const std::string& s) {
     return out;
 }
 
+// Quoting stops the shell splitting a path, but a leading '-' still reaches
+// the mapper's own option parser, so it is made relative instead.
+std::string safePath(const std::string& p) {
+    return (!p.empty() && p[0] == '-') ? "./" + p : p;
+}
+
 std::string joinList(const std::vector<std::string>& v) {
     std::string out;
     for (size_t i = 0; i < v.size(); ++i) {
         if (i) out.push_back(',');
-        out += shellQuote(v[i]);
+        out += shellQuote(safePath(v[i]));
     }
     return out;
 }
@@ -107,6 +113,19 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
     const int minDepth = std::getenv("TESSERA_MAPPOLISH_DEPTH")
                              ? std::atoi(std::getenv("TESSERA_MAPPOLISH_DEPTH"))
                              : opt.minDepth;
+    // bowtie2 takes its mates as a comma-separated list, so a comma inside a
+    // read path cannot be told from a separator no matter how it is quoted.
+    if (opt.mapper == Mapper::Bowtie2) {
+        for (const std::vector<std::string>* list : {&opt.reads1, &opt.reads2}) {
+            for (const std::string& p : *list) {
+                if (p.find(',') != std::string::npos) {
+                    st.error = "bowtie2 cannot take a read file whose path contains a comma: " + p;
+                    return st;
+                }
+            }
+        }
+    }
+
     const std::string ref = opt.workDir + "/mappolish_ref.fasta";
     if (!writeFasta(ref, contigs)) {
         st.error = "cannot write " + ref;
@@ -116,7 +135,7 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
     // Build the index and stream SAM back through a pipe: the alignment is
     // consumed a record at a time and never lands on disk.
     std::string cmd;
-    const std::string qref = shellQuote(ref);
+    const std::string qref = shellQuote(safePath(ref));
     const std::string t = std::to_string(opt.threads > 0 ? opt.threads : 1);
     if (opt.mapper == Mapper::Bowtie2) {
         cmd = binary(opt.mapperDir, "bowtie2-build") + " --threads " + t + " -q " + qref + " " +

@@ -43,6 +43,11 @@ struct Mask {
 }  // namespace
 
 CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k, int threads) {
+    // Fix and Mask hold the read index in 32 bits. Past 2^32 reads it would
+    // wrap and rewrite a different, valid read -- in bounds, so silent. That
+    // needs about 645 Gbp, far beyond the isolates this targets, but the
+    // failure mode is corruption rather than a crash, so it is checked.
+    if (reads.size() > static_cast<size_t>(UINT32_MAX)) return CorrectionStats();
     CorrectionStats stats;
     if (threads <= 0) threads = 1;
     if (solid.size() == 0) return stats;
