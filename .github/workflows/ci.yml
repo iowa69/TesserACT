@@ -1,0 +1,39 @@
+name: build and test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        cxx: [g++, clang++]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+
+      - name: Build
+        run: make -j"$(nproc)" CXX=${{ matrix.cxx }}
+
+      # All three suites: unit assertions, end-to-end assemblies on synthetic
+      # data, and the flag audit. The last one exists because a documented flag
+      # that is silently ignored fails nothing at runtime.
+      - name: Test
+        run: make check
+
+  sanitizers:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install zlib
+        run: sudo apt-get update && sudo apt-get install -y zlib1g-dev
+      - name: Build with ASan and UBSan
+        run: make asan
+      - name: End-to-end under sanitizers
+        run: make test

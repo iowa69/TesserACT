@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+title: "TesserACT: a de novo short-read genome assembler for bacterial isolates"
+message: "If you use this software, please cite it as below."
+type: software
+authors:
+  - alias: iowa69
+repository-code: "https://github.com/iowa69/TesserACT"
+abstract: >-
+  TesserACT assembles haploid bacterial isolates from paired-end Illumina reads.
+  It builds a de Bruijn graph over a ladder of k-mer sizes, simplifies it,
+  resolves repeats with paired-end evidence, closes gaps and polishes the
+  result, in C++17 with no dependencies beyond a compiler, zlib and pthreads.
+
+  Where a repeat is longer than a sequencing fragment there is no paired
+  evidence that can settle it, and TesserACT stops rather than guessing.
+  Supplying a genus model, learned from closed genomes of the same organism,
+  lets it settle those junctions from independent evidence instead.
+keywords:
+  - genome assembly
+  - de Bruijn graph
+  - bacterial genomics
+  - short reads
+  - Klebsiella pneumoniae
+license: MIT
+version: 1.1.0
