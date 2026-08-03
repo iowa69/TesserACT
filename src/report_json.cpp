@@ -218,9 +218,11 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
 
     std::FILE* f = std::fopen(path.c_str(), "wb");
     if (!f) { error = "cannot write " + path; return false; }
+    // The final flush happens in fclose, so a disk that fills during it would
+    // otherwise be reported as a clean write. writeFasta already gets this right.
     const bool ok = std::fwrite(w.s.data(), 1, w.s.size(), f) == w.s.size();
-    std::fclose(f);
-    if (!ok) { error = "write failed on " + path; return false; }
+    const bool closed = std::fclose(f) == 0;
+    if (!ok || !closed) { error = "write failed on " + path; return false; }
     return true;
 }
 

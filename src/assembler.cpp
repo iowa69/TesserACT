@@ -445,16 +445,22 @@ bool Assembler::run(std::string& error) {
     // fragment, so no pair could have spoken to them either way. Where a model
     // of the organism is supplied, those junctions get asked of closed genomes
     // of the same species instead of guessed at from coverage.
+    // A model named on the command line that cannot be read is fatal, not a
+    // warning. It was only ever printed under --verbose, so a --quiet run
+    // produced a vanilla assembly while the user believed the model had guided
+    // it -- and the two differ in exactly the places the model exists to settle.
     if (!organismModel_.loaded() && !opt_.organismModelPath.empty()) {
         std::string err;
-        if (!organismModel_.load(opt_.organismModelPath, err) && opt_.verbose) {
-            std::fprintf(stderr, "      warning: %s\n", err.c_str());
+        if (!organismModel_.load(opt_.organismModelPath, err)) {
+            error = err;
+            return false;
         }
     }
     if (!opt_.isPanelPath.empty() && !isPanel_.loaded()) {
         std::string err;
-        if (!isPanel_.load(opt_.isPanelPath, err) && opt_.verbose) {
-            std::fprintf(stderr, "      warning: %s\n", err.c_str());
+        if (!isPanel_.load(opt_.isPanelPath, err)) {
+            error = err;
+            return false;
         } else if (opt_.verbose) {
             std::fprintf(stderr, "      insertion-sequence panel: %s copies, %s k-mers\n",
                          util::commify(static_cast<long long>(isPanel_.copies())).c_str(),

@@ -78,9 +78,11 @@ bool writeGfa(const std::string& path, const UnitigGraph& g,
         std::fputc('\n', f);
     }
 
+    // Written through a 1 MiB buffer, so the failing write can land in fclose
+    // itself -- after ferror has already said everything was fine.
     const bool ok = std::ferror(f) == 0;
-    std::fclose(f);
-    if (!ok) { error = "write failed on " + path; return false; }
+    const bool closed = std::fclose(f) == 0;
+    if (!ok || !closed) { error = "write failed on " + path; return false; }
     return true;
 }
 

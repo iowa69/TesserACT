@@ -177,6 +177,9 @@ inline std::string kmerToString(Kmer km, int k) {
 inline Kmer stringToKmer(const std::string& s, int k, bool& ok) {
     Kmer km;
     ok = true;
+    // Callers reach here with a substring whose length depends on the graph,
+    // so the string is checked rather than assumed to hold k bases.
+    if (k < 0 || s.size() < static_cast<size_t>(k)) { ok = false; return Kmer(); }
     for (int i = 0; i < k; ++i) {
         const int c = baseCode(s[static_cast<size_t>(i)]);
         if (c < 0) { ok = false; return Kmer(); }

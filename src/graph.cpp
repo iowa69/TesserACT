@@ -861,6 +861,12 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
     if (minOverlap < 8) minOverlap = 8;
     const size_t maxOverlap = static_cast<size_t>(k_ - 1);
     if (maxOverlap < minOverlap) return 0;
+    // Only an overlap of exactly k-1 can be taken. A link carries no length of
+    // its own: mergeInto splices k-1 unconditionally and the GFA writes every
+    // link as (k-1)M, so a join accepted at a shorter overlap would delete the
+    // difference in real bases at the junction. Allowing shorter overlaps back
+    // means giving Link its own overlap field first.
+    minOverlap = maxOverlap;
 
     // Collect every loose end as the oriented sequence leaving it, so a tail
     // and a head can be compared directly.

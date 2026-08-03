@@ -120,12 +120,18 @@ PY
     bad "--model" "stage did not run"
   fi
 
+  # A model the user named and tessera cannot read is fatal. It used to warn
+  # and carry on, and the warning only appeared under --verbose, so a --quiet
+  # run returned a vanilla assembly while the user believed the model had
+  # guided it -- and the two differ in exactly the junctions the model exists
+  # to settle.
   mkdir -p "$TMP/badmodel"
-  run "$TMP/badmodel" --model "$TMP/does-not-exist.tsm"
-  if [ -s "$TMP/badmodel/contigs.fasta" ] && grep -qi "warning" "$TMP/badmodel.log"; then
-    ok "missing model warns and continues"
+  if run "$TMP/badmodel" --model "$TMP/does-not-exist.tsm"; then
+    bad "missing model" "should have failed, not assembled without the model"
+  elif grep -qi "cannot open model file" "$TMP/badmodel.log"; then
+    ok "an unreadable --model is a fatal error"
   else
-    bad "missing model" "should warn and still assemble"
+    bad "missing model" "failed without saying the model could not be read"
   fi
 
   # IS panel

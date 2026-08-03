@@ -477,9 +477,11 @@ bool IsPanel::loadSites(const std::string& tsvPath, std::string& error) {
         if (col.size() < 5) continue;
         while (!col[4].empty() && (col[4].back() == '\n' || col[4].back() == '\r')) col[4].pop_back();
 
-        const uint32_t genomes = static_cast<uint32_t>(std::atoi(col[1].c_str()));
-        // A site seen in one genome is that genome's accident, not a site.
-        if (genomes < 2) continue;
+        // Read signed, then checked: a negative count cast straight to uint32_t
+        // became about four billion and sailed past the "< 2" filter below.
+        const long genomesSigned = std::atol(col[1].c_str());
+        if (genomesSigned < 2 || genomesSigned > 100000000L) continue;
+        const uint32_t genomes = static_cast<uint32_t>(genomesSigned);
         const int32_t elen = static_cast<int32_t>(std::atoi(col[2].c_str()));
         if (elen <= 0 || elen > 20000) continue;
 

@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <memory>
 
 namespace ts {
 
@@ -114,40 +115,60 @@ bool OrganismModel::save(const std::string& path, std::string& error) const {
 }
 
 bool OrganismModel::load(const std::string& path, std::string& error) {
-    std::FILE* f = std::fopen(path.c_str(), "rb");
-    if (!f) { error = "cannot open model file: " + path; return false; }
+    std::FILE* raw = std::fopen(path.c_str(), "rb");
+    if (!raw) { error = "cannot open model file: " + path; return false; }
+    // Held by the guard so the handle is closed even if an allocation below
+    // throws: every count in this file comes off disk, and a corrupt one used
+    // to reach resize() directly.
+    const std::unique_ptr<std::FILE, int (*)(std::FILE*)> guard(raw, std::fclose);
+    std::FILE* f = raw;
 
     char magic[8];
     if (std::fread(magic, 1, 8, f) != 8 || std::memcmp(magic, kMagic, 8) != 0) {
-        std::fclose(f);
         error = "not a tessera model file (or a model from an older version): " + path;
         return false;
     }
+
+    // The file's own length, used to sanity-check the counts it declares. A
+    // count larger than the bytes that could hold it is corruption, and asking
+    // for that much memory first is how it used to be discovered.
+    long fileSize = 0;
+    if (std::fseek(f, 0, SEEK_END) == 0) {
+        fileSize = std::ftell(f);
+        if (std::fseek(f, 8, SEEK_SET) != 0) fileSize = 0;
+    }
+    const auto plausible = [&](uint64_t count, uint64_t bytesEach) {
+        if (fileSize <= 0) return true;              // unseekable: fall back to short-read checks
+        const uint64_t left = static_cast<uint64_t>(fileSize);
+        return bytesEach == 0 || count <= left / bytesEach;
+    };
 
     uint32_t kk = 0;
     bool ok = readPod(f, kk) && readPod(f, genomesChr_) && readPod(f, genomesPls_);
     k_ = static_cast<int>(kk);
 
     uint32_t nameLen = 0;
-    ok = ok && readPod(f, nameLen);
+    ok = ok && readPod(f, nameLen) && plausible(nameLen, 1);
     if (ok) {
         organism_.assign(nameLen, '\0');
         ok = nameLen == 0 || std::fread(&organism_[0], 1, nameLen, f) == nameLen;
     }
 
     uint32_t nExcluded = 0;
-    ok = ok && readPod(f, nExcluded);
+    ok = ok && readPod(f, nExcluded) && plausible(nExcluded, 4);
     excluded_.clear();
     for (uint32_t i = 0; i < nExcluded && ok; ++i) {
         uint32_t n = 0;
-        ok = readPod(f, n);
+        ok = readPod(f, n) && plausible(n, 1);
+        if (!ok) break;
         std::string acc(n, '\0');
         ok = ok && (n == 0 || std::fread(&acc[0], 1, n, f) == n);
         if (ok) excluded_.push_back(acc);
     }
 
     uint64_t nMarkers = 0;
-    ok = ok && readPod(f, nMarkers);
+    // 8 bytes of k-mer plus two 4-byte counts per marker.
+    ok = ok && readPod(f, nMarkers) && plausible(nMarkers, 16);
     index_.clear();
     if (ok) {
         index_.reserve(nMarkers * 2);
@@ -166,7 +187,8 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
 
     for (int c = 0; c < 2 && ok; ++c) {
         uint64_t nEdges = 0;
-        ok = readPod(f, nEdges);
+        // 8 bytes of key plus support and median distance.
+        ok = readPod(f, nEdges) && plausible(nEdges, 16);
         edges_[c].clear();
         if (ok) edges_[c].reserve(nEdges * 2);
         for (uint64_t i = 0; i < nEdges && ok; ++i) {
@@ -177,9 +199,8 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
         }
     }
 
-    std::fclose(f);
     if (!ok) {
-        error = "truncated model file: " + path;
+        error = "truncated or corrupt model file: " + path;
         return false;
     }
     loaded_ = true;
