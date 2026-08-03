@@ -319,9 +319,12 @@ bool Assembler::run(std::string& error) {
     // Quality trimming makes that reachable from ordinary mistakes -- a
     // Phred+64 file read as Phred+33, or a --qtrim-quality above the data's
     // range -- so say what happened instead of writing an empty FASTA.
-    if (ladder.empty() || ladder.front() >= static_cast<int>(reads_.maxReadLength())) {
+    // The minimum, not the first: -k takes its values in the order given, so
+    // testing front() rejected "-k 127,21" while accepting the same set as
+    // "-k 21,127", and called 127 the smallest k while doing it.
+    const int smallest = ladder.empty() ? 0 : *std::min_element(ladder.begin(), ladder.end());
+    if (ladder.empty() || smallest >= static_cast<int>(reads_.maxReadLength())) {
         char buf[512];
-        const int smallest = ladder.empty() ? 0 : ladder.front();
         if (reads_.trimmedBases() > 0) {
             std::snprintf(buf, sizeof(buf),
                           "after quality trimming the longest read is %u bp, shorter than the "
@@ -474,8 +477,21 @@ bool Assembler::run(std::string& error) {
                          organismModel_.genomes(Replicon::Chromosome),
                          organismModel_.genomes(Replicon::Plasmid));
         }
+        std::vector<uint32_t> joinSource;
         report_.organism = joinByModel(organismModel_, seqs, covs, finalK, opt_.verbose,
-                                      isPanel_.loaded() ? &isPanel_ : nullptr);
+                                      isPanel_.loaded() ? &isPanel_ : nullptr, &joinSource);
+        // joinByModel rebuilds the contig vector: chains become one entry and
+        // the survivors come back in a different order. gfaPaths is parallel to
+        // it, so without this every P line named one contig and walked another.
+        // A contig built by joining has no single walk, so it gets none.
+        if (!joinSource.empty()) {
+            std::vector<GfaPath> permuted(joinSource.size());
+            for (size_t i = 0; i < joinSource.size(); ++i) {
+                const uint32_t from = joinSource[i];
+                if (from != UINT32_MAX && from < gfaPaths.size()) permuted[i] = gfaPaths[from];
+            }
+            gfaPaths.swap(permuted);
+        }
         report_.organismRun = true;
         report_.organismName = organismModel_.organism();
         report_.organismGenomes = organismModel_.genomes(Replicon::Chromosome);
@@ -583,8 +599,13 @@ bool Assembler::run(std::string& error) {
     // ---- order and name -------------------------------------------------
     std::vector<size_t> order(seqs.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-    std::sort(order.begin(), order.end(),
-              [&](size_t a, size_t b) { return seqs[a].size() > seqs[b].size(); });
+    std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        // Length alone is not a total order and std::sort is not stable, so
+        // equal-length contigs would be numbered by whatever order they arrived
+        // in. The sequence breaks the tie and makes the naming reproducible.
+        if (seqs[a].size() != seqs[b].size()) return seqs[a].size() > seqs[b].size();
+        return seqs[a] < seqs[b];
+    });
 
     std::vector<std::string> outSeqs, outNames;
     std::vector<GfaPath> outPaths;

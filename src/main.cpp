@@ -110,7 +110,9 @@ static double numInRange(const std::string& text, const char* flag, double lo, d
         std::fprintf(stderr, "error: %s expects a number (got '%s')\n", flag, text.c_str());
         std::exit(2);
     }
-    if (v < lo || v > hi) {
+    // Written so NaN fails: `v < lo || v > hi` is false for NaN, which let
+    // --tie-ratio nan through to silently disable the comparison it feeds.
+    if (!(v >= lo && v <= hi)) {
         std::fprintf(stderr, "error: %s must be between %g and %g (got %g)\n", flag, lo, hi, v);
         std::exit(2);
     }

@@ -101,9 +101,18 @@ struct Hit { size_t contig; uint32_t pos; int orient; uint32_t id; };
 // the number of joins made and rewrites `contigs` in place.
 size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::string>& contigs,
                 std::vector<double>& covs, int k, OrganismJoinStats& st,
-                const IsPanel* isPanel) {
+                const IsPanel* isPanel, std::vector<uint32_t>* source) {
     const size_t n = contigs.size();
-    if (n < 2) return 0;
+    // `source` maps each emitted contig back to the single input it came from,
+    // or UINT32_MAX when it was built by joining several. Callers holding data
+    // parallel to `contigs` need it to stay in step. Filled on every return
+    // path, identity included, so the caller never has to guess.
+    auto identity = [&]() {
+        if (!source) return;
+        source->resize(n);
+        for (size_t i = 0; i < n; ++i) (*source)[i] = static_cast<uint32_t>(i);
+    };
+    if (n < 2) { identity(); return 0; }
 
     // Tunable for the threshold sweep; the shipped values are the measured
     // ones, not the first ones that worked on a single isolate.
@@ -385,12 +394,13 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         joinGap[p] = joinGap[mirror] = std::max(1, b.gap);
         ++made;
     }
-    if (made == 0) return 0;
+    if (made == 0) { identity(); return 0; }
 
     // ---- emit --------------------------------------------------------------
     std::vector<char> done(n, 0);
     std::vector<std::string> out;
     std::vector<double> outCov;
+    std::vector<uint32_t> outSrc;
 
     for (size_t c = 0; c < n; ++c) {
         if (done[c]) continue;
@@ -404,8 +414,10 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         size_t cur = c;
         int inEnd = (joinTo[c * 2 + 0] == UINT32_MAX) ? 0 : 1;
         size_t steps = 0;
+        size_t members = 0;
         while (true) {
             done[cur] = 1;
+            ++members;
             const std::string piece = inEnd == 0 ? contigs[cur] : reverseComplement(contigs[cur]);
             seq += piece;
             covWeighted += covs[cur] * static_cast<double>(piece.size());
@@ -425,16 +437,19 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         }
         out.push_back(std::move(seq));
         outCov.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0.0);
+        outSrc.push_back(members == 1 ? static_cast<uint32_t>(c) : UINT32_MAX);
     }
     // Anything caught in a cycle of joins is emitted untouched.
     for (size_t c = 0; c < n; ++c) {
         if (done[c]) continue;
         out.push_back(contigs[c]);
         outCov.push_back(covs[c]);
+        outSrc.push_back(static_cast<uint32_t>(c));
     }
 
     contigs.swap(out);
     covs.swap(outCov);
+    if (source) source->swap(outSrc);
     return made;
 }
 
@@ -538,18 +553,33 @@ double IsPanel::density(const std::string& seq, size_t from, size_t len) const {
 
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
                               std::vector<double>& covs, int k, bool verbose,
-                              const IsPanel* isPanel) {
+                              const IsPanel* isPanel, std::vector<uint32_t>* source) {
     OrganismJoinStats st;
     st.contigsIn = contigs.size();
     st.contigsOut = contigs.size();
+    if (source) {
+        source->resize(contigs.size());
+        for (size_t i = 0; i < contigs.size(); ++i) (*source)[i] = static_cast<uint32_t>(i);
+    }
     if (!model.loaded() || contigs.size() < 2) return st;
 
     // The chromosome first: its evidence is the stronger of the two, and
     // resolving it removes chromosomal ends from contention before the weaker
     // plasmid table is consulted at all.
-    st.chromosomeJoins = joinPass(model, Replicon::Chromosome, contigs, covs, k, st, isPanel);
-    st.plasmidJoins = joinPass(model, Replicon::Plasmid, contigs, covs, k, st, isPanel);
+    std::vector<uint32_t> m1, m2;
+    st.chromosomeJoins =
+        joinPass(model, Replicon::Chromosome, contigs, covs, k, st, isPanel, source ? &m1 : nullptr);
+    st.plasmidJoins =
+        joinPass(model, Replicon::Plasmid, contigs, covs, k, st, isPanel, source ? &m2 : nullptr);
     st.contigsOut = contigs.size();
+
+    // Compose the two passes so the caller sees one input->output mapping.
+    if (source) {
+        source->assign(m2.size(), UINT32_MAX);
+        for (size_t i = 0; i < m2.size(); ++i) {
+            if (m2[i] != UINT32_MAX && m2[i] < m1.size()) (*source)[i] = m1[m2[i]];
+        }
+    }
 
     if (verbose) {
         std::fprintf(stderr,

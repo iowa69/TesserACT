@@ -77,8 +77,14 @@ private:
 // Joins `contigs` in place using the model. `covs` is reordered to match.
 // `k` is the assembly's k, used only to bound a negative gap. When `isPanel` is
 // supplied, ends sitting inside a mobile element are left alone.
+// When `source` is supplied it is resized to the new contig count and each
+// entry gives the index the contig held on input, or UINT32_MAX if it was built
+// by joining several. Anything the caller keeps parallel to `contigs` -- graph
+// walks, for one -- has to be permuted with it or it will describe the wrong
+// contig afterwards.
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
                               std::vector<double>& covs, int k, bool verbose,
-                              const IsPanel* isPanel = nullptr);
+                              const IsPanel* isPanel = nullptr,
+                              std::vector<uint32_t>* source = nullptr);
 
 }  // namespace ts

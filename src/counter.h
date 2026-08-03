@@ -50,6 +50,7 @@ public:
 
     template <typename Fn>
     void forEach(Fn&& fn) const {
+        if (counts_.empty()) return;   // mask_ == 0 is also the empty state
         for (size_t i = 0; i <= mask_; ++i) {
             if (counts_[i] != 0) fn(keys_[i], counts_[i]);
         }

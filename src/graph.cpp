@@ -109,6 +109,12 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
     std::vector<Kmer> keys;
     keys.reserve(solid.size());
     solid.forEach([&](Kmer key, uint32_t) { keys.push_back(key); });
+    // forEach yields open-addressing slot order, and which of two colliding keys
+    // takes the earlier slot depends on insertion order, which the sharded
+    // counter does not fix. Every later decision -- node ids, which orientation
+    // of a unitig is stored, the sweep order of the greedy simplifications --
+    // follows from this order, so it is sorted rather than left to chance.
+    std::sort(keys.begin(), keys.end());
 
     KmerTable visited;
     size_t placedKmers = 0;

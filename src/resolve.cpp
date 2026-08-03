@@ -886,10 +886,17 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     }
                 }
             }
+            // `gaps` is an unordered_map fed from support_, whose insertion
+            // order depends on which thread saw a read pair first. A strict >
+            // therefore let two partners tied on supporting-pair count be
+            // settled by iteration order, changing both the partner and the
+            // gap with the thread count. The port breaks the tie instead.
             for (auto& kv : gaps) {
-                if (static_cast<double>(kv.second.size()) > best[idx].score) {
+                const double score = static_cast<double>(kv.second.size());
+                if (score > best[idx].score ||
+                    (score == best[idx].score && kv.first < best[idx].partner)) {
                     std::sort(kv.second.begin(), kv.second.end());
-                    best[idx].score = static_cast<double>(kv.second.size());
+                    best[idx].score = score;
                     best[idx].partner = kv.first;
                     best[idx].gap = kv.second[kv.second.size() / 2];
                 }
