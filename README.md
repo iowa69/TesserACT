@@ -1,13 +1,98 @@
+<div align="center">
+
 # tessera
 
-A de novo short-read genome assembler written from scratch in C++17. tessera
-builds a de Bruijn graph over a ladder of k-mer sizes, simplifies it, resolves
-repeats with paired-end information, and polishes the result — the same overall
-shape as SPAdes, in under 4,000 lines with no dependencies beyond a C++17
-compiler, zlib and pthreads.
+**A de novo genome assembler for bacterial isolates.**
+Short reads in, chromosomes out — in ~4,000 lines of C++17 with no dependencies
+beyond a compiler, zlib and pthreads.
 
-It is aimed at haploid bacterial isolates sequenced with paired-end Illumina
-reads.
+[Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Benchmark](#benchmark) · [Options](#options)
+
+</div>
+
+---
+
+## What it does
+
+tessera assembles haploid bacterial isolates from paired-end Illumina reads. It
+builds a de Bruijn graph over a ladder of k-mer sizes, cleans it, resolves
+repeats with paired-end evidence, closes gaps and polishes — then writes the
+contigs, the assembly graph, and a report of what every stage decided.
+
+**It declines to guess.** Where a repeat is longer than a sequencing fragment
+there is no paired evidence that can settle it, and tessera stops there rather
+than joining on a hunch. That is why it makes about half the misassemblies and a
+third the per-base errors of the usual alternative.
+
+**And it can do better than stop.** Bacterial genomes of one species are not
+arbitrary strings — the sequence flanking a repeat is largely conserved. Give
+tessera a model built from closed genomes of the same organism and it settles
+those junctions from independent evidence. On 39 *Klebsiella pneumoniae*
+isolates with complete reference genomes, it then beats SPAdes on contiguity,
+misassemblies, per-base accuracy and completeness at the same time.
+
+| On 39 isolates with closed references | tessera + model | SPAdes |
+| --- | --- | --- |
+| Contig NGA50 | **349,179** | 320,313 |
+| Misassemblies | **22** | 24 |
+| Mismatches / 100 kbp | **0.22** | 0.42 |
+| Genome fraction | **99.03%** | 98.95% |
+
+## Install
+
+**With conda** — the easiest route, and it brings the optional tools too:
+
+```sh
+git clone https://github.com/iowa69/tessera.git && cd tessera
+./install.sh --conda-env tessera
+conda activate tessera
+```
+
+**Without conda** — nothing is needed but a C++17 compiler and zlib:
+
+```sh
+git clone https://github.com/iowa69/tessera.git && cd tessera
+./install.sh                      # installs into ~/.local/bin
+./install.sh --prefix /usr/local  # or wherever you like
+```
+
+**Or just build it:**
+
+```sh
+make -j
+./tessera --help
+```
+
+The optional extras — `mash` for choosing a model panel, `quast` for scoring
+against a reference, `bandage` for looking at the graph, `bwa`/`bowtie2` for
+alignment polishing — are listed in `conda/environment.yml`.
+
+## Quick start
+
+Assemble a pair of FASTQ files:
+
+```sh
+tessera -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
+```
+
+That writes `assembly/contigs.fasta`, `assembly/assembly_graph.gfa` and
+`assembly/report.html`. On a 5 Mb genome at 60x it takes about a minute on a
+laptop and around 3 GB of memory.
+
+Assembling *Klebsiella*, and you have closed genomes to learn from? Build the
+model once and reuse it:
+
+```sh
+tessera-model --organism klebsiella --out kleb.tsm references/*.fasta
+tessera --organism klebsiella --model kleb.tsm \
+        -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
+```
+
+Trimming first is worth it, and `fastplus` has a preset for exactly this:
+
+```sh
+fastplus --preset assembly -i R1.fq.gz -I R2.fq.gz --out-dir trimmed/
+```
 
 ## Design
 
@@ -40,7 +125,9 @@ The pipeline, in the order it runs:
 k-mers are packed into three 64-bit words (192 bits), so **k can go up to 96**
 and must be odd.
 
-## Requirements
+## Building from source
+
+Requirements:
 
 * a C++17 compiler (developed and tested with g++; `make CXX=clang++` should
   work but is not part of the tested configuration)
@@ -49,7 +136,7 @@ and must be odd.
 
 Nothing else — no CMake, no Boost, no external k-mer counter.
 
-## Build
+### Build targets
 
 ```sh
 make -j                 # optimised build -> ./tessera
@@ -66,23 +153,6 @@ make clean
 `make install` honours `PREFIX` (default `/usr/local`) and `DESTDIR`;
 `make uninstall` removes the installed binary. The build is warning-free with
 `-Wall -Wextra`.
-
-## Quick start
-
-```sh
-tessera -1 reads_1.fq.gz -2 reads_2.fq.gz -o asm -t 16
-```
-
-Assembled contigs land in `asm/contigs.fasta`. Other input shapes:
-
-```sh
-tessera --12 interleaved.fq.gz -o asm         # one interleaved file
-tessera -s single.fq.gz -o asm                # unpaired reads
-tessera -1 R1.fa -2 R2.fa -o asm              # FASTA is accepted too
-```
-
-Input may be FASTQ or FASTA, plain or gzipped; the format is detected from the
-first record and gzip from the file contents, not the extension.
 
 ## Options
 

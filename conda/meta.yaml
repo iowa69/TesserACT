@@ -1,0 +1,69 @@
+{% set name = "tessera" %}
+{% set version = "1.1.0" %}
+
+package:
+  name: {{ name|lower }}
+  version: {{ version }}
+
+source:
+  # Building from a release tarball keeps the recipe reproducible. To build the
+  # working tree instead, run `conda build conda/ --source-override .`
+  git_url: https://github.com/iowa69/tessera.git
+  git_rev: v{{ version }}
+
+build:
+  number: 0
+  # Nothing here is architecture-independent: the k-mer packing and the
+  # threading are compiled.
+  script:
+    - make -j${CPU_COUNT} CXX=${CXX}          # [unix]
+    - mkdir -p ${PREFIX}/bin                  # [unix]
+    - cp tessera ${PREFIX}/bin/               # [unix]
+    - cp tessera-model ${PREFIX}/bin/         # [unix]
+
+requirements:
+  build:
+    - {{ compiler('cxx') }}
+    - make
+  host:
+    - zlib
+  run:
+    - zlib
+
+test:
+  commands:
+    - tessera --version
+    - tessera --help
+    - tessera-model --help
+    # A flag that silently disappears is worse than one that is missing, so the
+    # package test checks the ones a pipeline is likely to depend on.
+    - tessera --help | grep -q -- --organism
+    - tessera --help | grep -q -- --model
+    - tessera --help | grep -q -- --is-panel
+    - tessera --help | grep -q -- --map-polish
+
+about:
+  home: https://github.com/iowa69/tessera
+  license: MIT
+  license_family: MIT
+  license_file: LICENSE
+  summary: A de novo short-read genome assembler for bacterial isolates
+  description: |
+    tessera assembles bacterial isolates from paired-end Illumina reads. It
+    builds a de Bruijn graph over a ladder of k-mer sizes, simplifies it,
+    resolves repeats with paired-end information, closes gaps and polishes the
+    result, in about 4,000 lines of C++17 with no dependencies beyond a
+    compiler, zlib and pthreads.
+
+    Where a repeat is longer than a sequencing fragment there is no paired
+    evidence to settle it, and tessera stops rather than guessing. Supplying a
+    genus model built from closed genomes of the same organism lets it settle
+    those junctions from independent evidence instead: on 39 Klebsiella
+    pneumoniae isolates with complete reference genomes it then leads SPAdes on
+    contiguity, misassemblies, per-base accuracy and genome fraction at once.
+  doc_url: https://github.com/iowa69/tessera#readme
+  dev_url: https://github.com/iowa69/tessera
+
+extra:
+  recipe-maintainers:
+    - iowa69

@@ -1,0 +1,38 @@
+# Everything needed to run tessera and to reproduce the benchmark around it.
+#
+#   conda env create -f conda/environment.yml
+#   conda activate tessera
+#
+# tessera itself needs only a C++17 compiler and zlib; the rest of this file is
+# the evaluation stack -- the tools that build a model, score an assembly
+# against a closed genome, and draw the graph.
+name: tessera
+channels:
+  - conda-forge
+  - bioconda
+dependencies:
+  # build
+  - cxx-compiler
+  - make
+  - zlib
+
+  # choosing a strain-relevant model panel
+  - mash
+
+  # scoring against closed references
+  - quast
+  - minimap2
+
+  # optional alignment polishing (--map-polish)
+  - bwa
+  - bowtie2
+  - samtools
+
+  # looking at the assembly graph
+  - bandage
+
+  # building the repeat and insertion-sequence tables
+  - barrnap
+  - isescan
+
+  - python >=3.9
