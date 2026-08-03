@@ -1087,6 +1087,23 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         }
 
         if (seq.empty()) continue;
+        // Both ends of a contig stop for the same reason, so both deserve the
+        // same treatment. The walk extends the tail as it finishes; the head is
+        // reached by walking outward from its flipped first unitig and
+        // prepending what comes back. On one plasmid, seventeen gaps -- every
+        // base it was short -- were repeat copies sitting just off a contig end.
+        if (!curPath.oriented.empty()) {
+            std::string headExt;
+            double hCov = 0;
+            size_t hLen = 0;
+            extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen);
+            if (headExt.size() > ov) {
+                const std::string add = reverseComplement(headExt);
+                seq.insert(0, add.substr(0, add.size() - ov));
+                covWeighted += hCov;
+                covLen += hLen;
+            }
+        }
         contigs.push_back(std::move(seq));
         covs.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0);
         paths_.push_back(curPath);
