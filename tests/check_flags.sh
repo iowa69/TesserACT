@@ -53,7 +53,9 @@ do
 done
 
 # --- 2. flags that must be rejected ----------------------------------------
-for spec in "-k 4" "-k 200" "--mode nonsense" "--map-polish nonsense" "--nosuchflag"; do
+for spec in "-k 4" "-k 200" "--mode nonsense" "--map-polish nonsense" "--nosuchflag" \
+            "--tie-ratio 0" "--min-link -5" "-t 0" "--simplify-rounds 0" \
+            "--polish-passes -1" "--qtrim-quality 99" "--tie-ratio abc"; do
   d="$TMP/r$(echo "$spec" | tr -d ' /,.-')"; mkdir -p "$d"
   if run "$d" $spec; then bad "reject $spec" "accepted an invalid value"; else ok "reject $spec"; fi
 done

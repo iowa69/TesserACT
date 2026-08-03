@@ -919,12 +919,7 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
                            std::vector<SimplifyRoundStats>* rounds) {
-    static const double tipLenFactor = [] {
-        const char* e = std::getenv("TESSERA_TIP_LEN_FACTOR");
-        return e ? std::atof(e) : 1.0;
-    }();
-    const size_t tipLen = static_cast<size_t>(
-        tipLenFactor * static_cast<double>(std::max(2 * k_, readLength)));
+    const size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
     const size_t bubbleLen = static_cast<size_t>(std::max(3 * k_, 2 * readLength));
 
     for (int round = 0; round < maxRounds; ++round) {
@@ -940,35 +935,17 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.merged += compact();
         // A true error bubble sits well below even the half-depth a two-copy
         // split would give, which is what separates it from real divergence.
-        // Coverage-based pruning, judged against the local median rather than a
-        // global one. This is orthogonal to everything else here: it cannot
-        // affect a junction the reads already settle, so it trims the graph
-        // without trading contiguity for it.
-        static const double depthFilter = [] {
-            const char* e = std::getenv("TESSERA_DEPTH_FILTER");
-            return e ? std::atof(e) : 0.0;
-        }();
-        if (depthFilter > 0) {
-            st.lowDepthRemoved = filterByReadDepth(depthFilter);
-            st.merged += compact();
-        }
-
         st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
         st.merged += compact();
         static const double chimeraFactor = [] {
             const char* e = std::getenv("TESSERA_CHIMERA_FACTOR");
             return e ? std::atof(e) : 0.12;
         }();
-        // How long a low-coverage connector may be and still be treated as
-        // erroneous. Cutting long connectors risks severing real sequence, so
-        // the default is tight; the factor exists to measure that trade.
-        static const double ecLenFactor = [] {
-            const char* e = std::getenv("TESSERA_EC_LEN_FACTOR");
-            return e ? std::atof(e) : 1.0;
-        }();
+        // Cutting long low-coverage connectors risks severing real sequence,
+        // so the operation stays confined to short ones. Raising this ceiling
+        // was measured and cost genome fraction without buying contiguity.
         st.chimerasRemoved = removeErroneousConnections(
-            meanCoverage * chimeraFactor * ramp,
-            static_cast<size_t>(ecLenFactor * static_cast<double>(2 * k_)));
+            meanCoverage * chimeraFactor * ramp, static_cast<size_t>(2 * k_));
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 

@@ -1,6 +1,8 @@
 <div align="center">
 
-# tessera
+<img src="docs/logo.svg" alt="" width="132" height="132">
+
+# TesserACT
 
 **A de novo genome assembler for bacterial isolates.**
 Short reads in, chromosomes out — in ~4,000 lines of C++17 with no dependencies
@@ -14,7 +16,7 @@ beyond a compiler, zlib and pthreads.
 
 ## What it does
 
-tessera assembles haploid bacterial isolates from paired-end Illumina reads. It
+TesserACT assembles haploid bacterial isolates from paired-end Illumina reads. It
 builds a de Bruijn graph over a ladder of k-mer sizes, cleans it, resolves
 repeats with paired-end evidence, closes gaps and polishes — then writes the
 contigs, the assembly graph, and a report of what every stage decided.
@@ -25,13 +27,12 @@ than joining on a hunch. That is why it makes about half the misassemblies and a
 third the per-base errors of the usual alternative.
 
 **And it can do better than stop.** Bacterial genomes of one species are not
-arbitrary strings — the sequence flanking a repeat is largely conserved. Give
-tessera a model built from closed genomes of the same organism and it settles
+arbitrary strings — the sequence flanking a repeat is largely conserved. Give it a model built from closed genomes of the same organism and it settles
 those junctions from independent evidence. On 39 *Klebsiella pneumoniae*
 isolates with complete reference genomes, it then beats SPAdes on contiguity,
 misassemblies, per-base accuracy and completeness at the same time.
 
-| On 39 isolates with closed references | tessera + model | SPAdes |
+| On 39 isolates with closed references | TesserACT + model | SPAdes |
 | --- | --- | --- |
 | Contig NGA50 | **349,179** | 320,313 |
 | Misassemblies | **22** | 24 |
@@ -43,15 +44,15 @@ misassemblies, per-base accuracy and completeness at the same time.
 **With conda** — the easiest route, and it brings the optional tools too:
 
 ```sh
-git clone https://github.com/iowa69/tessera.git && cd tessera
-./install.sh --conda-env tessera
-conda activate tessera
+git clone https://github.com/iowa69/TesserACT.git && cd TesserACT
+./install.sh --conda-env tesseract
+conda activate tesseract
 ```
 
 **Without conda** — nothing is needed but a C++17 compiler and zlib:
 
 ```sh
-git clone https://github.com/iowa69/tessera.git && cd tessera
+git clone https://github.com/iowa69/TesserACT.git && cd TesserACT
 ./install.sh                      # installs into ~/.local/bin
 ./install.sh --prefix /usr/local  # or wherever you like
 ```

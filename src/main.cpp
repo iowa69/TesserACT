@@ -98,6 +98,28 @@ void usage() {
 
 }  // namespace
 
+
+// A numeric option outside its sensible range is a typo, not a preference.
+// Accepting it silently produces an assembly nobody can explain later.
+static double numInRange(const std::string& text, const char* flag, double lo, double hi) {
+    char* end = nullptr;
+    const double v = std::strtod(text.c_str(), &end);
+    if (end == text.c_str() || (end && *end != '\0')) {
+        std::fprintf(stderr, "error: %s expects a number (got '%s')\n", flag, text.c_str());
+        std::exit(2);
+    }
+    if (v < lo || v > hi) {
+        std::fprintf(stderr, "error: %s must be between %g and %g (got %g)\n", flag, lo, hi, v);
+        std::exit(2);
+    }
+    return v;
+}
+
+static long long intInRange(const std::string& text, const char* flag, long long lo, long long hi) {
+    return static_cast<long long>(numInRange(text, flag, static_cast<double>(lo),
+                                             static_cast<double>(hi)));
+}
+
 int main(int argc, char** argv) {
     using namespace ts;
 
@@ -145,7 +167,7 @@ int main(int argc, char** argv) {
                 return 2;
             }
         }
-        else if (a == "--min-contig") opt.minContigLen = static_cast<size_t>(std::atoll(needValue(i, "--min-contig")));
+        else if (a == "--min-contig") opt.minContigLen = static_cast<size_t>(intInRange(needValue(i, "--min-contig"), "--min-contig", 0, 100000000));
         else if (a == "-k" || a == "--kmers") {
             opt.kValues.clear();
             for (const std::string& tok : util::split(needValue(i, "-k"), ',')) {
@@ -165,16 +187,16 @@ int main(int argc, char** argv) {
             }
             opt.userSetK = true;
         }
-        else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(std::atoi(needValue(i, "-c")));
-        else if (a == "--min-link") { opt.minLinkSupport = std::atoi(needValue(i, "--min-link")); opt.userSetMinLink = true; }
+        else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(intInRange(needValue(i, "-c"), "-c/--cutoff", 0, 1000000));
+        else if (a == "--min-link") { opt.minLinkSupport = static_cast<int>(intInRange(needValue(i, "--min-link"), "--min-link", 1, 1000)); opt.userSetMinLink = true; }
         else if (a == "--link-per-x") {
-            opt.linkSupportPerX = std::atof(needValue(i, "--link-per-x"));
+            opt.linkSupportPerX = numInRange(needValue(i, "--link-per-x"), "--link-per-x", 0.0, 10.0);
             opt.userSetLinkPerX = true;
         }
-        else if (a == "--tie-ratio") { opt.tieRatio = std::atof(needValue(i, "--tie-ratio")); opt.userSetTie = true; }
-        else if (a == "--bubble-coverage") { opt.bubbleCoverageLimit = std::atof(needValue(i, "--bubble-coverage")); opt.userSetBubble = true; }
-        else if (a == "--simplify-rounds") { opt.simplifyRounds = std::atoi(needValue(i, "--simplify-rounds")); opt.userSetRounds = true; }
-        else if (a == "--polish-passes") { opt.polishPasses = std::atoi(needValue(i, "--polish-passes")); opt.userSetPolishPasses = true; }
+        else if (a == "--tie-ratio") { opt.tieRatio = numInRange(needValue(i, "--tie-ratio"), "--tie-ratio", 1.0, 100.0); opt.userSetTie = true; }
+        else if (a == "--bubble-coverage") { opt.bubbleCoverageLimit = numInRange(needValue(i, "--bubble-coverage"), "--bubble-coverage", 0.0, 1000.0); opt.userSetBubble = true; }
+        else if (a == "--simplify-rounds") { opt.simplifyRounds = static_cast<int>(intInRange(needValue(i, "--simplify-rounds"), "--simplify-rounds", 1, 200)); opt.userSetRounds = true; }
+        else if (a == "--polish-passes") { opt.polishPasses = static_cast<int>(intInRange(needValue(i, "--polish-passes"), "--polish-passes", 0, 100)); opt.userSetPolishPasses = true; }
         else if (a == "--aggressive") opt.mode = RunMode::Aggressive;
         else if (a == "--mode") {
             const std::string m = needValue(i, "--mode");
@@ -193,13 +215,13 @@ int main(int argc, char** argv) {
         else if (a == "--unitigs") opt.emitUnitigs = true;
         else if (a == "--no-correct") opt.correctReads = false;
         else if (a == "--no-qtrim") opt.qtrim.enabled = false;
-        else if (a == "--qtrim-quality") opt.qtrim.meanQuality = std::atoi(needValue(i, "--qtrim-quality"));
-        else if (a == "--qtrim-window") opt.qtrim.windowSize = std::atoi(needValue(i, "--qtrim-window"));
+        else if (a == "--qtrim-quality") opt.qtrim.meanQuality = static_cast<int>(intInRange(needValue(i, "--qtrim-quality"), "--qtrim-quality", 0, 60));
+        else if (a == "--qtrim-window") opt.qtrim.windowSize = static_cast<int>(intInRange(needValue(i, "--qtrim-window"), "--qtrim-window", 1, 1000));
         else if (a == "--no-resolve") opt.resolveRepeats = false;
         else if (a == "--no-scaffold") opt.scaffold = false;
         else if (a == "--no-gapfill") opt.gapFill = false;
         else if (a == "--no-polish") opt.polish = false;
-        else if (a == "-t" || a == "--threads") opt.threads = std::atoi(needValue(i, "-t"));
+        else if (a == "-t" || a == "--threads") opt.threads = static_cast<int>(intInRange(needValue(i, "-t"), "-t/--threads", 1, 4096));
         else if (a == "-q" || a == "--quiet") opt.verbose = false;
         else {
             std::fprintf(stderr, "error: unknown option '%s'\nRun 'tessera --help' for usage.\n", a.c_str());

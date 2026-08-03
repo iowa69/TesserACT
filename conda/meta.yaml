@@ -1,4 +1,4 @@
-{% set name = "tessera" %}
+{% set name = "tesseract-assembler" %}
 {% set version = "1.1.0" %}
 
 package:
@@ -8,7 +8,7 @@ package:
 source:
   # Building from a release tarball keeps the recipe reproducible. To build the
   # working tree instead, run `conda build conda/ --source-override .`
-  git_url: https://github.com/iowa69/tessera.git
+  git_url: https://github.com/iowa69/TesserACT.git
   git_rev: v{{ version }}
 
 build:
@@ -43,13 +43,13 @@ test:
     - tessera --help | grep -q -- --map-polish
 
 about:
-  home: https://github.com/iowa69/tessera
+  home: https://github.com/iowa69/TesserACT
   license: MIT
   license_family: MIT
   license_file: LICENSE
-  summary: A de novo short-read genome assembler for bacterial isolates
+  summary: TesserACT - a de novo short-read genome assembler for bacterial isolates
   description: |
-    tessera assembles bacterial isolates from paired-end Illumina reads. It
+    TesserACT assembles bacterial isolates from paired-end Illumina reads. It
     builds a de Bruijn graph over a ladder of k-mer sizes, simplifies it,
     resolves repeats with paired-end information, closes gaps and polishes the
     result, in about 4,000 lines of C++17 with no dependencies beyond a
@@ -61,8 +61,8 @@ about:
     those junctions from independent evidence instead: on 39 Klebsiella
     pneumoniae isolates with complete reference genomes it then leads SPAdes on
     contiguity, misassemblies, per-base accuracy and genome fraction at once.
-  doc_url: https://github.com/iowa69/tessera#readme
-  dev_url: https://github.com/iowa69/tessera
+  doc_url: https://github.com/iowa69/TesserACT#readme
+  dev_url: https://github.com/iowa69/TesserACT
 
 extra:
   recipe-maintainers:
