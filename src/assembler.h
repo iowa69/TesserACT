@@ -54,6 +54,10 @@ struct AssemblyOptions {
     long long maxMemoryBytes = 0;   // 0 = 80% of physical RAM
     QualityTrim qtrim;              // 3' trimming applied as reads are loaded
 
+    // The command line as invoked, recorded into the reports so a run can be
+    // explained and reproduced from its own output.
+    std::string commandLine;
+
     // A prior learned from closed genomes of the same organism, used only at
     // junctions no fragment can span. Empty means the assembly stops there
     // rather than guessing, which is the default.

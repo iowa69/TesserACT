@@ -440,6 +440,10 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     // mix the two -- which is exactly what merging overlapping mates produces:
     // a pile of single-end fragments plus the pairs that did not merge.
     size_t nextRead = 0;
+    bool anyPaired = false;
+    for (const LibPlan& plan : plans) {
+        if (plan.mode == kPaired || plan.mode == kInterleaved) { anyPaired = true; break; }
+    }
     for (int phase = 0; phase < 2; ++phase) {
     for (size_t li = 0; li < plans.size(); ++li) {
         LibPlan& plan = plans[li];
@@ -493,7 +497,12 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     }
 
     }
-    if (pairedReads_ == 0) pairedReads_ = nextRead;   // no single-end library at all
+    // Every read loaded belongs to a paired library, so phase 1 never ran and
+    // never set the boundary. Guard on there actually being a paired library:
+    // without it, a run of purely single-end reads was marked wholly paired,
+    // and read i was treated as the mate of read i^1 -- two unrelated reads.
+    // The resolver then counted those as spanning evidence.
+    if (anyPaired && pairedReads_ == 0) pairedReads_ = nextRead;
     const size_t nReads = nextRead;
     uint64_t total = 0;
     for (const FileSlot& slot : slots) {

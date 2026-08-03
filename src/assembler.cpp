@@ -234,6 +234,24 @@ bool Assembler::run(std::string& error) {
         if (!l.r2.empty()) report_.inputFiles.push_back(l.r2);
     }
 
+    // Check the output directory is usable before spending the run on it. This
+    // used to be discovered at the final stage, which threw away everything a
+    // real genome had just cost.
+    if (!util::makeDirs(opt_.outDir)) {
+        error = "cannot create output directory " + opt_.outDir;
+        return false;
+    }
+    {
+        const std::string probe = opt_.outDir + "/.tessera_write_test";
+        std::FILE* f = std::fopen(probe.c_str(), "w");
+        if (!f) {
+            error = "output directory is not writable: " + opt_.outDir;
+            return false;
+        }
+        std::fclose(f);
+        std::remove(probe.c_str());
+    }
+
     if (opt_.verbose) std::fprintf(stderr, "[1/7] loading reads\n");
     reads_.setQualityTrim(opt_.qtrim);
     if (!reads_.load(opt_.libraries, opt_.threads, error)) return false;
@@ -599,6 +617,7 @@ bool Assembler::run(std::string& error) {
         }
         outSeqs.push_back(std::move(seqs[i]));
     }
+    report_.command = opt_.commandLine;
     report_.finalize();
 
     // ---- write outputs --------------------------------------------------

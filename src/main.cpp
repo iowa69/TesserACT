@@ -123,6 +123,12 @@ static long long intInRange(const std::string& text, const char* flag, long long
 }
 
 int main(int argc, char** argv) {
+    // Recorded verbatim so the reports can say what produced them.
+    std::string invocation;
+    for (int i = 0; i < argc; ++i) {
+        if (i) invocation += ' ';
+        invocation += argv[i];
+    }
     using namespace ts;
 
     AssemblyOptions opt;
@@ -250,6 +256,7 @@ int main(int argc, char** argv) {
         }
     }
 
+    opt.commandLine = invocation;
     Assembler asmb(std::move(opt));
     std::string error;
     if (!asmb.run(error)) {
