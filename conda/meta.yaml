@@ -59,9 +59,13 @@ about:
     Where a repeat is longer than a sequencing fragment there is no paired
     evidence to settle it, and tessera stops rather than guessing. Supplying a
     genus model built from closed genomes of the same organism lets it settle
-    those junctions from independent evidence instead: on 39 Klebsiella
-    pneumoniae isolates with complete reference genomes it then leads SPAdes on
-    contiguity, misassemblies, per-base accuracy and genome fraction at once.
+    those junctions from independent evidence instead: on 40 Klebsiella
+    pneumoniae isolates with complete reference genomes it then makes fewer
+    misassemblies than SPAdes, is about twice as accurate per base, recovers
+    more of the genome, and draws level on contiguity.
+
+    --map-polish additionally polishes contigs against a full read alignment
+    and needs bowtie2 or bwa on PATH.
   doc_url: https://github.com/iowa69/TesserACT#readme
   dev_url: https://github.com/iowa69/TesserACT
 

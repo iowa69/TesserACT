@@ -1,6 +1,6 @@
 <div align="center">
 
-<img src="docs/logo.svg" alt="" width="132" height="132">
+<img src="docs/logo.svg" alt="TesserACT" width="132" height="132">
 
 # TesserACT
 
@@ -28,16 +28,24 @@ third the per-base errors of the usual alternative.
 
 **And it can do better than stop.** Bacterial genomes of one species are not
 arbitrary strings — the sequence flanking a repeat is largely conserved. Give it a model built from closed genomes of the same organism and it settles
-those junctions from independent evidence. On 39 *Klebsiella pneumoniae*
-isolates with complete reference genomes, it then beats SPAdes on contiguity,
-misassemblies, per-base accuracy and completeness at the same time.
+those junctions from independent evidence. On 40 *Klebsiella pneumoniae*
+isolates with complete reference genomes it then makes fewer structural errors
+than SPAdes, is about twice as accurate per base, recovers more of the genome,
+and draws level on contiguity.
 
-| On 39 isolates with closed references | TesserACT + model | SPAdes |
+| On 40 isolates with closed references | TesserACT + model | SPAdes |
 | --- | --- | --- |
-| Contig NGA50 | **349,179** | 320,313 |
-| Misassemblies | **22** | 24 |
-| Mismatches / 100 kbp | **0.22** | 0.42 |
-| Genome fraction | **99.03%** | 98.95% |
+| Median contig NGA50 | 304,672 | **319,598** |
+| Median NGA50 ratio to SPAdes | **1.02x** | 1.00x |
+| Isolates with the longer NGA50 | **25 / 40** | 15 / 40 |
+| Total misassemblies | **21** | 26 |
+| Mismatches / 100 kbp | **0.23** | 0.44 |
+| Genome fraction | **99.23%** | 98.95% |
+
+Contiguity is a tie, and the two rows that look contradictory are both real:
+TesserACT has the longer contigs on most isolates, while SPAdes wins the median
+because the isolates it wins, it wins by more. Every figure is contig level and
+comes from [`docs/final_headtohead.tsv`](docs/final_headtohead.tsv).
 
 ## Install
 
@@ -513,6 +521,15 @@ set of closed genomes is enough.
 
 ## Benchmark
 
+Per-isolate figures behind everything below:
+[`docs/final_headtohead.tsv`](docs/final_headtohead.tsv). Two further pages
+cover the model-free assembler in more detail — what each default is worth on
+the *Klebsiella* panel ([`docs/KLEBSIELLA_PANEL.md`](docs/KLEBSIELLA_PANEL.md))
+and how it behaves on mixed chemistry
+([`docs/CLOSED_REFERENCE_BENCHMARK.md`](docs/CLOSED_REFERENCE_BENCHMARK.md)).
+Both measure tessera **without** a model, so their contiguity figures are the
+0.89x column above, not the model one.
+
 ### Real isolates with closed reference genomes
 
 The benchmark is *Klebsiella pneumoniae* clinical isolates for which both paired
@@ -528,25 +545,33 @@ neighbours, and the model is learned from those. That corpus is a separate
 collection from the isolates being tested, so no assembly is scored against a
 model that has seen its own genome.
 
-Measured on 39 isolates:
+Measured on 40 isolates:
 
 | Metric | tessera | tessera + model | SPAdes |
 | --- | --- | --- | --- |
-| Median contig NGA50 | 270,133 | **349,179** | 320,313 |
+| Median contig NGA50 | 268,292 | 304,672 | **319,598** |
 | Median NGA50 ratio to SPAdes | 0.89x | **1.02x** | 1.00x |
-| Isolates leading SPAdes on NGA50 | 6 | **27 / 39** | — |
-| Median contigs | 69 | 67 | **64** |
-| Total misassemblies | **12** | **22** | 24 |
-| Median mismatches / 100 kbp | **0.13** | **0.22** | 0.42 |
-| Median genome fraction (%) | 98.84 | **99.03** | 98.95 |
+| Isolates leading SPAdes on NGA50 | 11 | **25 / 40** | — |
+| Median contigs | 78 | 70 | **65** |
+| Total misassemblies | **19** | 21 | 26 |
+| Assemblies with zero misassemblies | **27** | 26 | 24 |
+| Median mismatches / 100 kbp | **0.22** | 0.23 | 0.44 |
+| Median genome fraction (%) | 99.22 | **99.23** | 98.95 |
+
+The two contiguity rows disagree on purpose. The model has the longer NGA50 on
+25 of 40 isolates and its median *ratio* to SPAdes is 1.02x, but SPAdes holds
+the higher *median* NGA50, because the isolates SPAdes wins it wins by a wider
+margin. Neither statement is the whole picture, so both are given.
 
 Read across rather than down. Without a model tessera is the more conservative
 assembler: fewer misassemblies, half the mismatch rate, higher genome fraction,
-and 0.89x the contiguity, because it declines joins it cannot support. With a
-model it leads on contiguity (1.03x, ahead on 26 of 37 isolates), on
-misassemblies, on per-base accuracy and on completeness. It reports slightly
-more contigs than SPAdes, which is what higher genome fraction looks like when
-the extra sequence is short: the pieces are counted, and they are also present.
+and 0.89x the contiguity, because it declines joins it cannot support. The model
+buys back most of that contiguity -- 0.89x to 1.02x at the median ratio, and the
+longer NGA50 on 25 of 40 isolates -- while keeping the accuracy: still fewer
+misassemblies than SPAdes, still about half the mismatch rate, still the higher
+genome fraction. It reports more contigs than SPAdes, which is what a higher
+genome fraction looks like when the extra sequence is short: the pieces are
+counted, and they are also present.
 
 Both columns use the same trimmed reads, the same QUAST invocation and the same
 closed references, and the model is always learned from a corpus that excludes

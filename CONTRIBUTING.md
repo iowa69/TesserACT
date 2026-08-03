@@ -10,8 +10,9 @@ something. Several changes in this codebase looked like clear wins on five
 isolates and turned out to be neutral or harmful on forty. If you are changing
 anything that affects an assembly, say what you measured it on.
 
-That cuts both ways: a change that measures worse is a useful result and the
-comment explaining *why* it was reverted is worth keeping.
+That cuts both ways: an alternative that measures worse is a useful result, and
+a comment recording the alternative and the number that rejected it is worth
+keeping so the same argument does not have to be made twice.
 
 ## Before opening a pull request
 

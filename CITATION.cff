@@ -3,7 +3,8 @@ title: "TesserACT: a de novo short-read genome assembler for bacterial isolates"
 message: "If you use this software, please cite it as below."
 type: software
 authors:
-  - alias: iowa69
+  - name: "TesserACT contributors"
+    alias: iowa69
 repository-code: "https://github.com/iowa69/TesserACT"
 abstract: >-
   TesserACT assembles haploid bacterial isolates from paired-end Illumina reads.
@@ -23,3 +24,4 @@ keywords:
   - Klebsiella pneumoniae
 license: MIT
 version: 1.1.0
+date-released: 2026-08-03
