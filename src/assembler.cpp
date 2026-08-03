@@ -235,8 +235,8 @@ bool Assembler::run(std::string& error) {
     }
 
     // Check the output directory is usable before spending the run on it. This
-    // used to be discovered at the final stage, which threw away everything a
-    // real genome had just cost.
+    // is checked here rather than at the final stage, so a run that cannot
+    // write its output fails before it spends the time to produce one.
     if (!util::makeDirs(opt_.outDir)) {
         error = "cannot create output directory " + opt_.outDir;
         return false;
@@ -491,8 +491,9 @@ bool Assembler::run(std::string& error) {
                                       isPanel_.loaded() ? &isPanel_ : nullptr, &joinSource);
         // joinByModel rebuilds the contig vector: chains become one entry and
         // the survivors come back in a different order. gfaPaths is parallel to
-        // it, so without this every P line named one contig and walked another.
-        // A contig built by joining has no single walk, so it gets none.
+        // it and has to be permuted with it, or a P line names one contig and
+        // walks another. A contig built by joining has no single walk, so it
+        // gets none.
         if (!joinSource.empty()) {
             std::vector<GfaPath> permuted(joinSource.size());
             for (size_t i = 0; i < joinSource.size(); ++i) {

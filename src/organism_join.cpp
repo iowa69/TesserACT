@@ -171,7 +171,7 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         unique.push_back(h);
     }
     st.markersFound += unique.size();
-    if (unique.empty()) return 0;
+    if (unique.empty()) { identity(); return 0; }
 
     // ---- gather markers at each port --------------------------------------
     // Port 2c+1 leaves contig c at its right end walking forward; port 2c+0
@@ -577,9 +577,16 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
 
     // Compose the two passes so the caller sees one input->output mapping.
     if (source) {
-        source->assign(m2.size(), UINT32_MAX);
-        for (size_t i = 0; i < m2.size(); ++i) {
-            if (m2[i] != UINT32_MAX && m2[i] < m1.size()) (*source)[i] = m1[m2[i]];
+        // Compose: m1 maps input -> after the chromosome pass, m2 maps that ->
+        // after the plasmid pass. A pass that made no joins reports identity, so
+        // both are always as long as their own input.
+        if (m1.empty()) {
+            source->swap(m2);
+        } else {
+            source->assign(m2.size(), UINT32_MAX);
+            for (size_t i = 0; i < m2.size(); ++i) {
+                if (m2[i] != UINT32_MAX && m2[i] < m1.size()) (*source)[i] = m1[m2[i]];
+            }
         }
     }
 

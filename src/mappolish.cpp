@@ -180,8 +180,8 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
         ++st.reads;
 
         // qname flag rname pos mapq cigar rnext pnext tlen seq qual.
-        // All eleven are mandatory; a short record used to yield empty strings
-        // for the missing ones and was then parsed as though it were real.
+        // All eleven are mandatory. A record with fewer is rejected rather than
+        // parsed with empty strings standing in for what is missing.
         char* f[11] = {nullptr};
         int nf = 0;
         for (char* p = buf; p != nullptr && nf < 11;) {
@@ -217,10 +217,9 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
         // Validate the CIGAR before walking it. This single check is what makes
         // every seq[qpos] below in bounds: the loop that follows advances qpos
         // only through the same operators counted here, so if the total agrees
-        // with SEQ it can never run off the end. Previously the M loop was
-        // bounded by the reference cursor alone and I/S advanced qpos freely,
-        // so a crafted CIGAR read past the record -- and the I case copies what
-        // it reads straight into the contig.
+        // with SEQ it can never run off the end. The reference cursor alone is
+        // not enough: I and S advance only the query, and the insertion case
+        // copies what it reads straight into the contig.
         {
             uint64_t qlen = 0;
             bool wellFormed = true;
@@ -282,9 +281,9 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
     std::free(buf);
     const int rc = pclose(pipe);
     // A mapper that aligns some reads and then dies -- out of memory, truncated
-    // input, full disk -- leaves a partial pileup. Its exit status was consulted
-    // only when nothing aligned at all, so a half-finished run silently rewrote
-    // the contigs from incomplete evidence, with its stderr sent to /dev/null.
+    // input, full disk -- leaves a partial pileup that is indistinguishable from
+    // a complete one. Its stderr goes to /dev/null, so the exit status is the
+    // only signal there is and is checked whether or not anything aligned.
     const bool mapperOk = rc != -1 && WIFEXITED(rc) && WEXITSTATUS(rc) == 0;
     if (!mapperOk || st.alignedReads == 0) {
         st.error = !mapperOk ? "mapper failed" : "no reads aligned";

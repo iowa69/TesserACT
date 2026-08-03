@@ -1,7 +1,7 @@
 # Everything needed to run tessera and to reproduce the benchmark around it.
 #
 #   conda env create -f conda/environment.yml
-#   conda activate tessera
+#   conda activate tesseract
 #
 # tessera itself needs only a C++17 compiler and zlib; the rest of this file is
 # the evaluation stack -- the tools that build a model, score an assembly

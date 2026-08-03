@@ -30,19 +30,21 @@ LDLIBS    += -lz
 
 all: $(BIN) $(MODELBIN)
 
-native: OPT := -O3 -march=native -mtune=native
-native: clean $(BIN)
+# Each of these rebuilds from scratch with different flags. Sub-makes rather
+# than "clean $(BIN)" prerequisites, which make is free to run in either order
+# under -j and which can therefore leave no binary at all.
+native:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory OPT="-O3 -march=native -mtune=native" all
 
-debug: OPT := -O0 -g3 -fno-omit-frame-pointer
-debug: clean $(BIN)
+debug:
+	@$(MAKE) --no-print-directory clean
+	@$(MAKE) --no-print-directory OPT="-O0 -g3 -fno-omit-frame-pointer" all
 
-# Sub-makes rather than prerequisites: "clean $(BIN)" leaves the two
-# unordered, so `make asan -j8` raced and could finish with no binary at all,
-# silently and with status 0.
 asan:
 	@$(MAKE) --no-print-directory clean
 	@$(MAKE) --no-print-directory OPT="-O1 -g3 -fsanitize=address,undefined -fno-omit-frame-pointer" \
-	         LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined" $(BIN)
+	         LDFLAGS="$(LDFLAGS) -fsanitize=address,undefined" all
 
 $(BIN): $(OBJECTS)
 	$(CXX) $(OBJECTS) $(LDFLAGS) $(LDLIBS) -o $@
@@ -84,7 +86,7 @@ install: $(BIN) $(MODELBIN)
 	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)"
 
 uninstall:
-	@rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN)
+	@rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)
 
 clean:
-	@rm -rf $(BUILDDIR) $(BIN)
+	@rm -rf $(BUILDDIR) $(BIN) $(MODELBIN)

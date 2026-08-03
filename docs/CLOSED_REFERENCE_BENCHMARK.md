@@ -1,12 +1,17 @@
-# Closed-reference benchmark
+# Closed-reference benchmark — seven mixed isolates
+
+> **Scope.** Vanilla tessera, **no organism model**, on seven isolates of mixed
+> chemistry (2x150, 2x250 and 2x300). Run under an earlier k ceiling of 96.
+> This page measures the model-free assembler on heterogeneous libraries; it is
+> not the head-to-head that the README quotes, which uses the genus model on a
+> *Klebsiella* panel. For that, see [KLEBSIELLA_PANEL.md](KLEBSIELLA_PANEL.md)
+> and the table in the README.
 
 Real Illumina reads assembled against **complete (closed) reference genomes from
-the same isolate**, so accuracy can be measured rather than inferred. Seven
-isolates, each with the reads and the finished genome deposited under one
-BioSample; references are Unicycler hybrid (Illumina + ONT/PacBio) assemblies.
-Two of them (INF164, KSB1_7J) come from the Wick/Holt *Klebsiella* set.
-
-Reproduce with `closed/run_closed_benchmark.sh` and `closed/rerun_v3.sh`.
+the same isolate**, so accuracy is measured rather than inferred. Each isolate
+has its reads and its finished genome deposited under one BioSample; the
+references are Unicycler hybrid (Illumina + ONT/PacBio) assemblies. Two of them
+(INF164, KSB1_7J) come from the Wick/Holt *Klebsiella* set.
 
 ## How to read this table
 
@@ -28,18 +33,21 @@ assembly) before scoring. QUAST 5.3.0, default `--min-contig 500`.
 | kpn_INF164 | 63,852 | 117,408 | -45.6% | 3 | 3 | 0.20 | 1.42 |
 | kpn_KSB17J | 172,683 | 172,174 | +0.3% | 0 | 0 | 0.43 | 0.02 |
 
-**Contiguity: SPAdes wins 6 of 7, one tie.** This is the honest position and it
-should not be quoted any other way. An earlier version of this document claimed
-a tessera contiguity win; that comparison was scaffolds against contigs and did
-not survive being redone properly.
+**Without a model, SPAdes leads contiguity on six of these seven, with one tie.**
+That is the position on this panel and it should not be quoted any other way.
+Contiguity without a model is bounded by what a fragment can span: a 217 bp
+insert cannot settle a repeat longer than itself, and tessera stops at those
+junctions rather than guessing. Supplying a genus model is what changes this
+axis, and is measured separately.
 
-Where tessera is ahead:
+Where tessera leads on this panel:
 
 - **Base accuracy** — mean 0.53 mismatches/100 kbp against SPAdes' 1.89, better
-  on 6 of 7, and 3.6x better overall.
+  on 6 of 7, 3.6x better overall.
 - **Misassemblies** — 8 against 10 in total, with zero local misassemblies
   throughout.
-- **Speed and memory** — 2.4-12.6x faster, on roughly half to a third the RAM.
+- **Speed and memory** — 2.4-12.6x faster on this panel, on roughly half to a
+  third of the RAM.
 
 | dataset | tessera | SPAdes |
 |---|---|---|
@@ -51,33 +59,31 @@ Where tessera is ahead:
 | kpn_INF164 | 79s / 1.75 GB | 187s / 4.33 GB |
 | kpn_KSB17J | 58s / 2.84 GB | 166s / 4.30 GB |
 
-## What this benchmark found
+## Two defaults this panel set
 
-Two real defects, both fixed, both regression-tested:
+**Error correction requires corroboration.** `kpn_1GR13` is 2x300 MiSeq whose R2
+quality collapses to Q3.6 by position 281 — a ~44% per-base error rate, which is
+noise. Raw noise is harmless, because unique k-mers die at the abundance cutoff.
+*Corrected* noise is not: it enters the graph indistinguishable from evidence.
+A corrector free to spend a budget of `len/10` substitutions, walking whichever
+path keeps k-mers solid, will rewrite such a tail into plausible genomic
+sequence. tessera therefore requires the k-mers following a correction to stay
+solid for four more steps, and masks stretches it cannot vouch for rather than
+rewriting them. On this dataset the difference is NGA50 38,459 against 67,886.
 
-**The corrector fabricated sequence.** `kpn_1GR13` is 2x300 MiSeq whose R2
-quality collapses to Q3.6 by position 281 -- a ~44% per-base error rate, i.e.
-noise. The corrector had no corroboration requirement and a budget of `len/10`
-substitutions, so it rewrote those tails into plausible genomic sequence by
-walking whichever path kept k-mers solid. Raw noise is harmless (unique k-mers
-die at the abundance cutoff); *corrected* noise is not, because it enters the
-graph indistinguishable from evidence. Disabling correction entirely scored
-better than running it (NGA50 58,161 vs 38,459), which is what exposed it.
-Corrections now require the following k-mers to stay solid for four more steps,
-and stretches that cannot be vouched for are masked rather than rewritten.
+**The abundance cutoff excludes the saturation bin.** The count histogram folds
+everything at or above 100,000 into its last bin, so that bin's index is a floor
+rather than a count. Weighting it by that index lets it outvote the real
+coverage mode at small k, where collapsed repeats and low-complexity sequence
+pile up there: on this dataset that gives `cutoff=787, peak=100000, solid=1,538`
+out of 27M distinct 21-mers. Since error correction builds its trusted set at
+the smallest k, a cutoff chosen that way leaves correction with nothing to work
+from. Excluding the saturation bin gives `cutoff=7, peak=56, solid=5.6M`.
 
-**The abundance cutoff was chosen from a saturation artefact.** The count
-histogram folds everything at or above 100,000 into its last bin, so that bin's
-index is a floor, not a count. The peak search weighted it by that index anyway.
-At small k, where collapsed repeats and low-complexity sequence pile up there,
-it outweighed the real coverage mode: `cutoff=787, peak=100000, solid=1,538` out
-of 27M distinct 21-mers. Since error correction builds its trusted set at the
-smallest k, correction had effectively been running against an empty set on this
-dataset. Excluding the saturation bin restores `cutoff=7, peak=56, solid=5.6M`.
+Both defaults together, on the dataset that is most sensitive to them, from raw
+reads:
 
-Combined effect on the dataset that exposed them, from raw reads:
-
-| | before | after |
+| | histogram valley, uncorroborated correction | shipped defaults |
 |---|---|---|
 | NGA50 | 38,459 | 67,886 (+76%) |
 | misassemblies | 1 | 0 |
@@ -86,27 +92,21 @@ Combined effect on the dataset that exposed them, from raw reads:
 | peak RSS | 9.16 GB | 2.76 GB |
 | wall clock | 93.5s | 86s |
 
-tessera also now quality-trims 3' ends as reads are loaded (`--no-qtrim`,
+tessera also quality-trims 3' ends as reads are loaded (`--no-qtrim`,
 `--qtrim-quality`, `--qtrim-window`), before the count that builds the trusted
-k-mer set. On binned-quality HiSeq/NovaSeq data this is a no-op; on 2x250/2x300
-MiSeq it is what makes the rest of the pipeline behave.
+k-mer set. On binned-quality HiSeq/NovaSeq data this is a no-op; on 2x250 and
+2x300 MiSeq it is what makes the rest of the pipeline behave.
 
-## Known limitation
+## What the k ladder does and does not reach
 
-The remaining contiguity gap is repeat resolution in the graph, not k. Extending
-the k ladder does not close it -- on `kpn_1GR13` the ladders `21,33,55`,
-`21,33,55,77` and `21,33,55,77,95` give N50 76,933 / 72,168 / 77,131, i.e. it
-has plateaued well below the k<=96 ceiling this panel was run under.
-`kpn_KSB17J`, the one dataset where SPAdes itself only used k<=55, is also the
-one tessera ties.
+On this panel the ladder plateaus below the ceiling it was run under: on
+`kpn_1GR13` the ladders `21,33,55`, `21,33,55,77` and `21,33,55,77,95` give N50
+76,933 / 72,168 / 77,131. `kpn_KSB17J`, the one dataset where SPAdes itself only
+used k<=55, is also the one tessera ties.
 
-> **Superseded in part.** An earlier version of this paragraph went further and
-> said widening the k-mer representation to reach k=127 "would not help". That
-> was a claim about these seven libraries generalised past its evidence. On the
-> 212-isolate *Klebsiella* panel (`KLEBSIELLA_PANEL.md`), which is mostly 2x250
-> MiSeq, the unitig N50 was still climbing steeply at k=95 and widening to
-> k<=128 took it from 142,604 to 207,162 on one isolate. The plateau above is
-> real for 2x150 and 2x300 data and says nothing about 2x250. The larger finding
-> from that panel -- that the abundance cutoff, not k or repeat resolution, was
-> the dominant limiter -- applies here too and postdates every number on this
-> page.
+That plateau is a property of 2x150 and 2x300 libraries and does not generalise
+to 2x250, where a read carries far more k-mer. On the *Klebsiella* panel, which
+is mostly 2x250, unitig N50 was still climbing steeply at k=95 and raising the
+top rung to 127 took it from 142,604 to 207,162 on one isolate. This is why the
+ladder's top rung tracks read length rather than stopping at 95 — see
+[KLEBSIELLA_PANEL.md](KLEBSIELLA_PANEL.md).

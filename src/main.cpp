@@ -70,6 +70,8 @@ void usage() {
         "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)\n"
         "      --link-per-x F      paired support required per unit of median coverage\n"
         "                          before a contested join is taken (default: 0.10)\n"
+        "      --bubble-coverage F a bubble branch below this fraction of its twin's\n"
+        "                          coverage is dropped (default: 0.35)\n"
         "      --aggressive        alias for --mode aggressive: collapses diverged\n"
         "                          repeat copies, which costs about one\n"
         "                          misassembly per genome. Opt in knowingly.\n"
@@ -216,9 +218,8 @@ int main(int argc, char** argv) {
             }
         }
         else if (a == "--max-memory") {
-            // Validated before the cast: atof() cannot report failure, so
-            // "--max-memory abc" silently meant "use the default", and a value
-            // that overflows to inf made the cast to long long undefined.
+            // Validated before the cast: atof() cannot report failure, and a
+            // value that overflows to inf makes the cast to long long undefined.
             opt.maxMemoryBytes = static_cast<long long>(
                 numInRange(needValue(i, "--max-memory"), "--max-memory", 0.001, 1048576.0) *
                 1073741824.0);

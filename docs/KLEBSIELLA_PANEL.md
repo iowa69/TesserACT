@@ -1,4 +1,9 @@
-# The 212-isolate *Klebsiella pneumoniae* panel
+# The *Klebsiella pneumoniae* panel
+
+> **Scope.** Vanilla tessera, **no organism model**, against vanilla SPAdes.
+> This page is about what the model-free assembler does and which measurement
+> sets each default. The model-guided head-to-head the README quotes is a
+> different configuration on the same panel.
 
 Every isolate here has **paired Illumina reads and a complete closed reference
 genome for the same DNA** — chromosome plus every plasmid, from NCBI CP
@@ -11,8 +16,8 @@ N runs before scoring and neither tool is credited for a gap it did not close.
 Comparing tessera's scaffolds against SPAdes' contigs flatters tessera and is
 not done here.
 
-Run with `kle_bench/run_batch.sh batchN.txt TAG`; score with
-`kle_bench/headtohead.py TAG`.
+The per-isolate table behind the README's head-to-head is
+[`final_headtohead.tsv`](final_headtohead.tsv).
 
 ## Library characteristics, and why they matter
 
@@ -34,26 +39,23 @@ double-counting, which starves the top of the ladder — on one isolate it cost
 73% of contig NGA50. tessera does accept merged output
 (`-1 unmerged_1 -2 unmerged_2 -s merged`) for anyone who wants it.
 
-## What the panel found
+## The defaults this panel sets, in descending order of what they are worth
 
-In descending order of how much it cost. None of it was where the search
-started.
+### 1. The abundance cutoff sits below the histogram valley
 
-### 1. The abundance cutoff was set at the histogram valley
-
-The valley is where the error shoulder meets the coverage mode, so it looks
-like the principled place to threshold. But on a real genome the counts in
+The valley is where the error shoulder meets the coverage mode, which looks
+like the principled place to threshold. On a real genome the counts in
 between are not empty: they hold the AT-rich prophages and genomic islands, the
 low-copy plasmids, the k-mers flanking repeats.
 
-The diagnosis came from diffing against SPAdes. Of 83,765 bp tessera failed to
-recover on one isolate, SPAdes recovered 55,663 bp, and **every large stretch
-was GC 29–42% against a 57% genome**. Composition bias like that points at a
-coverage threshold, not at an algorithm.
+Diffing a low-recovery assembly against SPAdes shows what a valley cutoff
+costs: of 83,765 bp missing on one isolate, SPAdes recovers 55,663 bp, and
+**every large stretch is GC 29–42% against a 57% genome**. Composition bias
+like that points at a coverage threshold, not at an algorithm.
 
 | cutoff | NGA50 | genome fraction | misassemblies | contigs |
 |---|---|---|---|---|
-| 5 (valley) | 39,855 | 97.43% | 1 | 328 |
+| 5 (at the valley) | 39,855 | 97.43% | 1 | 328 |
 | 3 | 86,779 | 98.15% | 0 | 195 |
 | **2** | **132,059** | **98.41%** | 1 | **157** |
 | *SPAdes* | *81,707* | *98.58%* | *3* | *188* |
@@ -62,15 +64,15 @@ The error k-mers a low cutoff admits do not survive anyway — they enter the
 graph as tips, bubbles and erroneous connections, and simplification removes
 them *by topology*, which is evidence a count threshold does not have.
 
-### 2. The trimming preset was throwing the assembly away
+### 2. The trimming preset is deliberately gentle
 
-`fastplus --preset assembly` ran `cut_right` at Q20 and enabled overlap
-correction. Both cost contiguity, and together they explained the entire gap to
-plain fastp — to the base.
+`cut_right` at Q20 with overlap correction costs contiguity, and accounts for
+the entire gap to plain fastp — to the base. `fastplus --preset assembly`
+therefore does neither.
 
 | trimming | NGA50 |
 |---|---|
-| `cut_right` Q20 + correction *(what it did)* | 132,059 |
+| `cut_right` Q20 + correction | 132,059 |
 | `cut_tail` Q10 + correction | 149,192 |
 | `cut_tail` Q10, no correction | **160,991** |
 | fastp's own defaults | **160,991** |
@@ -78,42 +80,42 @@ plain fastp — to the base.
 `cut_right` truncates a read at the first sliding window below the threshold,
 discarding 13–24% of all bases. Overlap correction rewrites disagreeing bases
 toward the higher-quality mate — wrong whenever the mates disagree because they
-came off different repeat copies. On one isolate the fix was +95% NGA50.
+came off different repeat copies. On one isolate the difference is +95% NGA50.
 
 Same lesson as the cutoff, in a different component: an assembler removes errors
 by graph topology, pooling evidence across every read covering a locus; a
 trimmer decides per read, in advance, with far less information.
 
-### 3. The k ceiling was set for 150 bp reads
+### 3. The k ceiling follows the read length
 
-The 192-bit k-mer capped k at 96. On 2×250 libraries the unitig N50 was still
-climbing steeply there. Widening to 256 bits (k ≤ 128) and topping the ladder at
-127 took unitig N50 from 142,604 to 207,162 on one isolate and mismatches from
-2.78 to 0.52 per 100 kbp.
+A 192-bit k-mer caps k at 96, and on 2×250 libraries the unitig N50 is still
+climbing steeply there. Four 64-bit words (k ≤ 128), with the ladder topping out
+at 127, take unitig N50 from 142,604 to 207,162 on one isolate and mismatches
+from 2.78 to 0.52 per 100 kbp.
 
-This contradicts what the older seven-isolate benchmark concluded, and both are
-correct for their data: on those 2×150 and 2×300 libraries the ladder had
-genuinely plateaued below k=96. The conclusion was right about that panel and
-wrong as a general claim.
+This is specific to read length. On the 2×150 and 2×300 libraries of the
+[seven-isolate panel](CLOSED_REFERENCE_BENCHMARK.md) the ladder has genuinely
+plateaued below k=96, which is why the top rung tracks the mean read length
+instead of being fixed.
 
 ### 4. Smaller findings
 
-* **The ladder keyed off maximum read length.** Many public runs arrive already
-  trimmed by the submitter, so one 301 bp survivor in a library averaging 190 bp
-  selected a ladder most reads were too short to contribute to. Now uses the mean.
-* **A chain end with candidates but no paired support was rejected outright**,
-  even when every candidate ended on the same unitig and only the route through
-  the repeat differed. The destination is not in doubt there. Taking those joins
-  is +26% and +23% on two isolates, with misassemblies unchanged.
-* **Scaffold gaps had no closing stage.** Local reassembly from the reads
-  crossing each gap closes them; the corrector's masking had been hiding the
-  very reads needed, so gap closing reads through the mask.
-* **`minLinkSupport` was a flat count.** Pairs crossing a junction scale with
-  coverage, so 2 is a real bar at 40x and almost none at 100x. It became visible
-  the moment better trimming raised the depth: contiguity rose and so did
-  long-range chimeric joins -- 4.4 Mb and 1.6 Mb inconsistencies inside single
-  contigs. It now scales with the median unitig coverage, and the factor was
-  measured across all twenty isolates rather than guessed:
+* **The ladder keys off mean, not maximum, read length.** Many public runs
+  arrive already trimmed by the submitter, so one 301 bp survivor in a library
+  averaging 190 bp would otherwise select a ladder most reads are too short to
+  contribute to.
+* **A chain end with candidates but no paired support is still joined** when
+  every candidate ends on the same unitig and only the route through the repeat
+  differs, because the destination is not in doubt there. Taking those joins is
+  +26% and +23% on two isolates, with misassemblies unchanged.
+* **Scaffold gaps get a closing stage.** Local reassembly from the reads
+  crossing each gap closes them, and it reads through the corrector's mask,
+  which would otherwise hide the very reads needed.
+* **`minLinkSupport` scales with depth.** Pairs crossing a junction scale with
+  coverage, so a flat 2 is a real bar at 40x and almost none at 100x — at high
+  depth it admits long-range chimeric joins, 4.4 Mb and 1.6 Mb inconsistencies
+  inside single contigs. The factor is measured across all twenty isolates
+  rather than guessed:
 
   | factor | median NGA50 | misassemblies |
   |---|---|---|
@@ -128,19 +130,21 @@ wrong as a general claim.
   contiguity. The knob follows the run modes: careful 0.14, standard 0.10,
   aggressive 0.05.
 
-## Batch 1: the session's effect, contig level
+## What those four defaults are worth, contig level
 
-| | before | after |
+Batch 1, twenty isolates, every other setting held fixed:
+
+| | valley cutoff, aggressive trim, k≤96, flat support | shipped defaults |
 |---|---|---|
 | median NGA50 | 181,402 | **277,799** (+53%) |
 | median genome fraction | 98.67% | **98.79%** |
 | median mismatches per 100 kbp | — | **0.11** |
 | misassemblies across 20 isolates | 10 | **3** |
 
-Seven isolates more than doubled: ERR11578909 +317%, ERR11578757 +275%,
+Seven isolates more than double: ERR11578909 +317%, ERR11578757 +275%,
 ERR11578712 +255%, ERR11579004 +225%, ERR2631558 +133%, ERR11578347 +119%,
-ERR11578485 +106%. Two regressed: ERR11578571 −25% and ERR11578240 −4%, both
-under the depth-scaled support bar that took the panel from twelve
+ERR11578485 +106%. Two go the other way, ERR11578571 −25% and ERR11578240 −4%,
+both under the depth-scaled support bar that takes the panel from twelve
 misassemblies to three.
 
 ## Does `--mode aggressive` buy the contiguity back?
@@ -225,7 +229,7 @@ was 78–84% of it, against 13–16% for the start classification. The walk
 parallelises exactly — the walks are disjoint by construction — taking graph
 build from 8.5 s to 3.4 s per k-rung with byte-identical output.
 
-## Five things that looked right and were not
+## Five plausible alternatives, measured and rejected
 
 Each was measured, rejected, and the measurement recorded in the code so the
 same plausible argument does not get made twice.
@@ -293,7 +297,7 @@ repeat splits it into two disjoint cycles while the right one leaves it whole.
 That is a property of the whole layout, which is exactly why local paired
 scoring cannot reach it -- so it looked like the missing ingredient.
 
-It was implemented twice and neither version helps.
+Two implementations were measured and neither helps.
 
 The first was a standalone pass over unplaced 2-in/2-out repeat nodes, choosing
 the pairing that leaves fewer connected components. It never fired: of 58 nodes
@@ -326,7 +330,7 @@ That looked like proof the chain abstraction was the limiter, and that closing
 the gap needed path extension over the unitig graph itself -- a rewrite rather
 than an addition.
 
-**That was wrong, and building it is what showed so.** An alternative resolver
+Measurement does not support that. An alternative resolver
 that walks the graph edge by edge, with a per-unitig traversal budget from
 coverage so a repeat can be used as often as its depth says it occurs, is worse
 on five isolates:
@@ -349,15 +353,11 @@ Adding look-ahead so the walk pools evidence the way chain enumeration does
 changed almost nothing (362,493 against 361,930). Spending the traversal budget
 per path rather than globally produced an assembly 3.4x the size of the genome.
 
-So the chain abstraction is not what limits contiguity here. Where the limit
-actually lies is, after all of this, still unidentified -- which is a more
-honest place to stop than a confident architectural claim that measurement
-contradicts.
+So the chain abstraction is not what limits contiguity here.
 
 ## Where the limit actually lies
 
-The claim above -- that the limit was unidentified -- lasted until the
-resolver was asked what it was rejecting rather than what it was choosing.
+Asking the resolver what it rejects, rather than what it chooses, locates it.
 
 On ERR11578413, of 498 chain ends:
 
@@ -420,9 +420,9 @@ So the gap is real, it is measured, and it is a choice rather than a defect.
 Closing it means buying contiguity with error. That is worth stating plainly
 rather than continuing to search for a decision rule that cannot exist.
 
-## The scaffold splice, and why it was reverted
+## The scaffold splice, measured and not adopted
 
-One defect was real. The scaffold stage refused any partner reachable
+The scaffold stage refuses any partner reachable
 through the graph, on the grounds that chain extension had handled it; chain
 extension had in fact rejected those junctions for want of support on a single
 from->terminal pair, while this stage pools every pair landing within a
@@ -454,7 +454,6 @@ nothing: both regressing isolates come out byte-identical, because the
 offending interiors were already within reach. The joins are spannable and
 still wrong.
 
-So the change was reverted. It is the same trade this document argues against
-everywhere else, and the fact that it was our own change does not make the
-trade a better one. Five isolates were not enough to see it; the honest sample
-here is every isolate with a baseline.
+So the splice is not used. It is the same trade this document argues against
+everywhere else: contiguity bought with error. Five isolates are not enough to
+see that; the honest sample is every isolate with a baseline.

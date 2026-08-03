@@ -450,9 +450,9 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         const bool isSingle = plan.mode == kSingle;
         if ((phase == 0) == isSingle) continue;
         // The boundary between paired and single reads, set once as the first
-        // single-end library starts. Without the anyPaired guard a second -s
-        // library tripped it and every read of the first was treated as having
-        // a mate, manufacturing spanning evidence out of reads that have none.
+        // single-end library starts. The anyPaired guard keeps a second -s
+        // library from tripping it: with no paired library at all there is no
+        // boundary, and reads with no mate must not be counted as spanning.
         if (phase == 1 && anyPaired && nextRead > 0 && pairedReads_ == 0) pairedReads_ = nextRead;
         FileSlot& a = slots[plan.slotA];
         if (plan.mode == kPaired) {

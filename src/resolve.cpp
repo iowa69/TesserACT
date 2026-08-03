@@ -1053,10 +1053,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             if (!headExt.empty()) {
                 // extendByCommonPrefix already drops each piece's overlap as it
                 // appends, so headExt is novel sequence only and is prepended
-                // whole -- exactly as the tail case appends whole. Taking ov off
-                // a second time here deleted k-1 bases that are really in the
-                // genome and spliced together two stretches that are not
-                // adjacent to each other.
+                // whole -- exactly as the tail case appends whole. Subtracting
+                // the overlap a second time here would delete k-1 bases that are
+                // really in the genome.
                 seq.insert(0, reverseComplement(headExt));
                 covWeighted += hCov;
                 covLen += hLen;

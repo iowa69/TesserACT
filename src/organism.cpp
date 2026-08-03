@@ -130,8 +130,8 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
     }
 
     // The file's own length, used to sanity-check the counts it declares. A
-    // count larger than the bytes that could hold it is corruption, and asking
-    // for that much memory first is how it used to be discovered.
+    // count larger than the bytes that could hold it is corruption, and must be
+    // rejected before it reaches an allocation.
     long fileSize = 0;
     if (std::fseek(f, 0, SEEK_END) == 0) {
         fileSize = std::ftell(f);

@@ -6,20 +6,16 @@ package:
   version: {{ version }}
 
 source:
-  # Building from a release tarball keeps the recipe reproducible. To build the
-  # working tree instead, run `conda build conda/ --source-override .`
+  # Building from a tagged release keeps the recipe reproducible.
   git_url: https://github.com/iowa69/TesserACT.git
   git_rev: v{{ version }}
 
 build:
   number: 0
-  # Nothing here is architecture-independent: the k-mer packing and the
-  # threading are compiled.
-  script:
-    - make -j${CPU_COUNT} CXX=${CXX}          # [unix]
-    - mkdir -p ${PREFIX}/bin                  # [unix]
-    - cp tessera ${PREFIX}/bin/               # [unix]
-    - cp tessera-model ${PREFIX}/bin/         # [unix]
+  # The build steps live in conda/build.sh. conda-build rejects a recipe that
+  # has both that file and a build/script section here.
+  # Nothing is architecture-independent: the k-mer packing and the threading
+  # are compiled.
 
 requirements:
   build:
@@ -29,6 +25,11 @@ requirements:
     - zlib
   run:
     - zlib
+  # --map-polish shells out to one of these. They are not required to
+  # assemble, so they constrain rather than depend.
+  run_constrained:
+    - bowtie2
+    - bwa
 
 test:
   commands:
@@ -52,7 +53,7 @@ about:
     TesserACT assembles bacterial isolates from paired-end Illumina reads. It
     builds a de Bruijn graph over a ladder of k-mer sizes, simplifies it,
     resolves repeats with paired-end information, closes gaps and polishes the
-    result, in about 4,000 lines of C++17 with no dependencies beyond a
+    result, in about 8,600 lines of C++17 with no dependencies beyond a
     compiler, zlib and pthreads.
 
     Where a repeat is longer than a sequencing fragment there is no paired

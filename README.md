@@ -5,7 +5,7 @@
 # TesserACT
 
 **A de novo genome assembler for bacterial isolates.**
-Short reads in, chromosomes out — in ~4,000 lines of C++17 with no dependencies
+Short reads in, chromosomes out — in ~8,600 lines of C++17 with no dependencies
 beyond a compiler, zlib and pthreads.
 
 [Install](#install) · [Quick start](#quick-start) · [How it works](#how-it-works) · [Benchmark](#benchmark) · [Options](#options)
@@ -53,7 +53,7 @@ conda activate tesseract
 
 ```sh
 git clone https://github.com/iowa69/TesserACT.git && cd TesserACT
-./install.sh                      # installs into ~/.local/bin
+./install.sh                      # into the active conda env, else ~/.local/bin
 ./install.sh --prefix /usr/local  # or wherever you like
 ```
 
@@ -130,8 +130,8 @@ and must be odd.
 
 Requirements:
 
-* a C++17 compiler (developed and tested with g++; `make CXX=clang++` should
-  work but is not part of the tested configuration)
+* a C++17 compiler (CI builds and runs `make check` under both g++ and
+  clang++)
 * zlib (`libz-dev` / `zlib-devel`)
 * pthreads
 
@@ -191,7 +191,7 @@ ASSEMBLY
 
 READ TRIMMING
       --no-qtrim          do not quality-trim read 3' ends
-      --qtrim-quality N   3' trim threshold (default: 12)
+      --qtrim-quality N   3' trim threshold (default: 20)
       --qtrim-window N    3' trim window (default: 4)
 
 ORGANISM MODEL

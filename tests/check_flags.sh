@@ -120,11 +120,10 @@ PY
     bad "--model" "stage did not run"
   fi
 
-  # A model the user named and tessera cannot read is fatal. It used to warn
-  # and carry on, and the warning only appeared under --verbose, so a --quiet
-  # run returned a vanilla assembly while the user believed the model had
-  # guided it -- and the two differ in exactly the junctions the model exists
-  # to settle.
+  # A model the user named and tessera cannot read is fatal rather than a
+  # warning: an assembly built without the model differs from one built with it
+  # in exactly the junctions the model exists to settle, so carrying on would
+  # return a different result under the same command line.
   mkdir -p "$TMP/badmodel"
   if run "$TMP/badmodel" --model "$TMP/does-not-exist.tsm"; then
     bad "missing model" "should have failed, not assembled without the model"
