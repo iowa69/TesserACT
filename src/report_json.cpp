@@ -62,6 +62,17 @@ struct Writer {
         s += ",\n";
     }
 
+    void arrOfStrings(const char* k, const std::vector<std::string>& v) {
+        key(k); s += '[';
+        for (size_t i = 0; i < v.size(); ++i) {
+            if (i) s += ',';
+            s += '"';
+            esc(v[i], s);
+            s += '"';
+        }
+        s += "],\n";
+    }
+
     template <typename T>
     void arrOfNumbers(const char* k, const std::vector<T>& v, size_t cap = 0) {
         key(k); s += '[';
@@ -174,6 +185,28 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("max_plausible", static_cast<unsigned long long>(rep.resolve.insert.maxPlausible));
     w.close('}');
     w.arrOfNumbers("insert_histogram", rep.insertHistogram, 2000);
+    w.close('}');
+
+    w.openObj("organism_model");
+    w.boolean("run", rep.organismRun);
+    w.str("organism", rep.organismName);
+    w.uint("genomes", rep.organismGenomes);
+    w.uint("plasmid_sets", rep.organismPlasmids);
+    w.uint("markers_placed", rep.organism.markersFound);
+    w.uint("joins", rep.organism.joins);
+    w.uint("chromosome_joins", rep.organism.chromosomeJoins);
+    w.uint("plasmid_joins", rep.organism.plasmidJoins);
+    w.uint("insertion_site_joins", rep.organism.insertionSiteJoins);
+    w.uint("gap_bases", rep.organism.gapBases);
+    w.uint("contigs_in", rep.organism.contigsIn);
+    w.uint("contigs_out", rep.organism.contigsOut);
+    w.uint("rejected_weak", rep.organism.rejectedWeak);
+    w.uint("rejected_not_mutual", rep.organism.rejectedNotMutual);
+    w.uint("rejected_inconsistent", rep.organism.rejectedInconsistent);
+    w.uint("rejected_insertion_sequence", rep.organism.rejectedInsertionSeq);
+    // The accessions --exclude kept out of the panel, carried through the
+    // model file, so a leave-one-out run can be checked rather than trusted.
+    w.arrOfStrings("excluded_accessions", rep.organismExcluded);
     w.close('}');
 
     w.openObj("polishing");

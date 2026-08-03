@@ -424,8 +424,20 @@ junctions. Inputs are classified by file name (`*_chr.fasta` versus
 each record is its own replicon.
 
 `--exclude ACC` omits an accession from the panel and records the omission
-inside the model file, so a run can prove which genomes it never saw. That is
-what makes a leave-one-out evaluation meaningful.
+inside the model file. Every assembly that uses the model repeats the list in
+`report.json` under `organism_model.excluded_accessions`, so a leave-one-out
+evaluation can be checked from its own output rather than taken on trust:
+
+```console
+$ jq '.organism_model.excluded_accessions' out/report.json
+[
+  "ERR10447223"
+]
+```
+
+That block also records how many markers were placed, how many joins were made
+on the chromosome and on plasmids, and how many candidate joins each rejection
+rule threw out.
 
 ### Assembling with it
 

@@ -598,7 +598,11 @@ bool Assembler::run(std::string& error) {
             if (!lib.r2.empty()) mp.reads2.push_back(lib.r2);
         }
         report_.mapPolish = mapPolish(seqs, mp);
-        if (!report_.mapPolish.error.empty() && opt_.verbose) {
+        // Printed even under --quiet. Unlike a model, a failed polish leaves
+        // the contigs correct rather than differently shaped, so it is not
+        // fatal -- but the user did ask for it, and silence is how they end up
+        // believing it happened.
+        if (!report_.mapPolish.error.empty()) {
             std::fprintf(stderr, "      warning: alignment polishing skipped: %s\n",
                          report_.mapPolish.error.c_str());
         }
@@ -705,7 +709,7 @@ bool Assembler::run(std::string& error) {
         const std::string jp = opt_.outDir + "/report.json";
         if (writeJsonReport(jp, report_, err)) {
             if (opt_.verbose) std::fprintf(stderr, "      %s\n", jp.c_str());
-        } else if (opt_.verbose) {
+        } else {
             std::fprintf(stderr, "      warning: %s\n", err.c_str());
         }
     }
@@ -714,7 +718,7 @@ bool Assembler::run(std::string& error) {
         const std::string hp = opt_.outDir + "/report.html";
         if (writeHtmlReport(hp, report_, err)) {
             if (opt_.verbose) std::fprintf(stderr, "      %s\n", hp.c_str());
-        } else if (opt_.verbose) {
+        } else {
             std::fprintf(stderr, "      warning: %s\n", err.c_str());
         }
     }
