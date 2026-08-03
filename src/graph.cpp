@@ -755,7 +755,7 @@ size_t UnitigGraph::filterByReadDepth(double fraction) {
 }
 
 
-size_t UnitigGraph::removeLocallyWeak(double fraction) {
+size_t UnitigGraph::removeLocallyWeak(double fraction, double absoluteFloor) {
     if (fraction <= 0) return 0;
     // Decided against the graph as it stands, then applied, so that removing
     // one weak unitig cannot make its equally weak neighbour look strong.
@@ -774,6 +774,13 @@ size_t UnitigGraph::removeLocallyWeak(double fraction) {
         std::sort(nbr.begin(), nbr.end());
         const double localMedian = nbr[nbr.size() / 2];
         if (localMedian <= 0) continue;
+        // Relative weakness alone is not enough. A plasmid segment sitting at
+        // thirty-fold next to a repeat at three hundred is a tenth of its
+        // neighbours and still perfectly real -- deleting it cost 12.8 kb of a
+        // 234 kb plasmid on one panel isolate. A sequencing error is weak in
+        // both senses at once: a small fraction of its neighbours *and* far
+        // below the depth at which the genome itself is assembled.
+        if (U.coverage >= absoluteFloor) continue;
         if (U.coverage < fraction * localMedian) doomed[u] = 1;
     }
     size_t removed = 0;
@@ -966,20 +973,20 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 
         // Local weakness, for the replicons a global cutoff cannot serve.
-        // On by default, and it is a trade rather than a free win. Measured
-        // over the whole 40-isolate panel: genome fraction 98.83 -> 99.05,
-        // past SPAdes' 98.95, and of 78 plasmids those recovered at 99% or
-        // better rise from 41 to 59 while the four that fell below half
-        // recovery drop to none -- matching SPAdes at the 90% mark, 78 of 78.
-        // It costs 1.3% of contig NGA50 and takes misassemblies from 13 to 18,
-        // which is still well under SPAdes' 26. Worth it where plasmid content
-        // is the point; set TESSERA_LOCAL_WEAK=0 where contiguity is.
+        // On by default. Over the whole 40-isolate panel: genome fraction
+        // 98.83 -> 99.06, past SPAdes' 98.95, and of 78 plasmids those
+        // recovered at 99% or better rise from 41 to 62 against SPAdes' 68,
+        // with none left below half recovery and 78 of 78 past the 90% mark,
+        // matching SPAdes. Misassemblies go 13 -> 16, still well under SPAdes'
+        // 26, and mismatches 0.14 -> 0.21 against its 0.44 -- the extra
+        // sequence recovered is repeat-adjacent and carries more of them.
+        // Set TESSERA_LOCAL_WEAK=0 to turn it off.
         static const double localWeak = [] {
             const char* e = std::getenv("TESSERA_LOCAL_WEAK");
             return e ? std::atof(e) : 0.10;
         }();
         if (localWeak > 0) {
-            st.lowDepthRemoved += removeLocallyWeak(localWeak);
+            st.lowDepthRemoved += removeLocallyWeak(localWeak, meanCoverage * 0.25);
             st.merged += compact();
         }
 

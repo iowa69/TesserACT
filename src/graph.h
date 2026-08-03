@@ -124,7 +124,7 @@ public:
     // plasmid -- one 2.5 kb replicon at 845x came out as fifty-seven tangled
     // pieces. Judged against its own neighbours rather than against the genome,
     // each of them is plainly spurious.
-    size_t removeLocallyWeak(double fraction);
+    size_t removeLocallyWeak(double fraction, double absoluteFloor);
 
     // Joins pairs of dead ends whose sequences overlap exactly.
     //
