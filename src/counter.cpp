@@ -270,6 +270,39 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
             peak = c;
         }
     }
+    // The weighted argmax can still land inside the error shoulder. On a very deep
+    // library the shoulder holds tens of millions of distinct k-mers, and if the genome
+    // mode is broad enough that no single bin dominates, `histogram[c]*c` peaks at c=6
+    // while the graph's real median coverage is 70-160x. Measured on 6 of 666 Klebsiella
+    // isolates, all sequenced to 250-449x: every one reported peak=6 and retained 25-43
+    // MILLION solid k-mers for a ~5.7 Mb genome. The cutoff then stayed at 2 and the graph
+    // drowned -- one strain assembled 3.96 Mb of a 5.75 Mb genome into 4,405 contigs.
+    //
+    // The shoulder and the genome mode differ in SHAPE, not just position: inside the
+    // shoulder the histogram is still falling steeply, whereas at a genuine coverage mode
+    // it is flat or rising. So walk up while the decline stays steep. This needs no genome
+    // size and no second pass -- it is the same information the search already has.
+    if (peak > 0 && peak < last) {
+        size_t c = peak;
+        size_t guard = 0;
+        while (c + 1 < last && guard++ < kHistMax) {
+            const uint64_t here = histogram[c], next = histogram[c + 1];
+            if (next == 0 || here < next) break;              // flat or rising: a real mode
+            if (here < next + next / 4) break;                // decline shallower than 25%
+            ++c;
+        }
+        if (c > peak) {
+            // Re-run the weighted argmax above the shoulder we just walked out of.
+            unsigned __int128 b2 = 0;
+            size_t p2 = 0;
+            for (size_t d = c; d < last; ++d) {
+                const unsigned __int128 v = static_cast<unsigned __int128>(histogram[d]) * d;
+                if (v > b2) { b2 = v; p2 = d; }
+            }
+            if (p2 > peak) peak = p2;
+        }
+    }
+
     peakOut = static_cast<double>(peak);
     if (peak < 5) return 2;
 
