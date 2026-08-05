@@ -182,9 +182,18 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // 30 sits between them with margin either side. NOTE: this is calibrated on a
     // handful of strains and wants confirming on a held-out set before it is trusted
     // as a universal default -- the separation is clear but the sample is small.
+    // Retuned against 77 changed assemblies from a full-corpus run. Summed NGA50 delta
+    // by candidate threshold:  20 -> +60k, 24 -> +194k, 25 -> +265k, 28 -> +39k,
+    // 30 -> -120k. The previous value of 30 was net NEGATIVE -- harm concentrated in the
+    // 25-30 band (3 better / 8 worse) while the win sits at 20-25 (11/6). The whole
+    // 20-28 band is positive, so 25 is a broad optimum, not a knife-edge fit.
+    //
+    // Magnitude in perspective: +265k summed over 45 boosted strains is a refinement.
+    // The substantive fix nearby is the peak-detection repair in counter.cpp, worth
+    // +202k on a single strain.
     static const double kCarryBoostBelow = [] {
         const char* e = std::getenv("TESSERA_CARRY_BOOST_BELOW");
-        return e ? std::atof(e) : 30.0;
+        return e ? std::atof(e) : 25.0;
     }();
     static const uint32_t kCarryWeightLow = [] {
         const char* e = std::getenv("TESSERA_CARRY_WEIGHT_LOW");
