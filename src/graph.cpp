@@ -806,8 +806,28 @@ size_t UnitigGraph::removeErroneousConnections(double covThreshold, size_t maxLe
         if (U.seq.size() > maxLen) continue;
         if (U.ends[0].empty() || U.ends[1].empty()) continue;   // not a connector
         if (U.coverage >= covThreshold) continue;
-        // Only cut when both junctions survive without it.
-        if (U.ends[0].size() + U.ends[1].size() < 2) continue;
+
+        // The previous guard here read
+        //     if (U.ends[0].size() + U.ends[1].size() < 2) continue;
+        // and could never fire: the two lines above already established that BOTH ends
+        // carry at least one link, so the sum is always >= 2. It documented an intent
+        // ("only cut when both junctions survive") that it did not implement, which is
+        // why raising the length ceiling previously cost genome fraction -- long, real
+        // connectors were being cut with no alternative path to carry the sequence.
+        //
+        // SPAdes gates the same operation on outdeg(start) > 1 && indeg(end) > 1: both
+        // junctions must retain another edge once this one is gone. Implement that.
+        bool alternatives = true;
+        for (int e = 0; e < 2 && alternatives; ++e) {
+            const Link& l = U.ends[e][0];
+            size_t live = 0;
+            for (const Link& sib : nodes[l.to].ends[l.toEnd]) {
+                if (!nodes[sib.to].deleted) ++live;
+            }
+            if (live < 2) alternatives = false;   // only this edge -- cutting orphans it
+        }
+        if (!alternatives) continue;
+
         deleteNode(u);
         ++removed;
     }
@@ -1004,8 +1024,25 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         }();
         const double chimeraCut = std::max(meanCoverage * chimeraFactor * ramp,
                                            chimeraFloor * ramp);
-        st.chimerasRemoved = removeErroneousConnections(
-            chimeraCut, static_cast<size_t>(2 * k_));
+        // Length ceiling. SPAdes uses 2*max(5*min(k, RL/2), RL) - 1 -- at k=55/RL=150
+        // that is 549 bp against TesserACT's 2k = 110, a 5x difference, and the largest
+        // single numerical divergence between the two. Real chimeras and IS-boundary
+        // mis-junctions run 200-500 bp, so a 110 bp ceiling cannot see them, and each
+        // survivor is a contig break. Klebsiella carries dozens of IS copies and seven
+        // rRNA operons, so those breaks are not rare.
+        //
+        // Raising this was measured before and cost genome fraction -- but that was with
+        // the broken gate above, which cut connectors having no alternative path. With a
+        // real outdeg/indeg gate the operation can only remove edges whose junctions both
+        // survive, which is what makes the longer reach safe.
+        static const double kEcLenMult = [] {
+            const char* e = std::getenv("TESSERA_EC_LEN_MULT");
+            return e ? std::atof(e) : 5.0;
+        }();
+        const double ecK = std::min<double>(k_, readLength / 2.0);
+        const size_t ecLen = static_cast<size_t>(
+            2.0 * std::max(kEcLenMult * ecK, static_cast<double>(readLength)) - 1.0);
+        st.chimerasRemoved = removeErroneousConnections(chimeraCut, ecLen);
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 
