@@ -931,7 +931,37 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
                            std::vector<SimplifyRoundStats>* rounds) {
-    const size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
+    // Tip clipping is where TesserACT and SPAdes differ most. SPAdes clips tips up to
+    //     max(min(k, read_length/2) * 3.5, read_length)
+    // and removes any whose coverage is below 2.0x the best alternative (rctc 2.0).
+    // TesserACT clips up to max(2k, read_length) at 0.19-0.40x: 1.7x shorter and 5-10x
+    // more conservative. Unclipped tips are exactly what stops a graph resolving into
+    // long unitigs, and they proliferate at low coverage -- where the measured gap lives.
+    // Both bounds are overridable so the trade-off against genome fraction can be
+    // measured rather than assumed.
+    static const double kTipLenMult = [] {
+        // Swept against SPAdes' tc_lb 3.5 on low-coverage strains. TesserACT's legacy
+        // ceiling of max(2k, readLength) is ~1.7x shorter than SPAdes', and the LENGTH
+        // bound -- not the coverage ratio -- is what dominates: on ERR11578724 the ratio
+        // change alone gave 24,171 while ratio+length gave 353,308 against a legacy
+        // 8,989, a 39x gain, with genome fraction RISING 95.48 -> 95.78.
+        const char* e = std::getenv("TESSERA_TIP_LEN_MULT");
+        return e ? std::atof(e) : 3.5;
+    }();
+    static const double kTipRatio = [] {
+        // SPAdes uses rctc 2.0. Swept here, 1.0 beat 2.0 on the strain with the largest
+        // gain (353,308 vs 173,770), so copying their constant would have left half the
+        // improvement behind. Different strains prefer different values, which is the
+        // argument for measuring rather than adopting.
+        const char* e = std::getenv("TESSERA_TIP_RATIO");
+        return e ? std::atof(e) : 1.0;
+    }();
+    size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
+    if (kTipLenMult > 0) {
+        const double kk = std::min<double>(k_, readLength / 2.0);
+        tipLen = static_cast<size_t>(std::max(kk * kTipLenMult,
+                                              static_cast<double>(readLength)));
+    }
     const size_t bubbleLen = static_cast<size_t>(std::max(3 * k_, 2 * readLength));
 
     for (int round = 0; round < maxRounds; ++round) {
@@ -943,7 +973,8 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         SimplifyRoundStats st;
         st.round = round + 1;
 
-        st.tipsRemoved = removeTips(tipLen, 0.35 * ramp + 0.05);
+        const double tipRatio = kTipRatio > 0 ? kTipRatio * ramp : 0.35 * ramp + 0.05;
+        st.tipsRemoved = removeTips(tipLen, tipRatio);
         st.merged += compact();
         // A true error bubble sits well below even the half-depth a two-copy
         // split would give, which is what separates it from real divergence.
@@ -956,8 +987,25 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // Cutting long low-coverage connectors risks severing real sequence,
         // so the operation stays confined to short ones. Raising this ceiling
         // was measured and cost genome fraction without buying contiguity.
+        //
+        // The THRESHOLD, though, was provably inert wherever it mattered. A unitig's
+        // coverage can never fall below the k-mer abundance cutoff, which is 2 in 99% of
+        // strain x k pairs; meanCoverage * 0.12 * ramp only clears 2 once meanCoverage
+        // passes ~17 at full ramp and ~41 at the opening ramp. Measured across the
+        // benchmark: 0 removals in 38/38 strains where peak*0.12 < 2, and those strains
+        // have a median NGA50 ratio of 0.471 against SPAdes. Chimera removal is also the
+        // single operation that most separates winners from losers at the top rung.
+        //
+        // So give it a floor just above the abundance cutoff. Below that the call is a
+        // no-op dressed up as a simplification step.
+        static const double chimeraFloor = [] {
+            const char* e = std::getenv("TESSERA_CHIMERA_FLOOR");
+            return e ? std::atof(e) : 3.0;
+        }();
+        const double chimeraCut = std::max(meanCoverage * chimeraFactor * ramp,
+                                           chimeraFloor * ramp);
         st.chimerasRemoved = removeErroneousConnections(
-            meanCoverage * chimeraFactor * ramp, static_cast<size_t>(2 * k_));
+            chimeraCut, static_cast<size_t>(2 * k_));
         st.merged += compact();
         st.isolatedRemoved = removeIsolated(meanCoverage * 0.25 * ramp, tipLen);
 
@@ -982,9 +1030,15 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // A missing k-mer breaks the graph where the sequence itself does not.
         // Rejoining loose ends that overlap exactly recovers edges no decision
         // rule could, because there was no edge to decide between.
+        // Default was 0, so this never executed in any of 666 benchmark assemblies --
+        // an implemented, tested recovery step that no user has ever run. Dead ends do
+        // not clear across simplification (3,660 -> 1,895 over twelve rounds on a typical
+        // strain), and an exact overlap between two loose ends is evidence no decision
+        // rule can supply, because there was no edge to decide between. Default it on at
+        // a conservative overlap; set 0 to restore the old behaviour.
         static const size_t joinOverlap = [] {
             const char* e = std::getenv("TESSERA_JOIN_DEADENDS");
-            return e ? static_cast<size_t>(std::atoi(e)) : 0u;
+            return e ? static_cast<size_t>(std::atoi(e)) : 31u;
         }();
         if (joinOverlap > 0) {
             st.deadEndsJoined = joinDeadEnds(joinOverlap);
