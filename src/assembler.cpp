@@ -132,7 +132,8 @@ std::vector<int> Assembler::resolveKLadder() const {
 }
 
 bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, UnitigGraph& graph,
-                        double& meanCoverage, KIteration& it, std::string& error) {
+                        double& meanCoverage, KIteration& it, std::string& error,
+                        double prevPeak) {
     util::Timer t;
     it.k = k;
     it.carryOverContigs = carryOver.size();
@@ -142,11 +143,77 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // Contigs from the previous, smaller k are trusted sequence: weighting them
     // keeps them above the abundance cutoff without letting them dominate the
     // histogram that cutoff is chosen from.
+    //
+    // The weight has to scale with coverage. k-mer coverage falls as
+    // depth*(L-k+1)/L, so the top of the ladder is always the thinnest rung; on a
+    // shallow library it is thin enough that the carried contigs land near the
+    // abundance cutoff chosen from the same histogram, get dropped, and the
+    // contiguity they existed to preserve is lost with them. A weight of 4 is a
+    // nudge at 50x and useless at 13x.
+    //
+    // Measured over 666 Klebsiella isolates with closed references: below ~25x
+    // peak coverage a weight of 32 improved NGA50 on 4/4 strains (+4% to +782%,
+    // median +337%), and at 179x it was neutral. But at 39.9x it HALVED NGA50
+    // (886,314 -> 429,730), so this must be gated, not applied blanket -- a
+    // uniform change would buy a 22% minority's gain with the majority's loss.
+    //
+    // The gate must key off a number the boost cannot contaminate. Using the
+    // PREVIOUS k's observed peak is self-defeating: raising the weight inflates
+    // that peak (23.0 at k=55 -> 47.0 at k=77 on ERR6293532), which switches the
+    // gate back off at the next rung -- exactly where coverage is thinnest.
+    //
+    // So project from the FIRST rung, which is counted with no carry-over at all
+    // and therefore reflects the library alone:
+    //
+    //     peak(k) ~ peak(k0) * (L - k + 1) / (L - k0 + 1)
+    //
+    // Checked on ERR6293532 (L=251, peak(21)=25.0): predicts 13.5 at k=127
+    // against 13.35 observed.
     static const uint32_t kCarryWeight = [] {
         const char* e = std::getenv("TESSERA_CARRY_WEIGHT");
         return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
     }();
-    const uint32_t carryWeight = carryOver.empty() ? 0 : kCarryWeight;
+    // Threshold on the PROJECTED peak at the final rung. Calibrated against the two
+    // strains that bracket the decision:
+    //
+    //   ERR11578724  peak(k=21)=47  -> projects 25.4 at k=127; boosting gives +337%
+    //   ERR5056274   peak(k=21)=61  -> projects ~33   at k=127; boosting COSTS -51%
+    //
+    // 30 sits between them with margin either side. NOTE: this is calibrated on a
+    // handful of strains and wants confirming on a held-out set before it is trusted
+    // as a universal default -- the separation is clear but the sample is small.
+    static const double kCarryBoostBelow = [] {
+        const char* e = std::getenv("TESSERA_CARRY_BOOST_BELOW");
+        return e ? std::atof(e) : 30.0;
+    }();
+    static const uint32_t kCarryWeightLow = [] {
+        const char* e = std::getenv("TESSERA_CARRY_WEIGHT_LOW");
+        return e ? static_cast<uint32_t>(std::atoi(e)) : 32u;
+    }();
+    // Decide ONCE, from the LAST rung, and apply the decision to every rung.
+    //
+    // Projecting per-rung is too timid: on a library whose final peak is 24, the
+    // early rungs project well above the threshold, so the boost fires only at the
+    // last k -- far too late to build the contiguity the later rungs inherit. That
+    // is measurable: ERR11578724 scored 8,989 with a per-rung gate against 40,819
+    // with the weight applied throughout. What matters is whether the assembly will
+    // END thin, because the final rung is where the reported contigs come from.
+    double projected = prevPeak;
+    if (basePeak_ > 0 && baseK_ > 0 && finalK_ > 0) {
+        const double L = static_cast<double>(reads_.maxReadLength());
+        const double num = L - static_cast<double>(finalK_) + 1.0;
+        const double den = L - static_cast<double>(baseK_) + 1.0;
+        if (num > 0 && den > 0) projected = basePeak_ * num / den;
+    }
+    const bool thin = projected > 0 && projected < kCarryBoostBelow;
+    const uint32_t chosenWeight = thin ? kCarryWeightLow : kCarryWeight;
+    const uint32_t carryWeight = carryOver.empty() ? 0 : chosenWeight;
+    if (opt_.verbose && carryWeight && thin) {
+        std::fprintf(stderr,
+                     "  k=%-3d carry weight raised to %u "
+                     "(projected peak at final k=%d is %.1f < %.1f)\n",
+                     k, carryWeight, finalK_, projected, kCarryBoostBelow);
+    }
     counter.count(reads_, carryOver, carryWeight);
 
     if (counter.exceededMemory()) {
@@ -202,6 +269,12 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     }
 
     meanCoverage = cs.peakCoverage > 0 ? cs.peakCoverage : graph.medianCoverage();
+    // First rung is counted without carry-over, so its peak is the honest library
+    // coverage and the only safe basis for projecting the thinner rungs.
+    if (basePeak_ <= 0 && carryOver.empty() && cs.peakCoverage > 0) {
+        basePeak_ = cs.peakCoverage;
+        baseK_ = k;
+    }
     t.reset();
     graph.simplify(meanCoverage, static_cast<int>(reads_.maxReadLength()), opt_.verbose,
                    opt_.bubbleCoverageLimit, opt_.simplifyRounds, &it.rounds);
@@ -374,6 +447,13 @@ bool Assembler::run(std::string& error) {
     std::vector<std::string> carryOver;
     double meanCoverage = 0;
 
+    // The last rung shorter than the reads is where the reported contigs come from,
+    // so it is the rung whose coverage decides the carry weight for all of them.
+    finalK_ = 0;
+    for (int kk : ladder) {
+        if (kk < static_cast<int>(reads_.maxReadLength())) finalK_ = kk;
+    }
+
     if (opt_.verbose) std::fprintf(stderr, "[3/7] de Bruijn iterations\n");
     for (size_t i = 0; i < ladder.size(); ++i) {
         const int k = ladder[i];
@@ -384,7 +464,8 @@ bool Assembler::run(std::string& error) {
             continue;
         }
         KIteration it;
-        if (!iterate(k, carryOver, graph, meanCoverage, it, error)) return false;
+        const double prevPeak = meanCoverage;   // peak from the previous, smaller k
+        if (!iterate(k, carryOver, graph, meanCoverage, it, error, prevPeak)) return false;
         report_.iterations.push_back(std::move(it));
 
         if (i + 1 < ladder.size()) {

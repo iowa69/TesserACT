@@ -107,7 +107,14 @@ private:
 
     // One de Bruijn iteration: count, filter, build, simplify.
     bool iterate(int k, const std::vector<std::string>& carryOver, UnitigGraph& graph,
-                 double& meanCoverage, KIteration& it, std::string& error);
+                 double& meanCoverage, KIteration& it, std::string& error,
+                 double prevPeak = 0.0);
+
+    // Coverage peak of the first k (no carry-over) and that k, used to project how
+    // thin the later rungs will be without letting the boost feed back on itself.
+    double basePeak_ = 0.0;
+    int baseK_ = 0;
+    int finalK_ = 0;   // largest k in the ladder, set before the loop
 
     AssemblyOptions opt_;
     SequenceStore reads_;
