@@ -261,6 +261,16 @@ void PairedResolver::buildSupport() {
         insert_.maxPlausible = static_cast<int>(insert_.mean + 4 * insert_.stddev);
         insert_.usable = true;
     }
+    // An externally measured window wins over the fitted one, and -- unlike the fit --
+    // does not need 1000 same-unitig pairs to exist before it can be used. On a badly
+    // fragmented graph those pairs are scarce precisely when the resolver needs the
+    // constraint most, so this also rescues the case where no model could be fitted here
+    // at all.
+    if (haveForcedBounds_) {
+        insert_.minPlausible = forcedMin_;
+        insert_.maxPlausible = forcedMax_;
+        insert_.usable = true;
+    }
 
     size_t distinct = 0;
     for (auto& kv : support_) distinct += kv.second.size();

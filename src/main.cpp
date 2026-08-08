@@ -51,6 +51,16 @@ void usage() {
         "                          alignment: bowtie2 | bwa | none (default none)\n"
         "      --mapper-dir DIR    where to find the mapper binaries\n"
         "\n"
+        "LIBRARY QC\n"
+        "      --qc FILE           JSON report from scepter (or fastplus) over these\n"
+        "                          same reads, run with --preset wgs-bacteria. Supplies\n"
+        "                          read depth, genome size and a measured error rate\n"
+        "                          before the first k-mer is counted, so the k ladder\n"
+        "                          and the coverage-dependent thresholds are chosen from\n"
+        "                          a measurement instead of inferred from the graph they\n"
+        "                          go on to shape. An unreadable or spectrum-less report\n"
+        "                          is an error, not a warning.\n"
+        "\n"
         "MODES\n"
         "      --mode NAME         fast | standard (default) | careful | aggressive\n"
         "                          fast       fewer k values, no polishing\n"
@@ -68,9 +78,9 @@ void usage() {
         "                          (default: chosen from the read length; max 127)\n"
         "  -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)\n"
         "      --min-link N        paired reads needed to trust a join (default: 2)\n"
-        "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.15)\n"
+        "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.02)\n"
         "      --link-per-x F      paired support required per unit of median coverage\n"
-        "                          before a contested join is taken (default: 0.10)\n"
+        "                          before a contested join is taken (default: 0.02)\n"
         "      --bubble-coverage F a bubble branch below this fraction of its twin's\n"
         "                          coverage is dropped (default: 0.35)\n"
         "      --aggressive        alias for --mode aggressive: collapses diverged\n"
@@ -170,6 +180,7 @@ int main(int argc, char** argv) {
         else if (a == "-o" || a == "--out") opt.outDir = needValue(i, "-o");
         else if (a == "--organism") opt.organism = needValue(i, "--organism");
         else if (a == "--model") opt.organismModelPath = needValue(i, "--model");
+        else if (a == "--qc") opt.qcPath = needValue(i, "--qc");
         else if (a == "--mapper-dir") opt.mapperDir = needValue(i, "--mapper-dir");
         else if (a == "--is-panel") opt.isPanelPath = needValue(i, "--is-panel");
         else if (a == "--is-sites") opt.isSitesPath = needValue(i, "--is-sites");

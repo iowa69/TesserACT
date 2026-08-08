@@ -76,6 +76,22 @@ public:
     // graph are joined across a gap of Ns sized from the fragment model.
     void setScaffolding(bool on) { scaffolding_ = on; }
 
+    // Supply the plausible-length window from an outside measurement rather than fitting
+    // it here. buildSupport() still learns the mean and spread from anchored pairs -- both
+    // are reported and remain useful -- but these BOUNDS override the fitted ones.
+    //
+    // The bounds are the part worth replacing. Fitted here they are mean +/- 4 sd against
+    // an sd taken from a sample whose tails survive only a 1% trim, which on a typical
+    // library in this cohort works out to about [0, 3.3x mean]: every candidate distance
+    // falls inside, and the plausibility term in scoreCandidate stops discriminating at
+    // all. Percentiles of a histogram built on the raw reads cannot degenerate that way,
+    // and they are measured without reference to the graph they are used to improve.
+    void setInsertBounds(int minPlausible, int maxPlausible) {
+        forcedMin_ = minPlausible;
+        forcedMax_ = maxPlausible;
+        haveForcedBounds_ = maxPlausible > minPlausible;
+    }
+
     const ResolveStats& stats() const { return stats_; }
 
     // How each emitted contig walks the graph, in output order.
@@ -130,6 +146,8 @@ private:
     double linkSupportPerX_;
     int minScaffoldSupport_ = 0;   // 0 = scale with observed depth
     bool scaffolding_ = false;
+    int forcedMin_ = 0, forcedMax_ = 0;
+    bool haveForcedBounds_ = false;
 };
 
 }  // namespace ts

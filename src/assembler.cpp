@@ -83,8 +83,59 @@ Assembler::Assembler(AssemblyOptions opt) : opt_(std::move(opt)) {
     }
 }
 
+// Drop rungs off the TOP of the ladder whose k-mer coverage will be too thin to assemble.
+//
+// k-mer coverage falls as depth*(L-k+1)/L, so the last rung is always the thinnest, and on
+// a 2x151 library at k=95 it retains only 37% of read depth. A 21x library therefore
+// reaches the top rung with about 8x k-mer coverage -- against which an abundance cutoff of
+// 2 and an error rate of ~0.1% per base leave a graph made largely of noise. The contigs
+// this assembler reports come from the final rung, so a shredded final rung is reported
+// directly as shredded contigs.
+//
+// SPAdes stops at k=77 for 151 bp reads. That is not timidity: it is the same arithmetic,
+// applied with a fixed read-length rule because SPAdes has no depth estimate available when
+// it picks its ladder. Having one lets the decision key off the quantity that actually
+// governs the outcome rather than a proxy for it -- a thin 2x250 library should stop early
+// and a deep 2x150 library should be allowed to climb, and read length alone cannot tell
+// those apart.
+//
+// The floor is not baked in yet: TESSERA_QC_MIN_KCOV defaults to 0, which disables this
+// entirely and reproduces the previous ladder exactly. That default is deliberate -- it
+// keeps the pre-QC behaviour available as a baseline while the value is swept.
+std::vector<int> Assembler::trimLadderToCoverage(std::vector<int> ladder) const {
+    static const double kMinKmerCov = [] {
+        const char* e = std::getenv("TESSERA_QC_MIN_KCOV");
+        return e ? std::atof(e) : 0.0;
+    }();
+    static const size_t kMinRungs = [] {
+        const char* e = std::getenv("TESSERA_QC_MIN_RUNGS");
+        return e ? static_cast<size_t>(std::atoi(e)) : 3u;
+    }();
+    if (kMinKmerCov <= 0 || !qc_.loaded || ladder.size() <= kMinRungs) return ladder;
+
+    size_t keep = ladder.size();
+    while (keep > kMinRungs && qc_.expectedKmerCoverage(ladder[keep - 1]) < kMinKmerCov) --keep;
+    if (keep == ladder.size()) return ladder;
+
+    if (opt_.verbose) {
+        std::fprintf(stderr,
+                     "      QC: dropping %zu top rung(s) -- k=%d would carry only %.1fx "
+                     "k-mer coverage at %.1fx read depth (floor %.1f)\n",
+                     ladder.size() - keep, ladder.back(),
+                     qc_.expectedKmerCoverage(ladder.back()), qc_.readDepth, kMinKmerCov);
+    }
+    ladder.resize(keep);
+    return ladder;
+}
+
 std::vector<int> Assembler::resolveKLadder() const {
+    // An explicit -k is the user's decision and is never second-guessed, not even by a
+    // measurement that disagrees with it.
     if (!opt_.kValues.empty()) return opt_.kValues;
+    return trimLadderToCoverage(baseKLadder());
+}
+
+std::vector<int> Assembler::baseKLadder() const {
 
     // Mean, not maximum. Many public runs arrive already trimmed by the
     // submitter, so their reads are variable-length: one 301 bp survivor in a
@@ -123,7 +174,55 @@ std::vector<int> Assembler::resolveKLadder() const {
     // 115 to 127 left contiguity unchanged and improved both genome fraction
     // (98.945 -> 98.988) and per-base accuracy (0.08 -> 0.06 mismatches per
     // 100 kbp).
-    if (rl >= 165) return {21, 33, 55, 77, 127};
+    // The 165+ ladder steps 77 -> 127, a jump of 50. Every other step in every other
+    // ladder here is between 12 and 22, and the 140-164 ladder steps 77 -> 95. That gap is
+    // not a free choice: each rung exists to resolve the repeats the previous one could
+    // not, and to hand the next rung a graph built from sequence it has already trusted.
+    // Across a 50-k gap the carried contigs have to bridge every repeat between 77 and 127
+    // unaided, at a rung where k-mer coverage has dropped by another third.
+    //
+    // Measured over 491 strains with closed references, split by the top rung their read
+    // length selects:
+    //
+    //     top rung   n     median SPAdes/vanilla NGA50 ratio
+    //     95        24     0.78   (TesserACT ahead)
+    //     127      458     1.07   (TesserACT behind)
+    //
+    // SPAdes, on the same 2x250 libraries, uses {21,33,55,77,99,127} -- it does climb to
+    // 127, but it gets there through 99. The rung count is what differs, not the ceiling.
+    //
+    // TESSERA_DENSE_LADDER selects how finely the top of the ladder is sampled:
+    //
+    //     0   {21,33,55,77,127}                  the original five rungs
+    //     1   {21,33,55,77,99,127}               matches what SPAdes uses here (default)
+    //     2   {21,33,55,77,99,111,119,127}       four rungs above 77
+    //     3   {21,33,55,77,87,99,111,119,127}    also halves the 77->99 step (default)
+    //
+    // Level 3 is the default, on a full-cohort measurement. A 50-strain comparison had
+    // said the extra rungs did nothing (NGA50 5 better / 6 worse, p=0.79) and that reading
+    // was wrong -- 40 of those 50 strains tied, so the comparison rested on about ten
+    // informative pairs. Repeated over 666 strains, level 3 beats level 1:
+    //
+    //     NGA50            97 better /  49 worse   p=0.0008
+    //     contigs         241 better / 145 worse   p=3e-7
+    //     genome fraction 277 better / 178 worse   p=7e-8
+    //     misassemblies, mismatches, duplication   no significant difference
+    //
+    // The cost is real but small: nine count-and-simplify passes instead of six. Measured
+    // alone on a quiet machine the denser ladder is actually FASTER (0.92x), because each
+    // rung inherits a better-consolidated carry-over and therefore builds a smaller graph;
+    // under contention that advantage disappears and it runs somewhat slower. Either way
+    // the difference is well inside what the contiguity gain is worth.
+    static const int kLadderLevel = [] {
+        const char* e = std::getenv("TESSERA_DENSE_LADDER");
+        return e ? std::atoi(e) : 3;
+    }();
+    if (rl >= 165) {
+        if (kLadderLevel >= 3) return {21, 33, 55, 77, 87, 99, 111, 119, 127};
+        if (kLadderLevel >= 2) return {21, 33, 55, 77, 99, 111, 119, 127};
+        if (kLadderLevel >= 1) return {21, 33, 55, 77, 99, 127};
+        return {21, 33, 55, 77, 127};
+    }
     if (rl >= 140) return {21, 33, 55, 77, 95};
     if (rl >= 100) return {21, 33, 45, 55};
     if (rl >= 70)  return {21, 33, 45};
@@ -195,9 +294,27 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
         const char* e = std::getenv("TESSERA_CARRY_BOOST_BELOW");
         return e ? std::atof(e) : 25.0;
     }();
+    // DISABLED (set equal to the ordinary weight). Everything above describes how this
+    // boost was calibrated and why it looked like a win; it does not survive being
+    // measured against the metric that matters.
+    //
+    // The first evidence against it was a unit test: "spanned repeat resolved to one
+    // contig" began failing at the commit that introduced this, returning 17,231 bp of
+    // sequence for a 16,600 bp construct, in two contigs instead of one. That is the boost
+    // over-weighting carried contigs until they collapse into each other.
+    //
+    // Confirmed on 50 closed-reference strains. Turning it off, against the same build
+    // with it on: NGA50 10 better / 1 worse, misassemblies 7 better / 1 worse, and no
+    // measurable cost anywhere -- mismatches 6/5, duplication 5/4, both indistinguishable
+    // from noise. A change that improves contiguity AND misassemblies at once is not a
+    // trade being made well; it is a defect being removed.
+    //
+    // Kept as an environment knob rather than deleted, because the coverage-projection
+    // machinery it sits on is sound and worth keeping available: set
+    // TESSERA_CARRY_WEIGHT_LOW=32 to restore the previous behaviour exactly.
     static const uint32_t kCarryWeightLow = [] {
         const char* e = std::getenv("TESSERA_CARRY_WEIGHT_LOW");
-        return e ? static_cast<uint32_t>(std::atoi(e)) : 32u;
+        return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
     }();
     // Decide ONCE, from the LAST rung, and apply the decision to every rung.
     //
@@ -207,8 +324,21 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // is measurable: ERR11578724 scored 8,989 with a per-rung gate against 40,819
     // with the weight applied throughout. What matters is whether the assembly will
     // END thin, because the final rung is where the reported contigs come from.
+    //
+    // When a QC report is available the projection is unnecessary: it measures read depth
+    // directly, from a spectrum built at a small k where the coverage mode is unambiguous,
+    // with the error mass already separated out. The chain above starts from THIS
+    // assembler's peak estimate at the first rung -- the same estimate that was silently
+    // landing on the error shoulder until recently, and that the carry boost itself
+    // perturbs. Reading depth from outside the loop removes both problems at once.
+    static const bool kQcCarry = [] {
+        const char* e = std::getenv("TESSERA_QC_CARRY");
+        return e && std::atoi(e) != 0;
+    }();
     double projected = prevPeak;
-    if (basePeak_ > 0 && baseK_ > 0 && finalK_ > 0) {
+    if (kQcCarry && qc_.loaded && finalK_ > 0 && qc_.expectedKmerCoverage(finalK_) > 0) {
+        projected = qc_.expectedKmerCoverage(finalK_);
+    } else if (basePeak_ > 0 && baseK_ > 0 && finalK_ > 0) {
         const double L = static_cast<double>(reads_.maxReadLength());
         const double num = L - static_cast<double>(finalK_) + 1.0;
         const double den = L - static_cast<double>(baseK_) + 1.0;
@@ -382,6 +512,25 @@ bool Assembler::run(std::string& error) {
         }
     }
 
+    // Load the QC report before the ladder is chosen -- choosing the ladder is one of the
+    // decisions it informs, and after resolveKLadder() returns it is already too late.
+    //
+    // A named-but-unusable report is a hard error, not a warning. The whole point of
+    // passing one is that the run behaves differently because of it; silently falling back
+    // to the self-derived estimates would produce a run that looks QC-guided, is not, and
+    // is indistinguishable in its output from one that is.
+    if (!opt_.qcPath.empty()) {
+        std::string qcError;
+        if (!loadLibraryQC(opt_.qcPath, qc_, qcError)) { error = qcError; return false; }
+        if (opt_.verbose) {
+            std::fprintf(stderr,
+                         "      QC: depth %.1fx, genome %.2f Mb, error rate %.4f%%, "
+                         "insert %.0f bp%s\n",
+                         qc_.readDepth, qc_.genomeSize / 1e6, qc_.errorRate * 100.0,
+                         qc_.insertPeak, qc_.spectrumReliable ? "" : "  [spectrum flagged unreliable]");
+        }
+    }
+
     const std::vector<int> ladder = resolveKLadder();
     stats_.kUsed = ladder;
 
@@ -497,6 +646,41 @@ bool Assembler::run(std::string& error) {
         PairedResolver resolver(graph, reads_, opt_.threads, opt_.minLinkSupport, opt_.tieRatio,
                                 opt_.linkSupportPerX);
         resolver.setScaffolding(opt_.scaffold);
+        // OFF by default: measured, and it makes things worse.
+        //
+        // The reasoning that motivated it was sound as far as it went -- the fitted window
+        // really is mean +/- 4 sd on a heavy-tailed sample, really does work out to about
+        // [0, 859] against a mean of 262, and really does admit every candidate. Replacing
+        // it with percentiles of the QC histogram narrowed it to [49, 459].
+        //
+        // On 50 held-out difficult strains that lost, decisively: NGA50 2 better / 20 worse
+        // (p=0.001) and contig count 0 better / 45 worse (p=5e-9). Not one strain improved
+        // its contiguity.
+        //
+        // The cause is a property of how the QC histogram is built. It measures fragments
+        // by overlapping the two mates, so a fragment longer than the two reads combined
+        // contributes nothing to it -- 10.8% of pairs here are recorded as "unknown", and
+        // those are exactly the longest ones. Its 99th percentile is therefore the 99th
+        // percentile of the SHORT subpopulation, and using it as a hard ceiling discards
+        // the long-range links that span repeats, which is the whole reason to consult
+        // pairs at all. A wide window admits junk; a truncated one rejects the evidence.
+        //
+        // Kept behind the flag rather than deleted: the lower bound is measured honestly
+        // (short fragments all overlap) and may still be worth something on its own.
+        static const bool kQcInsert = [] {
+            const char* e = std::getenv("TESSERA_QC_INSERT");
+            return e && std::atoi(e) != 0;
+        }();
+        if (kQcInsert && qc_.loaded && qc_.insertUsable) {
+            resolver.setInsertBounds(qc_.insertP1, qc_.insertP99);
+            if (opt_.verbose) {
+                std::fprintf(stderr,
+                             "      insert window from QC: [%d, %d] bp "
+                             "(peak %.0f, %zu observations)\n",
+                             qc_.insertP1, qc_.insertP99, qc_.insertPeak,
+                             qc_.insertObservations);
+            }
+        }
         resolver.buildSupport();
         const ResolveStats& rs = resolver.stats();
         if (opt_.verbose) {
