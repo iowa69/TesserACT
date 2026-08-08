@@ -27,7 +27,6 @@ Paired Wilcoxon signed-rank; W/L counts are per strain.
 | LGA50 | 8 | 8 | 261 / 225 | tie (p=0.67) |
 | Contigs | 79 | 79 | 284 / 372 | loss (p=8e-4) |
 | Misassemblies | 1 | 0 | 151 / 218 | loss (p=0.002) |
-| Indels /100 kb | 0.2 | 0.1 | 276 / 333 | loss (p=0.04) |
 | Duplication ratio | 1.003 | 1.000 | 9 / 594 | loss (p=8e-94) |
 
 Read that honestly: TesserACT reconstructs **more** of the genome and gets **more of the
