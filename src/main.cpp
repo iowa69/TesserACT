@@ -10,7 +10,7 @@
 
 namespace {
 
-constexpr const char* kVersion = "1.2.0";
+constexpr const char* kVersion = "1.2.1";
 
 void usage() {
     std::printf(
@@ -49,9 +49,13 @@ void usage() {
         "                          chromosome instead of leaving the end unjoined\n"
         "      --no-layout         do not order and orient the finished contigs against\n"
         "                          the panel chromosome they most resemble. Layout is what\n"
-        "                          closes the chromosome -- on this cohort 95.6% of\n"
-        "                          isolates reach 90% of their chromosome in one contig\n"
-        "                          with it and 23% without -- but the ORDER it produces is\n"
+        // Escaped, and it matters: this is a printf format string, so a bare % begins a
+        // conversion. `% o` is not a valid one, and printf stopped there -- `tessera --help`
+        // printed four lines and no option list at all. A conda recipe test that greps the
+        // help for a flag is what surfaced it.
+        "                          closes the chromosome -- on this cohort 95.6%% of\n"
+        "                          isolates reach 90%% of their chromosome in one contig\n"
+        "                          with it and 23%% without -- but the ORDER it produces is\n"
         "                          inferred from a different genome, not observed in these\n"
         "                          reads. Use this when that distinction matters.\n"
         "      --map-polish NAME   polish the finished contigs against a full read\n"

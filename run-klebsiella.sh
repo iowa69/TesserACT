@@ -17,7 +17,10 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO=iowa69/TesserACT
-RELEASE=v1.2.0
+# The release the MODELS are attached to. Deliberately separate from the assembler's own
+# version: a patch release of the binary does not re-upload a 1.3 GB model, so this pin
+# moves only when the models actually change.
+MODEL_RELEASE=v1.2.0
 
 # The models live outside the repository -- they are 339 MB and 2.9 GB. Cached per user so a
 # second project does not download them again.
@@ -183,7 +186,7 @@ fetch() {   # fetch <url> <destination>
         wget -q "${w[@]}" -O "$2" "$1"
     else
         die "neither curl nor wget is installed, so the model cannot be downloaded.
-      Download it by hand from https://github.com/$REPO/releases/tag/$RELEASE
+      Download it by hand from https://github.com/$REPO/releases/tag/$MODEL_RELEASE
       and pass it with --model"
     fi
 }
@@ -196,10 +199,10 @@ sha_of() {
 
 if [ -z "$MODEL" ]; then
     if [ "$WANT" = plasmid ]; then
-        asset="tessera-klebsiella-plasmid-$RELEASE.tsm.zst"; want_sha=$SHA_PLASMID
-        MODEL="$CACHE/tessera-klebsiella-plasmid-$RELEASE.tsm"
+        asset="tessera-klebsiella-plasmid-$MODEL_RELEASE.tsm.zst"; want_sha=$SHA_PLASMID
+        MODEL="$CACHE/tessera-klebsiella-plasmid-$MODEL_RELEASE.tsm"
     else
-        asset="tessera-klebsiella-default-$RELEASE.tsm"; want_sha=$SHA_DEFAULT
+        asset="tessera-klebsiella-default-$MODEL_RELEASE.tsm"; want_sha=$SHA_DEFAULT
         MODEL="$CACHE/$asset"
     fi
 
@@ -211,7 +214,7 @@ if [ -z "$MODEL" ]; then
             die "not enough space in $CACHE: need about ${need_mb} MB, have ${free_mb} MB.
       Point TESSERA_MODEL_DIR somewhere roomier and run again."
         fi
-        url="https://github.com/$REPO/releases/download/$RELEASE/$asset"
+        url="https://github.com/$REPO/releases/download/$MODEL_RELEASE/$asset"
         say "downloading the $WANT model once into $CACHE"
         tmp="$CACHE/.$asset.part"
         rm -f "$tmp"
