@@ -181,11 +181,30 @@ closed references and a leave-cluster-out model:
 grouping, which is marker-starved at 512 — a 1 kb contig expects two markers there and
 grouping needs three — and costs five isolates their chromosome out of 104.
 
-The chromosome cost looks like a parameter rather than a law: `kMarkerNeighbours` is 16,
-chosen so that at ~500 bp spacing the adjacency table reaches ~8 kb and covers the rRNA
-operons and IS elements that defeat paired evidence. At 1 in 64 the spacing is ~62 bp and
-those sixteen neighbours reach ~1 kb. Scaling the neighbour count with the density is
-untested.
+Most of that chromosome cost is a parameter rather than a law, and the parameter is
+`kMarkerNeighbours` — 16, chosen so that at ~500 bp spacing the adjacency table reaches ~8 kb
+and covers the rRNA operons and IS elements that defeat paired evidence. At 1 in 64 the
+spacing is ~62 bp and those sixteen neighbours reach ~1 kb. Holding the *reach* constant while
+raising density — 1 in 128 with 64 neighbours, again ~8.2 kb — recovers four of the five
+isolates the 1-in-64 build broke, exactly (99.2 → 86.9 → 99.2, and three like it), and lands
+ahead of the default at the tighter thresholds:
+
+| | 1/512, 16 nb | 1/64, 16 nb | 1/128, 64 nb |
+|---|---|---|---|
+| plasmids delivered whole | 13.8% | 21.3% | **23.8%** |
+| chromosome ≥ 90% | **98.1%** | 94.2% | 95.2% |
+| chromosome ≥ 98% | 64.8% | 59.6% | **69.5%** |
+| median chr_best | 98.6 | 98.5 | **98.7** |
+
+`kMarkerNeighbours` is build-side only — the query looks edges up rather than regenerating
+them — so a model built with a different count is read by the stock binary. It is a
+compile-time constant (`TS_MARKER_NEIGHBOURS`) rather than a flag, because the value that is
+right for a given density is not something a user should have to guess at.
+
+The ≥90% line still favours the default, and that is not smoothed over: the denser build
+breaks a different set of four isolates while rescuing one badly broken one, so the tail moved
+rather than shrank. A second mechanism is visible in the logs and is not reach — layout
+placements that collide and get discarded track density, not neighbour count.
 
 **Leakage.** A model must never contain the genome being assembled, or anything close enough
 to stand in for it. `--exclude` drops chromosomes by accession and `--exclude-plasmids` takes

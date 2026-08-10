@@ -52,7 +52,17 @@ constexpr int kMarkerK = 31;
 // How many downstream markers each marker links to. Sixteen at ~500 bp spacing
 // reaches ~8 kb, which covers the rRNA operons and IS elements that defeat the
 // paired evidence, without inflating the model with links no query will use.
-constexpr int kMarkerNeighbours = 16;
+//
+// It is REACH that matters, not the count, so this has to move with the sampling
+// density: at one marker in 64 the spacing is ~62 bp and sixteen neighbours reach
+// ~1 kb, an order of magnitude short of the repeats they exist to cross. Overridable
+// at compile time to measure that. Build-side only -- the query looks edges up rather
+// than regenerating them, so a model built with a different count needs no special
+// binary to read it.
+#ifndef TS_MARKER_NEIGHBOURS
+#define TS_MARKER_NEIGHBOURS 16
+#endif
+constexpr int kMarkerNeighbours = TS_MARKER_NEIGHBOURS;
 constexpr int32_t kMaxMarkerDistance = 30000;
 
 enum class Replicon { Chromosome = 0, Plasmid = 1 };

@@ -145,11 +145,29 @@ total group length, so `_plas_1` is the largest molecule in that isolate.
   extra grouping is not over-merging. It also costs the chromosome: over the same 104
   isolates, chromosome-in-one-contig at ≥90% falls from 98.1% to 94.2%, with five isolates
   dropping below the line and one rising above it. The falls are steep (99.2 → 86.9) and
-  share a signature — the layout places fewer contigs and displaces some. The likely cause is
-  a parameter that did not scale: `kMarkerNeighbours` is 16, chosen so that at ~500 bp
-  spacing the adjacency reaches ~8 kb and covers the rRNA operons; at ~62 bp spacing the same
-  16 reach ~1 kb. Untested, and stated as a hypothesis. Until it is tested, 512 is the
-  default and 64 is a build option for anyone who wants the plasmid half.
+  share a signature — the layout places fewer contigs and displaces some.
+
+  That was traced to a parameter that did not scale. `kMarkerNeighbours` is 16, chosen so
+  that at ~500 bp spacing the adjacency reaches ~8 kb and covers the rRNA operons; at ~62 bp
+  spacing the same 16 reach ~1 kb. Holding the reach constant instead — 1 in 128 with 64
+  neighbours, again ~8.2 kb — recovers four of the five broken isolates exactly, and beats
+  the 1-in-64 build on both halves:
+
+  | | 1/512, 16 nb | 1/64, 16 nb | 1/128, 64 nb |
+  |---|---|---|---|
+  | plasmids delivered whole | 9/65 (13.8%) | 13/61 (21.3%) | **15/63 (23.8%)** |
+  | grouping completeness, per isolate | 0.219 | 0.306 | **0.325** |
+  | grouping homogeneity, per isolate | 1.000 | 1.000 | 1.000 |
+  | chromosome ≥90% | **98.1%** | 94.2% | 95.2% |
+  | chromosome ≥98% | 64.8% | 59.6% | **69.5%** |
+  | median chr_best | 98.6 | 98.5 | **98.7** |
+
+  The ≥90% line still favours the default: the reach-corrected build breaks a different set
+  of four isolates while rescuing one badly broken one, so the tail moved rather than shrank.
+  A second mechanism is visible and is not reach — layout placements that collide and get
+  discarded track density, not neighbour count (0, 11, 15 displaced on one isolate across the
+  three arms), so the overlap-rejection rule is the next thread. 512 with 16 neighbours stays
+  the default; 1/128 with 64 is the build for anyone who wants the plasmid half.
 - Hub grouping over a clustered panel does not rescue it either. Clustering the 56,731-plasmid panel
   by mash single linkage at d < 0.01 — the last threshold before percolation; the largest
   component holds 2.1% there against 29.6% at d < 0.02 — gives 16,495 clusters, every panel
