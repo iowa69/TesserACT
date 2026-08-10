@@ -144,8 +144,12 @@ of a use is worth shipping as exactly that, and not as a feature.
 
 ## Genus models
 
-`--model` takes a model file and `--organism` names the genus it must match. `make` builds
-the model builder alongside the assembler:
+`--model` takes a model file and `--organism` names the genus it must match.
+
+Pre-built *Klebsiella* models are attached to the
+[releases](https://github.com/iowa69/TesserACT/releases), encrypted — see
+[`models/README.md`](models/README.md) for what that protects and how to unlock them. To build
+your own, `make` builds the model builder alongside the assembler:
 
 ```sh
 tessera-model --organism klebsiella --out kleb.tsm --layout-tracks \
