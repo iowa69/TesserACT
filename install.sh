@@ -87,7 +87,11 @@ cat <<EOF
 Next:
   tessera -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
 
-For Klebsiella, build a model once and reuse it:
+For Klebsiella there is nothing to set up -- this fetches the model and runs everything:
+  ./run-klebsiella.sh reads/          every read pair in the directory
+  ./run-klebsiella.sh R1.fq.gz        the mate is found automatically
+
+To build a model of your own instead:
   tessera-model --organism klebsiella --out kleb.tsm references/*.fasta
   tessera --organism klebsiella --model kleb.tsm -1 R1.fq.gz -2 R2.fq.gz -o out
 EOF

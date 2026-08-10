@@ -62,6 +62,17 @@ Produces `./tessera`.
 
 ## Quick start
 
+For *Klebsiella*, one command does everything -- it builds the assembler if needed, fetches
+and checks the model, and assembles every read pair it is given:
+
+```sh
+./run-klebsiella.sh reads/            # a directory of pairs
+./run-klebsiella.sh sample_R1.fq.gz   # the mate is found automatically
+```
+
+Interrupt it and run it again; it picks up where it stopped. Everything below is the general
+interface.
+
 ```sh
 # Paired-end isolate, all cores
 tessera -1 reads_R1.fq.gz -2 reads_R2.fq.gz -o out/
