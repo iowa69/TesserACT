@@ -304,8 +304,6 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
   model covers them. In *Klebsiella* that means rRNA operons (~5 kb) and IS elements
   (1–2.5 kb). Raising k further does not help — 99.7 % of the genome is already unique at
   k=99, and the rest is far longer than any k a 250 bp read can support.
-* **Duplication ratio runs ~0.3 % above SPAdes** (1.003 against 1.000), consistently and
-  across every configuration tried. The cause is not yet identified.
 * **Bacterial isolates.** Metagenomes and eukaryotes are untested.
 
 ## Licence
