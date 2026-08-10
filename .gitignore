@@ -13,6 +13,7 @@ bench/refs/
 bench/results/
 bench/work/
 build/
+build_*/
 core
 fastplus.json
 perf.data*

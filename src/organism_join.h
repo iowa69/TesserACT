@@ -36,6 +36,9 @@ struct OrganismJoinStats {
     size_t rejectedInconsistent = 0;   // no agreeing gap cluster
     size_t rejectedInsertionSeq = 0;   // an end sitting inside a mobile element
     size_t insertionSiteJoins = 0;     // joins placed from a known insertion site
+    size_t rounds = 0;                 // passes run before one made no progress
+    size_t overlapMerges = 0;          // joins closed on an exact sequence overlap
+    size_t overlapUnconfirmed = 0;     // panel implied an overlap the sequence denied
 };
 
 // Canonical 31-mers of known insertion sequences. A contig that ends inside a

@@ -10,6 +10,8 @@
 #include "gapfill.h"
 #include "mappolish.h"
 #include "organism_join.h"
+#include "organism_layout.h"
+#include "replicon.h"
 #include "graph.h"
 #include "polish.h"
 #include "resolve.h"
@@ -88,6 +90,8 @@ struct AssemblyReport {
     MapPolishStats mapPolish;
     bool organismRun = false;
     OrganismJoinStats organism;
+    LayoutStats layout;
+    RepliconAssignment replicons;
     std::string organismName;
     uint32_t organismGenomes = 0;
     uint32_t organismPlasmids = 0;

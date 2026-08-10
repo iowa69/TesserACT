@@ -26,7 +26,13 @@ CXXFLAGS  += $(CXXSTD) $(WARN) $(OPT) -pthread -MMD -MP
 LDFLAGS   += -pthread
 LDLIBS    += -lz
 
-.PHONY: all native debug asan clean install uninstall test unittest check model flagcheck
+# Development-only driver for the join stage. Lives outside src/ so the wildcard
+# above never sees its main(), and is never built by `all`.
+PROBESRC  := devtools/join_probe.cpp
+PROBEBIN  := $(BUILDDIR)/join_probe
+PROBEOBJS := $(filter-out $(BUILDDIR)/main.o $(BUILDDIR)/model_main.o,$(ALLOBJS))
+
+.PHONY: all native debug asan clean install uninstall test unittest check model flagcheck probe
 
 all: $(BIN) $(MODELBIN)
 
@@ -68,6 +74,17 @@ test: $(BIN)
 
 flagcheck: $(BIN) $(MODELBIN)
 	@bash tests/check_flags.sh ./$(BIN) ./$(MODELBIN)
+
+PIDXSRC := devtools/plasmid_index.cpp
+PIDXBIN := $(BUILDDIR)/plasmid_index
+
+probe: $(PROBEBIN) $(PIDXBIN)
+
+$(PIDXBIN): $(PIDXSRC) $(PROBEOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(PIDXSRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
+
+$(PROBEBIN): $(PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 unittest: $(UNITBIN)
 	@$(UNITBIN)

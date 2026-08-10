@@ -332,7 +332,12 @@ def cmd_format(a):
                 lens.append(0)
             elif line:
                 lens[-1] += len(line)
-    pat = re.compile(r"^NODE_(\d+)_length_(\d+)_cov_(\d+\.\d+)$")
+    # The replicon tag is appended, so the rank/length/coverage contract is unchanged and
+    # still checked; only a suffix is newly permitted. The permitted tags are enumerated
+    # rather than left open, so a malformed or unexpected one still fails:
+    #   _chr | _unk | _plas | _plas_<n>, each optionally followed by _circular
+    pat = re.compile(r"^NODE_(\d+)_length_(\d+)_cov_(\d+\.\d+)"
+                     r"(?:_(?:chr|unk|plas(?:_\d+)?)(?:_circular)?)?$")
     bad_name = bad_len = bad_rank = 0
     for i, (nm, L) in enumerate(zip(names, lens)):
         m = pat.match(nm)
@@ -343,7 +348,15 @@ def cmd_format(a):
             bad_len += 1
         if int(m.group(1)) != i + 1:
             bad_rank += 1
-    unsorted = sum(1 for i in range(1, len(lens)) if lens[i] > lens[i - 1])
+    # Length descending WITHIN a replicon block, not across the whole file. The output is
+    # ordered as a genome -- chromosome, then each plasmid molecule contiguous, then what
+    # could not be called -- so a chromosomal fragment legitimately precedes a longer plasmid.
+    # With no model every contig lands in one block and this reduces to the original global
+    # check, which is the case this suite exercises; the per-block form is the real contract.
+    tags = [re.search(r"_(?:chr|unk|plas(?:_\d+)?)(?:_circular)?$", nm) for nm in names]
+    blocks = [m.group(0).replace("_circular", "") if m else "" for m in tags]
+    unsorted = sum(1 for i in range(1, len(lens))
+                   if blocks[i] == blocks[i - 1] and lens[i] > lens[i - 1])
     print("contigs=%d bad_header=%d bad_length=%d bad_rank=%d unsorted=%d"
           % (len(names), bad_name, bad_len, bad_rank, unsorted))
     if not names or bad_name or bad_len or bad_rank or unsorted:
@@ -599,6 +612,47 @@ fi
 # 15. Output format
 detail=$(gen format "$D/out/contigs.fasta"); rc=$?
 check "contigs.fasta header format and order" $rc "$detail"
+
+# ---------------------------------------------------------------------------
+# 15b. Model marker density round-trips through the file
+#
+# Build and query must agree on the sampling denominator exactly. Sampling is by hash
+# threshold, so a query at 512 against a model built at 64 shares an eighth of the markers
+# and reports almost nothing -- without erroring, which is what makes it worth a test. The
+# model records its own density from version 5 on; this checks that the flag reaches the
+# build, that the denser model really is denser, and that both files load.
+# ---------------------------------------------------------------------------
+MODELBIN=$ROOT/tessera-model
+if [ -x "$MODELBIN" ]; then
+    gen genome "$TMP/m.fa" 15 40000 >/dev/null
+    m512=$($TIMEOUT "$MODELBIN" --organism testus --out "$TMP/m512.tsm" "$TMP/m.fa" 2>&1 |
+           grep -oE '[0-9]+ markers' | tail -1 | cut -d' ' -f1)
+    m64=$($TIMEOUT "$MODELBIN" --organism testus --out "$TMP/m64.tsm" --marker-density 64 \
+          "$TMP/m.fa" 2>&1 | grep -oE '[0-9]+ markers' | tail -1 | cut -d' ' -f1)
+    if [ -s "$TMP/m512.tsm" ] && [ -s "$TMP/m64.tsm" ] &&
+       [ -n "$m512" ] && [ -n "$m64" ] && [ "$m64" -gt "$m512" ]; then
+        # Both must be usable by this one binary, which is the whole point of recording the
+        # density in the file rather than compiling it in.
+        gen reads "$TMP/m.fa" "$TMP/mr" 50 150 350 30 0 1015 paired fastq gz >/dev/null
+        ok512=0; ok64=0
+        $TIMEOUT "$TESSERA" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_512" \
+            --organism testus --model "$TMP/m512.tsm" >/dev/null 2>&1 && ok512=1
+        $TIMEOUT "$TESSERA" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_64" \
+            --organism testus --model "$TMP/m64.tsm" >/dev/null 2>&1 && ok64=1
+        if [ "$ok512" -eq 1 ] && [ "$ok64" -eq 1 ]; then
+            pass "model marker density round-trips" \
+                 "markers 1/512=$m512 1/64=$m64 (both models loaded and assembled)"
+        else
+            fail "model marker density round-trips" \
+                 "assembly failed: 512=$ok512 64=$ok64"
+        fi
+    else
+        fail "model marker density round-trips" \
+             "markers 1/512=${m512:-none} 1/64=${m64:-none} (denser must yield more)"
+    fi
+else
+    pass "model marker density round-trips" "skipped: no tessera-model built"
+fi
 
 # ---------------------------------------------------------------------------
 # 16. Empty and tiny input

@@ -8,6 +8,7 @@
 #include "libqc.h"
 #include "mappolish.h"
 #include "organism_join.h"
+#include "organism_layout.h"
 #include "organism.h"
 #include "report.h"
 #include "seqio.h"
@@ -96,6 +97,11 @@ struct AssemblyOptions {
     // counted, which is the only time several of the decisions below can still be made.
     // Empty means every such decision falls back to the self-derived estimate.
     std::string qcPath;
+    // Lay the finished contigs out against the panel chromosome they most resemble, when
+    // the model carries layout tracks. On by default because it is what closes the
+    // chromosome; --no-layout leaves the assembly de novo in its ordering as well as its
+    // sequence, which is the right choice when the ordering must not rest on a relative.
+    bool layout = true;
 
     // Polishing against a full read alignment, after the k-mer polisher has
     // done what it can. Off unless a mapper is named, since it shells out.

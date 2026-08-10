@@ -197,6 +197,7 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("chromosome_joins", rep.organism.chromosomeJoins);
     w.uint("plasmid_joins", rep.organism.plasmidJoins);
     w.uint("insertion_site_joins", rep.organism.insertionSiteJoins);
+    w.uint("join_rounds", rep.organism.rounds);
     w.uint("gap_bases", rep.organism.gapBases);
     w.uint("contigs_in", rep.organism.contigsIn);
     w.uint("contigs_out", rep.organism.contigsOut);
@@ -207,6 +208,25 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     // The accessions --exclude kept out of the panel, carried through the
     // model file, so a leave-one-out run can be checked rather than trusted.
     w.arrOfStrings("excluded_accessions", rep.organismExcluded);
+    w.close('}');
+
+    // Reported separately from the join stage on purpose. These contigs were ordered and
+    // oriented against a DIFFERENT genome; the sequence is this isolate's, the arrangement
+    // is an inference from the panel, and anything downstream that cares about the
+    // difference has to be able to see it. `track` names the panel chromosome used, so a
+    // result can be traced to the genome that shaped it.
+    w.openObj("layout");
+    w.boolean("run", rep.layout.run);
+    w.str("track", rep.layout.track);
+    w.uint("track_markers", rep.layout.trackMarkers);
+    w.uint("shared_markers", rep.layout.sharedMarkers);
+    w.uint("placed", rep.layout.placed);
+    w.uint("unplaced", rep.layout.unplaced);
+    w.uint("incoherent", rep.layout.incoherent);
+    w.uint("dropped", rep.layout.dropped);
+    w.uint("scaffolds", rep.layout.scaffolds);
+    w.uint("gap_bases", rep.layout.gapBases);
+    w.uint("overlap_merges", rep.layout.overlapMerges);
     w.close('}');
 
     w.openObj("polishing");

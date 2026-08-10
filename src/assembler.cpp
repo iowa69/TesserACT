@@ -4,14 +4,19 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <memory>
 #include <ctime>
 #include <thread>
+#include <unordered_map>
+#include <utility>
 
 #include "correct.h"
 #include "counter.h"
 #include "gapfill.h"
 #include "mappolish.h"
 #include "organism_join.h"
+#include "pairends.h"
+#include "replicon.h"
 #include "gfa.h"
 #include "polish.h"
 #include "resolve.h"
@@ -639,6 +644,10 @@ bool Assembler::run(std::string& error) {
     std::vector<std::string> seqs;
     std::vector<double> covs;
     std::vector<GfaPath> gfaPaths;
+    // Which contigs the layout stage placed on a chromosome track. Declared out
+    // here because the classification that consumes it runs much later, after gap
+    // closing and polishing have had their turn at the sequences.
+    std::vector<char> layoutMembers;
 
     if (opt_.resolveRepeats && reads_.paired()) {
         if (opt_.verbose) std::fprintf(stderr, "[4/7] paired-end repeat resolution\n");
@@ -819,6 +828,44 @@ bool Assembler::run(std::string& error) {
         report_.organismGenomes = organismModel_.genomes(Replicon::Chromosome);
         report_.organismPlasmids = organismModel_.genomes(Replicon::Plasmid);
         report_.organismExcluded = organismModel_.excluded();
+
+        // Then lay the result out against the panel chromosome it most resembles, when
+        // the model carries layout tracks. Adjacency answers one junction at a time and
+        // needs to be right about every one of them; over 666 isolates that reached 23%
+        // of chromosomes closed at 90% or better, against 95.6% for the layout, with
+        // fewer misassemblies and a longer NGA50.
+        //
+        // Order runs join-then-layout because joining first makes the pieces longer, so
+        // each carries more markers to be placed by. What the layout cannot place is kept
+        // exactly as it was: in this cohort that residue is 70% plasmid by base, which is
+        // the part a clinical read-out actually wants to look at.
+        if (organismModel_.trackCount() > 0 && opt_.layout && seqs.size() > 1) {
+            report_.layout = layoutByModel(organismModel_, seqs, covs, finalK, opt_.verbose);
+            // gfaPaths cannot survive a layout that ran: a scaffold is several contigs with
+            // N between them and has no single walk through the graph. Dropping it is
+            // correct; permuting it would name one contig and describe another.
+            //
+            // Only when it ran, though. layoutByModel returns early -- no located markers,
+            // no track sharing 200 of them, nothing placeable -- without touching `seqs`,
+            // and on those runs the walks are still in exact correspondence. Clearing
+            // regardless cost every P record in assembly_graph.gfa, with both --emit-gfa and
+            // --layout on by default and nothing said about it: report.json recorded
+            // `layout.run = false`, which reads as "the layout changed nothing".
+            //
+            // The test is `run && scaffolds`, not a change in contig count: a layout in which
+            // every scaffold holds one contig reorders without changing the count. `scaffolds`
+            // is incremented only inside the flush that builds the new vector, so it is
+            // nonzero exactly when that vector was rebuilt.
+            if (report_.layout.run && report_.layout.scaffolds > 0) gfaPaths.clear();
+            // layoutByModel emits its scaffolds first and appends everything it could not
+            // place, so the leading `scaffolds` entries are the chromosome. Recorded here
+            // because the later stages preserve contig count and order but the output sort
+            // does not.
+            layoutMembers.assign(seqs.size(), 0);
+            for (size_t i = 0; i < report_.layout.scaffolds && i < layoutMembers.size(); ++i) {
+                layoutMembers[i] = 1;
+            }
+        }
     }
 
     // Scaffolding wrote the joins it trusts as Ns. Those Ns are a statement
@@ -923,9 +970,97 @@ bool Assembler::run(std::string& error) {
 
 
     // ---- order and name -------------------------------------------------
+    // ---- what molecule is each contig on -----------------------------------
+    // Runs last, on the finished sequences, because everything before it can still change
+    // them: the gap closer rewrites Ns into bases and the polisher corrects them, and a
+    // classification made earlier would describe contigs that no longer exist.
+    //
+    // Read pairs are re-anchored here rather than carried from the resolver. The
+    // resolver's evidence is keyed on unitigs, and the mapping from unitigs to final
+    // contigs is destroyed by joining -- a joined contig has no single graph walk. Anchoring
+    // again costs one pass over the reads and lands every distance directly in the frame
+    // the answer is reported in.
+    RepliconAssignment replicons;
+    {
+        std::unique_ptr<ContigEndLinks> links;
+        if (reads_.pairCount() > 0 && report_.resolve.insert.usable && seqs.size() > 1) {
+            if (opt_.verbose) std::fprintf(stderr, "      anchoring pairs onto final contigs\n");
+            links.reset(new ContigEndLinks(seqs, reads_, report_.resolve.insert,
+                                           opt_.threads));
+        }
+        replicons = assignReplicons(seqs, covs, layoutMembers, organismModel_,
+                                    links ? links.get() : nullptr, opt_.verbose);
+    }
+
+    // ---- order the output as a genome, not as a length ranking ---------------
+    // Sorting by length alone scatters the answer: a chromosomal fragment lands between two
+    // plasmids, and the contigs of one plasmid land wherever their sizes put them. The file
+    // is the deliverable, so it is ordered the way it is read -- chromosome first, then each
+    // plasmid molecule whole and contiguous, then what could not be called.
+    //
+    // Group numbers are renumbered here so that `_plas_1` is the largest molecule in the
+    // isolate and file order agrees with the numbering. They were previously handed out in
+    // whatever order the contigs happened to be visited, which is stable but arbitrary.
+    // Renumbering happens before `report_.replicons` is stored, so the report, the GFA and
+    // the FASTA all quote the same number.
+    {
+        std::unordered_map<uint32_t, size_t> groupBases;
+        for (size_t i = 0; i < seqs.size() && i < replicons.calls.size(); ++i) {
+            if (replicons.calls[i].group > 0) groupBases[replicons.calls[i].group] += seqs[i].size();
+        }
+        std::vector<std::pair<size_t, uint32_t>> byBases;   // (-bases, old group)
+        byBases.reserve(groupBases.size());
+        for (const auto& kv : groupBases) byBases.emplace_back(kv.second, kv.first);
+        std::sort(byBases.begin(), byBases.end(), [](const auto& a, const auto& b) {
+            if (a.first != b.first) return a.first > b.first;
+            return a.second < b.second;   // total order; unordered_map iteration is not one
+        });
+        std::unordered_map<uint32_t, uint32_t> renumber;
+        for (size_t r = 0; r < byBases.size(); ++r) renumber[byBases[r].second] = static_cast<uint32_t>(r + 1);
+        for (RepliconCall& rc : replicons.calls) {
+            if (rc.group > 0) rc.group = renumber[rc.group];
+        }
+    }
+    report_.replicons = replicons;
+
+    // Rank of the block a contig belongs to. Chromosome, then plasmids, then unassigned;
+    // within the plasmids, every grouped molecule (in the new numbering) before the
+    // singletons, whose molecule is unknown and which therefore belong to no block.
+    const size_t nGroups = replicons.plasmidGroups;
+    auto blockOf = [&](size_t i) -> size_t {
+        if (i >= replicons.calls.size()) return nGroups + 2;
+        const RepliconCall& rc = replicons.calls[i];
+        switch (rc.cls) {
+            case RepliconClass::Chromosome: return 0;
+            case RepliconClass::Plasmid:    return rc.group > 0 ? rc.group : nGroups + 1;
+            default:                        return nGroups + 2;
+        }
+    };
+
+    // Inside the chromosome block, a laid-out contig keeps its layout order. The layout
+    // stage places contigs along a panel chromosome and emits its scaffolds in track
+    // order, so for those entries the index IS the position on the reconstructed
+    // chromosome -- the one ordering in this pipeline that was actually paid for. Sorting
+    // them by length would put a 1.9 Mb piece ahead of the 2.4 Mb piece that precedes it
+    // on the genome. It changes nothing when the chromosome closes in a single scaffold,
+    // which is the common case (49 of 50 clinical isolates), and it is exactly right in
+    // the isolates where it did not, which are the ones a reader is looking at.
+    //
+    // Gated on the chromosome block rather than on `layoutMembers` alone: a laid-out
+    // contig shorter than the classifier's floor is left unassigned, and phase must never
+    // disagree with the block it sits in.
+    auto phaseOf = [&](size_t i) -> int {
+        return (blockOf(i) == 0 && i < layoutMembers.size() && layoutMembers[i]) ? 0 : 1;
+    };
+
     std::vector<size_t> order(seqs.size());
     for (size_t i = 0; i < order.size(); ++i) order[i] = i;
     std::sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+        const size_t ba = blockOf(a), bb = blockOf(b);
+        if (ba != bb) return ba < bb;
+        const int pa = phaseOf(a), pb = phaseOf(b);
+        if (pa != pb) return pa < pb;
+        if (pa == 0) return a < b;      // track order
         // Length alone is not a total order and std::sort is not stable, so
         // equal-length contigs would be numbered by whatever order they arrived
         // in. The sequence breaks the tie and makes the naming reproducible.
@@ -939,9 +1074,30 @@ bool Assembler::run(std::string& error) {
     outNames.reserve(order.size());
     for (size_t rank = 0; rank < order.size(); ++rank) {
         const size_t i = order[rank];
-        char name[160];
-        std::snprintf(name, sizeof(name), "NODE_%zu_length_%zu_cov_%.4f",
-                      rank + 1, seqs[i].size(), covs[i]);
+        // The replicon tag goes on the end of the existing name so nothing that parses
+        // the old format breaks. `chr` and `plas` are the call; the trailing number on a
+        // plasmid is a GROUP, present only when read pairs tied several contigs to the
+        // same molecule, and absent rather than invented when they did not. `circular`
+        // means this contig's own two ends are joined by pairs -- a finished molecule,
+        // which for a plasmid is the difference between a contig and a result.
+        char tag[48];
+        tag[0] = '\0';
+        if (i < replicons.calls.size()) {
+            const RepliconCall& rc = replicons.calls[i];
+            const char* cls = rc.cls == RepliconClass::Chromosome ? "chr"
+                            : rc.cls == RepliconClass::Plasmid    ? "plas"
+                                                                  : "unk";
+            if (rc.cls == RepliconClass::Plasmid && rc.group > 0) {
+                std::snprintf(tag, sizeof(tag), "_%s_%u%s", cls, rc.group,
+                              rc.circular ? "_circular" : "");
+            } else {
+                std::snprintf(tag, sizeof(tag), "_%s%s", cls,
+                              rc.circular ? "_circular" : "");
+            }
+        }
+        char name[224];
+        std::snprintf(name, sizeof(name), "NODE_%zu_length_%zu_cov_%.4f%s",
+                      rank + 1, seqs[i].size(), covs[i], tag);
         outNames.emplace_back(name);
 
         ContigRecord rec;

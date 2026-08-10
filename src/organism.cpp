@@ -9,7 +9,21 @@ namespace ts {
 
 namespace {
 
-constexpr char kMagic[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '2'};
+// Version 5 records the marker sampling denominator the model was built at; version 4
+// appended per-plasmid marker membership; version 3 appended chromosome layout tracks;
+// version 2 has neither. All still load, and a model missing a section simply does not offer
+// the stage that consumes it -- adjacency joining works without tracks, and layout works
+// without membership. Rebuilding a fold model costs minutes and there are ten of them on
+// disk, so making older files unreadable would be a real cost for no benefit.
+//
+// The density field is the one addition that cannot be defaulted wrongly and left alone: a
+// query run at a different density than the model shares almost none of its markers and
+// reports nothing, without erroring. Files older than version 5 predate the option and were
+// all built at 512, which is what they are read as.
+constexpr char kMagic[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '5'};
+constexpr char kMagicV4[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '4'};
+constexpr char kMagicV3[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '3'};
+constexpr char kMagicV2[8] = {'T', 'S', 'M', 'O', 'D', 'E', 'L', '2'};
 
 template <typename T>
 bool writePod(std::FILE* f, const T& v) {
@@ -77,7 +91,8 @@ bool OrganismModel::save(const std::string& path, std::string& error) const {
     bool ok = std::fwrite(kMagic, 1, 8, f) == 8;
 
     const uint32_t kk = static_cast<uint32_t>(k_);
-    ok = ok && writePod(f, kk) && writePod(f, genomesChr_) && writePod(f, genomesPls_);
+    ok = ok && writePod(f, kk) && writePod(f, markerDenom_) &&
+         writePod(f, genomesChr_) && writePod(f, genomesPls_);
 
     const uint32_t nameLen = static_cast<uint32_t>(organism_.size());
     ok = ok && writePod(f, nameLen) &&
@@ -109,6 +124,33 @@ bool OrganismModel::save(const std::string& path, std::string& error) const {
                  writePod(f, kv.second.medianDist);
         }
     }
+
+    const uint64_t nTracks = tracks_.size();
+    ok = ok && writePod(f, nTracks);
+    for (const LayoutTrack& t : tracks_) {
+        if (!ok) break;
+        const uint32_t nameLen2 = static_cast<uint32_t>(t.name.size());
+        ok = writePod(f, nameLen2) &&
+             (nameLen2 == 0 || std::fwrite(t.name.data(), 1, nameLen2, f) == nameLen2);
+        const uint64_t n = t.oriented.size();
+        ok = ok && writePod(f, n);
+        for (uint64_t i = 0; i < n && ok; ++i) {
+            ok = writePod(f, t.oriented[i]) && writePod(f, t.pos[i]);
+        }
+    }
+
+    const uint64_t nPls = plasmids_.size();
+    ok = ok && writePod(f, nPls);
+    for (const PlasmidMembership& m : plasmids_) {
+        if (!ok) break;
+        const uint32_t nl = static_cast<uint32_t>(m.name.size());
+        ok = writePod(f, nl) && (nl == 0 || std::fwrite(m.name.data(), 1, nl, f) == nl) &&
+             writePod(f, m.length);
+        const uint64_t nm = m.markers.size();
+        ok = ok && writePod(f, nm);
+        for (uint64_t i = 0; i < nm && ok; ++i) ok = writePod(f, m.markers[i]);
+    }
+
     std::fclose(f);
     if (!ok) error = "short write on model file: " + path;
     return ok;
@@ -124,7 +166,14 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
     std::FILE* f = raw;
 
     char magic[8];
-    if (std::fread(magic, 1, 8, f) != 8 || std::memcmp(magic, kMagic, 8) != 0) {
+    if (std::fread(magic, 1, 8, f) != 8) {
+        error = "not a tessera model file: " + path;
+        return false;
+    }
+    const bool hasDensity = std::memcmp(magic, kMagic, 8) == 0;
+    const bool hasPlasmids = hasDensity || std::memcmp(magic, kMagicV4, 8) == 0;
+    const bool hasTracks = hasPlasmids || std::memcmp(magic, kMagicV3, 8) == 0;
+    if (!hasTracks && std::memcmp(magic, kMagicV2, 8) != 0) {
         error = "not a tessera model file (or a model from an older version): " + path;
         return false;
     }
@@ -144,8 +193,19 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
     };
 
     uint32_t kk = 0;
-    bool ok = readPod(f, kk) && readPod(f, genomesChr_) && readPod(f, genomesPls_);
+    bool ok = readPod(f, kk);
     k_ = static_cast<int>(kk);
+    markerDenom_ = kMarkerSampleDenom;
+    if (ok && hasDensity) {
+        uint32_t denom = 0;
+        ok = readPod(f, denom);
+        if (ok && denom == 0) {
+            error = "model declares a marker sampling denominator of zero: " + path;
+            return false;
+        }
+        if (ok) markerDenom_ = denom;
+    }
+    ok = ok && readPod(f, genomesChr_) && readPod(f, genomesPls_);
 
     uint32_t nameLen = 0;
     ok = ok && readPod(f, nameLen) && plausible(nameLen, 1);
@@ -196,6 +256,50 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
             MarkerEdge e;
             ok = readPod(f, key) && readPod(f, e.support) && readPod(f, e.medianDist);
             if (ok) edges_[c].emplace(key, e);
+        }
+    }
+
+    tracks_.clear();
+    if (ok && hasTracks) {
+        uint64_t nTracks = 0;
+        // Each track costs at least a length field per entry, so 8 bytes is the floor.
+        ok = readPod(f, nTracks) && plausible(nTracks, 8);
+        for (uint64_t t = 0; t < nTracks && ok; ++t) {
+            LayoutTrack track;
+            uint32_t nameLen2 = 0;
+            ok = readPod(f, nameLen2) && plausible(nameLen2, 1);
+            if (!ok) break;
+            track.name.assign(nameLen2, '\0');
+            ok = nameLen2 == 0 || std::fread(&track.name[0], 1, nameLen2, f) == nameLen2;
+            uint64_t n = 0;
+            ok = ok && readPod(f, n) && plausible(n, 8);
+            if (!ok) break;
+            track.oriented.resize(n);
+            track.pos.resize(n);
+            for (uint64_t i = 0; i < n && ok; ++i) {
+                ok = readPod(f, track.oriented[i]) && readPod(f, track.pos[i]);
+            }
+            if (ok) tracks_.push_back(std::move(track));
+        }
+    }
+
+    plasmids_.clear();
+    if (ok && hasPlasmids) {
+        uint64_t nPls = 0;
+        ok = readPod(f, nPls) && plausible(nPls, 12);
+        for (uint64_t t = 0; t < nPls && ok; ++t) {
+            PlasmidMembership m;
+            uint32_t nl = 0;
+            ok = readPod(f, nl) && plausible(nl, 1);
+            if (!ok) break;
+            m.name.assign(nl, '\0');
+            ok = (nl == 0 || std::fread(&m.name[0], 1, nl, f) == nl) && readPod(f, m.length);
+            uint64_t nm = 0;
+            ok = ok && readPod(f, nm) && plausible(nm, 4);
+            if (!ok) break;
+            m.markers.resize(nm);
+            for (uint64_t i = 0; i < nm && ok; ++i) ok = readPod(f, m.markers[i]);
+            if (ok) plasmids_.push_back(std::move(m));
         }
     }
 

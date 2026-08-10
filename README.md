@@ -55,7 +55,7 @@ want them for a comparison of your own.
 git clone https://github.com/iowa69/TesserACT.git
 cd TesserACT
 make -j                     # needs zlib headers; on conda, CPATH=$CONDA_PREFIX/include
-make test                   # 20 end-to-end assemblies of synthetic genomes
+make test                   # 21 end-to-end checks on synthetic genomes
 ```
 
 Produces `./tessera`.
@@ -144,12 +144,103 @@ of a use is worth shipping as exactly that, and not as a feature.
 
 ## Genus models
 
-`--model` takes a model file and `--organism` names the genus it must match. Models are
-distributed separately from the assembler; the tooling for building them is not currently
-public. If you need a model for an organism that has none, get in touch.
+`--model` takes a model file and `--organism` names the genus it must match. `make` builds
+the model builder alongside the assembler:
+
+```sh
+tessera-model --organism klebsiella --out kleb.tsm --layout-tracks \
+              --plasmids plasmid_panel.fna --exclude-plasmids withheld.txt \
+              --marker-density 64 \
+              closed/*.fasta
+```
+
+A model records, from closed genomes of one genus, which canonical 31-mers occur near each
+other and on what kind of replicon. Markers are sampled by hash at a fixed rate, so the same
+loci are picked in every genome and in the assembly under test. `--layout-tracks` also stores
+each panel chromosome's marker order whole, which lets an assembly be ordered against the
+relative it most resembles instead of joined junction by junction. `--plasmids` adds a
+plasmid panel, from which the replicon calls below are derived.
+
+**Density.** `--marker-density N` keeps one k-mer in N; the default is 512, about 500 bp
+apart. The value is written into the model and applied automatically when it is queried, so
+build and query cannot disagree — which matters because they fail silently rather than
+loudly: sampling is by hash threshold, so a query at the wrong density shares almost none of
+the model's markers and simply reports nothing.
+
+Denser is not strictly better, and the trade is measured. On 104 *Klebsiella* isolates with
+closed references and a leave-cluster-out model:
+
+| | 1 in 512 | 1 in 64 |
+|---|---|---|
+| multi-contig plasmids delivered in one group | 13.8% | **21.3%** |
+| plasmid grouping completeness (per-isolate median) | 0.215 | **0.306** |
+| chromosome in one contig at ≥ 90% | **98.1%** | 94.2% |
+| model size / build time | 355 MB / 4 min | 1.2 GB / 23 min |
+
+512 is the default because the chromosome result is the one that is finished. 64 buys plasmid
+grouping, which is marker-starved at 512 — a 1 kb contig expects two markers there and
+grouping needs three — and costs five isolates their chromosome out of 104.
+
+The chromosome cost looks like a parameter rather than a law: `kMarkerNeighbours` is 16,
+chosen so that at ~500 bp spacing the adjacency table reaches ~8 kb and covers the rRNA
+operons and IS elements that defeat paired evidence. At 1 in 64 the spacing is ~62 bp and
+those sixteen neighbours reach ~1 kb. Scaling the neighbour count with the density is
+untested.
+
+**Leakage.** A model must never contain the genome being assembled, or anything close enough
+to stand in for it. `--exclude` drops chromosomes by accession and `--exclude-plasmids` takes
+a list for the plasmid panel — and the second is not optional in practice. On one *Klebsiella*
+cohort, 46% of test plasmids had a near-identical match in a RefSeq-derived panel, so a model
+built without the list scores plasmids against themselves. Exclude whole mash-distance
+clusters rather than individual accessions: dropping only the matched genome leaves its
+cluster-mates behind, and they carry the same information.
 
 A model is consulted **only** at junctions no read pair spans. It cannot override
 evidence the reads provide, so it changes contiguity without changing what the data say.
+
+---
+
+## Replicon calls
+
+With a model carrying a plasmid panel, every contig is called chromosomal, plasmid or
+unknown, and the call is appended to the contig **name** — not placed after the space, where
+aligners and scorers silently ignore it:
+
+```
+NODE_1_length_5456968_cov_34.9404_chr
+NODE_10_length_86253_cov_75.7539_plas_1
+NODE_22_length_35126_cov_91.8331_plas
+NODE_44_length_1203_cov_9.1100_unk
+NODE_6_length_24538_cov_96.8381_plas_8_circular
+```
+
+| suffix | meaning |
+|---|---|
+| `_chr` | chromosomal |
+| `_plas` | plasmid, molecule unknown |
+| `_plas_<n>` | plasmid, grouped with the other contigs carrying the same `<n>` |
+| `_unk` | no signal reached it — reported as unknown rather than guessed at |
+| `_circular` | its two ends are joined by read pairs: the contig is the whole molecule |
+
+Four independent signals decide it, none sufficient alone: layout placement on a chromosome
+track, panel markers, depth against the modal coverage, and read pairs running between
+contigs. Group numbers are per-isolate — `_plas_1` in two genomes is not the same plasmid —
+and are assigned by total group length, so `_plas_1` is the largest molecule in that isolate.
+
+**The file is ordered as a genome**, not as a length ranking: the chromosome first, then each
+plasmid molecule whole and contiguous, then the plasmid contigs whose molecule is unknown,
+then the unassigned. Longest first within a block, with the sequence itself as the final
+tie-break so the ordering is total and the numbering reproducible.
+
+What this is worth, on 666 *Klebsiella* isolates with closed references and leave-cluster-out
+models: the chromosome lands in a single contig at ≥90% for 95–96% of them, and on 50 unseen
+clinical isolates 48 of 50 return a chromosome in one contig of ≥5.0 Mb.
+
+Plasmids are a weaker result and should be read as one. 14 of 60 assembled into a single
+contig at all; grouping holds 9 of 65 multi-contig plasmids in one group; a `_circular` tag
+is correct 10 times in 11. The groups that are reported are pure (per-isolate homogeneity
+1.000) and fragmented (completeness 0.215). The limit is marker density rather than the
+panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping needs three.
 
 ---
 

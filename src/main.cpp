@@ -47,6 +47,13 @@ void usage() {
         "      --is-sites FILE     table of recurrent insertion sites (flank\n"
         "                          signatures); lets an element be placed on the\n"
         "                          chromosome instead of leaving the end unjoined\n"
+        "      --no-layout         do not order and orient the finished contigs against\n"
+        "                          the panel chromosome they most resemble. Layout is what\n"
+        "                          closes the chromosome -- on this cohort 95.6% of\n"
+        "                          isolates reach 90% of their chromosome in one contig\n"
+        "                          with it and 23% without -- but the ORDER it produces is\n"
+        "                          inferred from a different genome, not observed in these\n"
+        "                          reads. Use this when that distinction matters.\n"
         "      --map-polish NAME   polish the finished contigs against a full read\n"
         "                          alignment: bowtie2 | bwa | none (default none)\n"
         "      --mapper-dir DIR    where to find the mapper binaries\n"
@@ -184,6 +191,7 @@ int main(int argc, char** argv) {
         else if (a == "--mapper-dir") opt.mapperDir = needValue(i, "--mapper-dir");
         else if (a == "--is-panel") opt.isPanelPath = needValue(i, "--is-panel");
         else if (a == "--is-sites") opt.isSitesPath = needValue(i, "--is-sites");
+        else if (a == "--no-layout") opt.layout = false;
         else if (a == "--map-polish") {
             const std::string m = needValue(i, "--map-polish");
             if (!parseMapper(m, opt.mapPolisher)) {

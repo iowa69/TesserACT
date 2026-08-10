@@ -39,7 +39,14 @@ namespace ts {
 // of the 64-bit range. One in 512 positions gives ~500 bp spacing, so a 20 kb
 // window near a contig end holds ~40 markers -- enough that a handful of
 // missing ones does not silence the query.
-constexpr uint64_t kMarkerSampleDenom = 512;
+// Overridable at compile time only, so the density can be measured. Sampling is by hash
+// threshold, so a denser setting is a strict superset of a sparser one and the two are
+// directly comparable. Build and query must agree: a model carries no record of the
+// density it was built at, and a mismatched pair silently shares almost no markers.
+#ifndef TS_MARKER_SAMPLE_DENOM
+#define TS_MARKER_SAMPLE_DENOM 512
+#endif
+constexpr uint64_t kMarkerSampleDenom = TS_MARKER_SAMPLE_DENOM;
 constexpr int kMarkerK = 31;
 
 // How many downstream markers each marker links to. Sixteen at ~500 bp spacing
@@ -53,6 +60,48 @@ enum class Replicon { Chromosome = 0, Plasmid = 1 };
 struct MarkerEdge {
     uint32_t support = 0;      // panel replicon sets observing this ordered pair
     int32_t medianDist = 0;    // median start-to-start distance, in bases
+};
+
+// One panel chromosome's marker order, kept whole.
+//
+// The adjacency table above answers "do these two flanks belong together". That is a
+// local question, and closing a chromosome means answering about forty of them in a row
+// without a single mistake -- one miss leaves the chromosome in two pieces. Measured on
+// this cohort, per-junction success would have to reach about 99.7% for nine genomes in
+// ten to close, against 83.9% actually achieved.
+//
+// A track answers a different, global question: where does this contig sit on a genome
+// shaped like this one? Ordering every contig against one relative replaces forty
+// independent decisions with a single alignment, and a locus the relative gets wrong
+// costs that locus rather than the whole chromosome.
+//
+// The track holds markers, not sequence: positions along a genome the assembler will
+// never see. So it needs no aligner and no panel FASTA at run time, and it cannot leak
+// sequence from the panel into the output.
+struct LayoutTrack {
+    std::string name;                    // panel accession, for provenance
+    std::vector<uint32_t> oriented;      // (marker id << 1) | orientation, in order
+    std::vector<uint32_t> pos;           // start position on that chromosome
+};
+
+// One panel plasmid's marker CONTENT, without any order.
+//
+// The adjacency table answers "does marker A follow marker B", which is an order question,
+// and order is exactly what plasmids do not conserve -- they recombine and carry the same
+// transposons in different arrangements. Membership asks instead "do these markers occur
+// together on one real plasmid", which mosaicism does not disturb.
+//
+// Measured before this was built, on 5,370 contig pairs with known truth: the share of a
+// contig pair's markers explained by a single panel plasmid separates same-plasmid from
+// different-plasmid pairs at AUC 0.857, and under a degree-preserving shuffle of the
+// marker-plasmid graph that falls to 0.416 -- below chance. So the signal is co-residence
+// and not the ubiquity of IS elements and backbone genes. It is the only one of the three
+// candidates that works: depth leaves 43% of same-isolate plasmid pairs within 1.5x of
+// each other, and read pairs cannot span the repeats that separate plasmid contigs.
+struct PlasmidMembership {
+    std::string name;                 // panel accession, for provenance
+    uint32_t length = 0;
+    std::vector<uint32_t> markers;    // marker ids, sorted, deduplicated
 };
 
 class OrganismModel {
@@ -88,8 +137,16 @@ public:
         return it == tbl.end() ? nullptr : &it->second;
     }
 
+    // The sampling denominator this model was built at. A model carries it because build
+    // and query must agree exactly: sampling is by hash threshold, so a query at 1/512
+    // against a model built at 1/64 sees only the eighth of the markers the two happen to
+    // share and silently reports almost nothing. Models written before version 5 predate
+    // the field and were all built at 512.
+    uint32_t markerDenom() const { return markerDenom_; }
+
     // ---- construction (used by the model builder) ----
     void beginBuild(const std::string& organism, int k);
+    void setMarkerDenom(uint32_t d) { if (d >= 1) markerDenom_ = d; }
     uint32_t internMarker(uint64_t canonicalKmer);
     void noteMarkerGenome(uint32_t id, Replicon r) { ++genomesPerMarker_[static_cast<int>(r)][id]; }
     void addObservation(uint64_t fromOriented, uint64_t toOriented, int32_t dist, Replicon r);
@@ -97,6 +154,14 @@ public:
         if (r == Replicon::Chromosome) ++genomesChr_; else ++genomesPls_;
     }
     void noteExcluded(const std::string& acc) { excluded_.push_back(acc); }
+    void addTrack(LayoutTrack&& t) { tracks_.push_back(std::move(t)); }
+    void addPlasmid(PlasmidMembership&& m) { plasmids_.push_back(std::move(m)); }
+
+    const std::vector<PlasmidMembership>& plasmids() const { return plasmids_; }
+    size_t plasmidCount() const { return plasmids_.size(); }
+
+    const std::vector<LayoutTrack>& tracks() const { return tracks_; }
+    size_t trackCount() const { return tracks_.size(); }
     // Collapses the per-observation distance lists into medians and drops
     // pairs seen in too few panel members to mean anything.
     void finalise(uint32_t minSupportChr, uint32_t minSupportPls);
@@ -106,12 +171,15 @@ private:
     bool loaded_ = false;
     std::string organism_;
     int k_ = kMarkerK;
+    uint32_t markerDenom_ = kMarkerSampleDenom;
     uint32_t genomesChr_ = 0, genomesPls_ = 0;
     std::vector<std::string> excluded_;
 
     std::unordered_map<uint64_t, uint32_t> index_;   // canonical k-mer -> marker id
     std::vector<uint32_t> genomesPerMarker_[2];
     std::unordered_map<uint64_t, MarkerEdge> edges_[2];
+    std::vector<LayoutTrack> tracks_;
+    std::vector<PlasmidMembership> plasmids_;
 
     // Only populated while building. A reservoir of a few distances rather
     // than every one: the median of eight samples is well inside the 500 bp
@@ -149,11 +217,15 @@ inline int markerBaseCode(char c) {
 // 0 when the forward k-mer is the canonical one. Sampling by hash rather than
 // by position means the same loci are picked in every genome and in the
 // assembly, which is what makes the panel's observations comparable.
+// `denom` is the sampling denominator; it must be the one the model being queried was built
+// at, which the model reports through markerDenom(). It is a parameter rather than the
+// constant because a model file records its own density, and a query at a different one
+// shares almost no markers with it while failing silently.
 template <typename F>
-void forEachMarkerKmer(const std::string& seq, F&& fn) {
+void forEachMarkerKmer(const std::string& seq, F&& fn, uint64_t denom = kMarkerSampleDenom) {
     const int k = kMarkerK;
     const uint64_t mask = (1ULL << (2 * k)) - 1;
-    const uint64_t threshold = ~0ULL / kMarkerSampleDenom;
+    const uint64_t threshold = ~0ULL / (denom ? denom : kMarkerSampleDenom);
     uint64_t fwd = 0, rev = 0;
     int valid = 0;
     for (uint32_t i = 0; i < seq.size(); ++i) {
