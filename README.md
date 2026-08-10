@@ -175,7 +175,7 @@ closed references and a leave-cluster-out model:
 | multi-contig plasmids delivered in one group | 13.8% | **21.3%** |
 | plasmid grouping completeness (per-isolate median) | 0.215 | **0.306** |
 | chromosome in one contig at ≥ 90% | **98.1%** | 94.2% |
-| model size / build time | 355 MB / 4 min | 1.2 GB / 23 min |
+| model size / build time | 339 MB / 4 min | 2.4 GB / 20 min |
 
 512 is the default because the chromosome result is the one that is finished. 64 buys plasmid
 grouping, which is marker-starved at 512 — a 1 kb contig expects two markers there and
