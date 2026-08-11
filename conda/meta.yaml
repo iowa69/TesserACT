@@ -48,6 +48,7 @@ test:
     - tessera --version
     - tessera --help
     - tessera-model --help
+    - tessera-klebsiella --help
     # The flag checks live in run_test.sh, against help text captured to a file.
     #
     # They were `tessera --help | grep -q -- --flag` and that is a race: grep -q exits on

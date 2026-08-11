@@ -16,6 +16,12 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Installed as `tessera-klebsiella`, run from a checkout as `./run-klebsiella.sh`. The help
+# should name whichever one the user actually typed.
+SELF="$(basename "${BASH_SOURCE[0]}")"
+# From a checkout you type ./run-klebsiella.sh; installed on PATH you just type the command.
+# The help should show whichever is actually true.
+case "$SELF" in run-klebsiella.sh) INVOKE="./$SELF" ;; *) INVOKE="$SELF" ;; esac
 REPO=iowa69/TesserACT
 # The release the MODELS are attached to. Deliberately separate from the assembler's own
 # version: a patch release of the binary does not re-upload a 1.3 GB model, so this pin
@@ -46,7 +52,7 @@ warn() { printf '%swarn:%s %s\n' "$c_warn" "$c_off" "$*" >&2; }
 die()  { printf '%serror:%s %s\n' "$c_err" "$c_off" "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed -e 's/^# \{0,1\}//' -e "s|\./run-klebsiella\.sh|$INVOKE|g" -e "s|run-klebsiella\.sh|$SELF|g"
     cat <<EOF
 
 Options:
