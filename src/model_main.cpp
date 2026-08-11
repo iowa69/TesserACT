@@ -25,8 +25,9 @@
 
 #include "organism.h"
 
+#include "version.h"
 namespace {
-constexpr const char* kVersion = "1.1.0";
+using ts::kVersion;
 }  // namespace
 #include "util.h"
 

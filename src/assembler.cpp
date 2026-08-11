@@ -21,6 +21,7 @@
 #include "polish.h"
 #include "resolve.h"
 #include "util.h"
+#include "version.h"
 
 namespace ts {
 
@@ -436,7 +437,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
 
 bool Assembler::run(std::string& error) {
     util::Timer total;
-    report_.version = "1.1.0";
+    report_.version = ts::kVersion;
     report_.mode = runModeName(opt_.mode);
     report_.threads = opt_.threads;
     {

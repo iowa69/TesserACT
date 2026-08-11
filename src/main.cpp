@@ -5,14 +5,15 @@
 #include <thread>
 
 #include "assembler.h"
+#include "version.h"
 #include "kmer.h"
 #include "util.h"
 
 namespace {
 
-constexpr const char* kVersion = "1.2.1";
-constexpr const char* kAuthor = "Giovanni Lorenzin";
-constexpr const char* kOrg = "IOWA-BioTech";
+using ts::kVersion;
+using ts::kAuthor;
+using ts::kOrg;
 
 // A tesseract is a cube inside a cube with the corresponding corners joined; this is that
 // projection, which is where the assembler's name comes from. Printed on --help only.
