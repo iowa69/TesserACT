@@ -94,6 +94,8 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
 
     w.str("tool", "tessera");
     w.str("version", rep.version);
+    w.str("author", "Giovanni Lorenzin");
+    w.str("organisation", "IOWA-BioTech");
     w.str("mode", rep.mode);
     w.str("started_at", rep.startedAt);
     w.str("command", rep.command);

@@ -11,10 +11,32 @@
 namespace {
 
 constexpr const char* kVersion = "1.2.1";
+constexpr const char* kAuthor = "Giovanni Lorenzin";
+constexpr const char* kOrg = "IOWA-BioTech";
+
+// A tesseract is a cube inside a cube with the corresponding corners joined; this is that
+// projection, which is where the assembler's name comes from. Printed on --help only.
+//
+// Deliberately NOT on --version: that line is parsed by scripts, by the conda package test
+// and by anything recording which version produced a result, and it stays one machine
+// readable line for exactly that reason. The attribution goes on a second line there, where
+// a parser reading the first line is unaffected.
+constexpr const char* kLogo =
+    "        #####################################\n"
+    "        ##                                 ##\n"
+    "        ##\\  ###########################  /##\n"
+    "        ##   ##                       ##   ##\n"
+    "        ##   ##   T E S S E R A C T   ##   ##\n"
+    "        ##   ##                       ##   ##\n"
+    "        ##/  ###########################  \\##\n"
+    "        ##                                 ##\n"
+    "        #####################################\n";
 
 void usage() {
+    std::printf("%s\n", kLogo);
     std::printf(
         "tessera %s - de novo short-read assembler (de Bruijn, multi-k)\n"
+        "  %s  \u00b7  %s\n"
         "\n"
         "USAGE\n"
         "  tessera -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [options]\n"
@@ -118,7 +140,7 @@ void usage() {
         "EXAMPLES\n"
         "  tessera -1 R1.fq.gz -2 R2.fq.gz -o asm -t 16\n"
         "  tessera -1 R1.fq.gz -2 R2.fq.gz -o asm -k 21,33,55 --min-contig 500\n",
-        kVersion);
+        kVersion, kAuthor, kOrg);
 }
 
 
@@ -175,7 +197,12 @@ int main(int argc, char** argv) {
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "-h" || a == "--help") { usage(); return 0; }
-        else if (a == "-v" || a == "--version") { std::printf("tessera %s\n", kVersion); return 0; }
+        else if (a == "-v" || a == "--version") {
+            // First line stays exactly "tessera <version>" -- scripts, the conda package
+            // test and provenance records all read it. Attribution goes underneath.
+            std::printf("tessera %s\n%s, %s\n", kVersion, kAuthor, kOrg);
+            return 0;
+        }
         else if (a == "-1" || a == "--read1") { lib.r1 = needValue(i, "-1"); haveLib = true; }
         else if (a == "-2" || a == "--read2") { lib.r2 = needValue(i, "-2"); haveLib = true; }
         else if (a == "--12") { lib.r1 = needValue(i, "--12"); lib.interleaved = true; haveLib = true; }
