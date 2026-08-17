@@ -1,4 +1,4 @@
-// Unit tests for the pieces of tessera that are easiest to get subtly wrong:
+// Unit tests for the pieces of TesserACT that are easiest to get subtly wrong:
 // k-mer bit twiddling, the open-addressed k-mer table's backward-shift
 // deletion, the banded identity used to judge bubbles, and the bidirected link
 // invariant of the unitig graph.
@@ -575,7 +575,7 @@ void testUnitigReconstruction() {
 }  // namespace
 
 int main() {
-    std::printf("tessera unit tests\n");
+    std::printf("TesserACT unit tests\n");
     testKmerRoundTrip();
     testReverseComplement();
     testCanonical();

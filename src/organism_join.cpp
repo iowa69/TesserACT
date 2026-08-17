@@ -73,7 +73,7 @@ constexpr int32_t kMaxGap = 20000;
 // arrive with misassemblies, and NGA50 breaks the scaffold at every one of them.
 //
 // So the bound returns to -(k-1), the largest overlap the de Bruijn graph itself can
-// produce. TESSERA_MODEL_MAX_OVERLAP still raises it, because the measurement that
+// produce. TESSERACT_MODEL_MAX_OVERLAP still raises it, because the measurement that
 // retired it should stay reproducible.
 constexpr int32_t kMaxOverlap = 0;   // 0 = fall back to -(k-1)
 
@@ -208,16 +208,16 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         return e ? std::atof(e) : dflt;
     };
     const uint32_t minPanel = static_cast<uint32_t>(envNum(
-        "TESSERA_MODEL_MIN_PANEL", cls == Replicon::Chromosome ? kMinPanelChr : kMinPanelPls));
+        "TESSERACT_MODEL_MIN_PANEL", cls == Replicon::Chromosome ? kMinPanelChr : kMinPanelPls));
     const double minFraction = envNum(
-        "TESSERA_MODEL_MIN_FRACTION", cls == Replicon::Chromosome ? kMinFractionChr : kMinFractionPls);
-    const size_t minPairs = static_cast<size_t>(envNum("TESSERA_MODEL_MIN_PAIRS", kMinAgreeingPairs));
+        "TESSERACT_MODEL_MIN_FRACTION", cls == Replicon::Chromosome ? kMinFractionChr : kMinFractionPls);
+    const size_t minPairs = static_cast<size_t>(envNum("TESSERACT_MODEL_MIN_PAIRS", kMinAgreeingPairs));
     // 0 means "the graph's own bound", which depends on k and so cannot be a constant.
     const int32_t maxOverlapCfg =
-        static_cast<int32_t>(envNum("TESSERA_MODEL_MAX_OVERLAP", kMaxOverlap));
+        static_cast<int32_t>(envNum("TESSERACT_MODEL_MAX_OVERLAP", kMaxOverlap));
     const int32_t maxOverlap = maxOverlapCfg > 0 ? maxOverlapCfg : (k - 1);
     const size_t minOverlapMerge =
-        static_cast<size_t>(envNum("TESSERA_MODEL_MIN_OVERLAP", kMinOverlapMerge));
+        static_cast<size_t>(envNum("TESSERACT_MODEL_MIN_OVERLAP", kMinOverlapMerge));
 
     // Optional per-port diagnostic. The aggregate counters say how many candidates
     // were rejected but not whether the *correct* partner was among them, which is
@@ -225,7 +225,7 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     // identified by the terminal 31-mer of the end they leave from, so the caller
     // can locate them on a reference and line them up against the true junctions.
     std::FILE* dump = nullptr;
-    if (const char* dp = std::getenv("TESSERA_JOIN_DUMP")) {
+    if (const char* dp = std::getenv("TESSERACT_JOIN_DUMP")) {
         dump = std::fopen(dp, "a");
         // The header marks every pass, not just the first. Both passes append to one
         // file and the plasmid pass runs on contigs the chromosome pass already
@@ -353,7 +353,7 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     // chromosome-only site machinery was for: a locus the panel has actually seen intact
     // can be sized, and refusing it would discard the better evidence.
     const bool vetoChromosome = [] {
-        const char* e = std::getenv("TESSERA_IS_VETO_CHR");
+        const char* e = std::getenv("TESSERACT_IS_VETO_CHR");
         return !(e && *e == '0');
     }();
     std::vector<char> isFlanked(nports, 0);
@@ -568,7 +568,7 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
     // consume an end that a better join needed. So mutual best stays the default and
     // greedy is kept, off, because the negative result is worth being able to reproduce.
     const bool greedyMatch = [] {
-        const char* e = std::getenv("TESSERA_MODEL_MATCH");
+        const char* e = std::getenv("TESSERACT_MODEL_MATCH");
         return e && std::strcmp(e, "greedy") == 0;
     }();
 
@@ -821,7 +821,7 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
     // remain. Both effects mean a second pass has strictly more to work with than
     // the first, so passes repeat until one makes no progress.
     static const int kMaxRounds = [] {
-        const char* e = std::getenv("TESSERA_MODEL_ROUNDS");
+        const char* e = std::getenv("TESSERACT_MODEL_ROUNDS");
         const int v = e ? std::atoi(e) : 4;
         return v < 1 ? 1 : (v > 32 ? 32 : v);
     }();
@@ -869,7 +869,7 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
                      "in %zu rounds\n",
                      st.markersFound, st.joins, st.chromosomeJoins, st.plasmidJoins,
                      st.insertionSiteJoins, st.gapBases, st.rounds);
-        if (std::getenv("TESSERA_DEBUG_ORGANISM")) {
+        if (std::getenv("TESSERACT_DEBUG_ORGANISM")) {
             std::fprintf(stderr,
                          "      [debug] organism join: candidates=%zu weak=%zu "
                          "inconsistent=%zu not-mutual=%zu is-flanked=%zu\n",

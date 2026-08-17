@@ -5,14 +5,14 @@ than committed: 339 MB and 2.9 GB is not something that belongs in a git history
 
 | asset | sampling | download | unpacked |
 |---|---|---|---|
-| `tessera-klebsiella-default-v1.2.0.tsm` | 1 marker in 512, 16 neighbours | 339 MB | — |
-| `tessera-klebsiella-plasmid-v1.2.0.tsm.zst` | 1 marker in 128, 64 neighbours | 1.3 GB | 2.9 GB |
+| `tesseract-klebsiella-default-v1.2.0.tsm` | 1 marker in 512, 16 neighbours | 339 MB | — |
+| `tesseract-klebsiella-plasmid-v1.2.0.tsm.zst` | 1 marker in 128, 64 neighbours | 1.3 GB | 2.9 GB |
 
 The default model is uploaded as-is and works straight away. The plasmid model is
 zstd-compressed only because GitHub caps a release asset at 2 GB and the raw file is 2.9 GB:
 
 ```sh
-zstd -d tessera-klebsiella-plasmid-v1.2.0.tsm.zst -o kleb-plasmid.tsm
+zstd -d tesseract-klebsiella-plasmid-v1.2.0.tsm.zst -o kleb-plasmid.tsm
 ```
 
 Check your download first — a truncated 1.3 GB file will otherwise fail later with a confusing
@@ -25,8 +25,8 @@ sha256sum --check --ignore-missing SHA256SUMS
 ## Using one
 
 ```sh
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella \
-        --model tessera-klebsiella-default-v1.2.0.tsm
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella \
+        --model tesseract-klebsiella-default-v1.2.0.tsm
 ```
 
 `--organism` must match the name the model was built with, which is a guard against pointing a
@@ -72,5 +72,5 @@ with per-replicon-class counts, the marker adjacency tables, one marker-order tr
 chromosome, and per-plasmid marker membership sets. Nothing is obfuscated: the k-mers decode
 directly back to sequence, which is public RefSeq in any case.
 
-Build your own with `tessera-model` — see the README. About four minutes at the default
+Build your own with `tesseract-model` — see the README. About four minutes at the default
 density, twenty at the dense one.

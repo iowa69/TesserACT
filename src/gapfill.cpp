@@ -254,7 +254,7 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
     std::atomic<size_t> nAmbiguous{0}, nNoPath{0}, nThinPool{0}, nBudget{0};
     std::atomic<size_t> nSeedGone{0}, nTargetGone{0};
     std::atomic<size_t> dbgDepth{0}, dbgFloor{0};
-    const bool debug = std::getenv("TESSERA_GF_DEBUG") != nullptr;
+    const bool debug = std::getenv("TESSERACT_GF_DEBUG") != nullptr;
 
     auto solve = [&](int) {
         Local local;

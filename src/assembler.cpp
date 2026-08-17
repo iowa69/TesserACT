@@ -105,16 +105,16 @@ Assembler::Assembler(AssemblyOptions opt) : opt_(std::move(opt)) {
 // and a deep 2x150 library should be allowed to climb, and read length alone cannot tell
 // those apart.
 //
-// The floor is not baked in yet: TESSERA_QC_MIN_KCOV defaults to 0, which disables this
+// The floor is not baked in yet: TESSERACT_QC_MIN_KCOV defaults to 0, which disables this
 // entirely and reproduces the previous ladder exactly. That default is deliberate -- it
 // keeps the pre-QC behaviour available as a baseline while the value is swept.
 std::vector<int> Assembler::trimLadderToCoverage(std::vector<int> ladder) const {
     static const double kMinKmerCov = [] {
-        const char* e = std::getenv("TESSERA_QC_MIN_KCOV");
+        const char* e = std::getenv("TESSERACT_QC_MIN_KCOV");
         return e ? std::atof(e) : 0.0;
     }();
     static const size_t kMinRungs = [] {
-        const char* e = std::getenv("TESSERA_QC_MIN_RUNGS");
+        const char* e = std::getenv("TESSERACT_QC_MIN_RUNGS");
         return e ? static_cast<size_t>(std::atoi(e)) : 3u;
     }();
     if (kMinKmerCov <= 0 || !qc_.loaded || ladder.size() <= kMinRungs) return ladder;
@@ -197,7 +197,7 @@ std::vector<int> Assembler::baseKLadder() const {
     // SPAdes, on the same 2x250 libraries, uses {21,33,55,77,99,127} -- it does climb to
     // 127, but it gets there through 99. The rung count is what differs, not the ceiling.
     //
-    // TESSERA_DENSE_LADDER selects how finely the top of the ladder is sampled:
+    // TESSERACT_DENSE_LADDER selects how finely the top of the ladder is sampled:
     //
     //     0   {21,33,55,77,127}                  the original five rungs
     //     1   {21,33,55,77,99,127}               matches what SPAdes uses here (default)
@@ -220,7 +220,7 @@ std::vector<int> Assembler::baseKLadder() const {
     // under contention that advantage disappears and it runs somewhat slower. Either way
     // the difference is well inside what the contiguity gain is worth.
     static const int kLadderLevel = [] {
-        const char* e = std::getenv("TESSERA_DENSE_LADDER");
+        const char* e = std::getenv("TESSERACT_DENSE_LADDER");
         return e ? std::atoi(e) : 3;
     }();
     if (rl >= 165) {
@@ -275,7 +275,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // Checked on ERR6293532 (L=251, peak(21)=25.0): predicts 13.5 at k=127
     // against 13.35 observed.
     static const uint32_t kCarryWeight = [] {
-        const char* e = std::getenv("TESSERA_CARRY_WEIGHT");
+        const char* e = std::getenv("TESSERACT_CARRY_WEIGHT");
         return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
     }();
     // Threshold on the PROJECTED peak at the final rung. Calibrated against the two
@@ -297,7 +297,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // The substantive fix nearby is the peak-detection repair in counter.cpp, worth
     // +202k on a single strain.
     static const double kCarryBoostBelow = [] {
-        const char* e = std::getenv("TESSERA_CARRY_BOOST_BELOW");
+        const char* e = std::getenv("TESSERACT_CARRY_BOOST_BELOW");
         return e ? std::atof(e) : 25.0;
     }();
     // DISABLED (set equal to the ordinary weight). Everything above describes how this
@@ -317,9 +317,9 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     //
     // Kept as an environment knob rather than deleted, because the coverage-projection
     // machinery it sits on is sound and worth keeping available: set
-    // TESSERA_CARRY_WEIGHT_LOW=32 to restore the previous behaviour exactly.
+    // TESSERACT_CARRY_WEIGHT_LOW=32 to restore the previous behaviour exactly.
     static const uint32_t kCarryWeightLow = [] {
-        const char* e = std::getenv("TESSERA_CARRY_WEIGHT_LOW");
+        const char* e = std::getenv("TESSERACT_CARRY_WEIGHT_LOW");
         return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
     }();
     // Decide ONCE, from the LAST rung, and apply the decision to every rung.
@@ -338,7 +338,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // landing on the error shoulder until recently, and that the carry boost itself
     // perturbs. Reading depth from outside the loop removes both problems at once.
     static const bool kQcCarry = [] {
-        const char* e = std::getenv("TESSERA_QC_CARRY");
+        const char* e = std::getenv("TESSERACT_QC_CARRY");
         return e && std::atoi(e) != 0;
     }();
     double projected = prevPeak;
@@ -484,7 +484,7 @@ bool Assembler::run(std::string& error) {
         std::fclose(probe);
     }
     {
-        const std::string probe = opt_.outDir + "/.tessera_write_test";
+        const std::string probe = opt_.outDir + "/.tesseract_write_test";
         std::FILE* f = std::fopen(probe.c_str(), "w");
         if (!f) {
             error = "output directory is not writable: " + opt_.outDir;
@@ -591,7 +591,7 @@ bool Assembler::run(std::string& error) {
                           "after quality trimming the longest read is %u bp, shorter than the "
                           "smallest k (%d), so there is nothing to assemble. %s bases (%.1f%%) "
                           "were trimmed -- if that seems too many, the file may be Phred+64 "
-                          "(tessera assumes Phred+33) or --qtrim-quality may be set too high; "
+                          "(TesserACT assumes Phred+33) or --qtrim-quality may be set too high; "
                           "--no-qtrim disables trimming entirely",
                           reads_.maxReadLength(), smallest,
                           util::commify(static_cast<long long>(reads_.trimmedBases())).c_str(),
@@ -678,7 +678,7 @@ bool Assembler::run(std::string& error) {
         // Kept behind the flag rather than deleted: the lower bound is measured honestly
         // (short fragments all overlap) and may still be worth something on its own.
         static const bool kQcInsert = [] {
-            const char* e = std::getenv("TESSERA_QC_INSERT");
+            const char* e = std::getenv("TESSERACT_QC_INSERT");
             return e && std::atoi(e) != 0;
         }();
         if (kQcInsert && qc_.loaded && qc_.insertUsable) {
@@ -792,7 +792,7 @@ bool Assembler::run(std::string& error) {
     if (!opt_.isSitesPath.empty() && isPanel_.siteCount() == 0) {
         std::string err;
         // Fatal for the same reason --model is: a site table the user asked
-        // for and tessera could not read changes where contigs are placed.
+        // for and TesserACT could not read changes where contigs are placed.
         if (!isPanel_.loadSites(opt_.isSitesPath, err)) {
             error = err;
             return false;
@@ -912,8 +912,8 @@ bool Assembler::run(std::string& error) {
     // So polishing is a guard, not a corrector: it earns its 3 seconds by
     // confirming the graph consensus already matches the reads, and it should
     // stay silent. Tunable for experiments; do not lower it on this evidence.
-    const double kPolishFraction = std::getenv("TESSERA_POLISH_FRACTION")
-                                       ? std::atof(std::getenv("TESSERA_POLISH_FRACTION"))
+    const double kPolishFraction = std::getenv("TESSERACT_POLISH_FRACTION")
+                                       ? std::atof(std::getenv("TESSERACT_POLISH_FRACTION"))
                                        : 0.90;
 
     if (opt_.polish && !seqs.empty()) {

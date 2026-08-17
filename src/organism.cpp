@@ -167,14 +167,14 @@ bool OrganismModel::load(const std::string& path, std::string& error) {
 
     char magic[8];
     if (std::fread(magic, 1, 8, f) != 8) {
-        error = "not a tessera model file: " + path;
+        error = "not a TesserACT model file: " + path;
         return false;
     }
     const bool hasDensity = std::memcmp(magic, kMagic, 8) == 0;
     const bool hasPlasmids = hasDensity || std::memcmp(magic, kMagicV4, 8) == 0;
     const bool hasTracks = hasPlasmids || std::memcmp(magic, kMagicV3, 8) == 0;
     if (!hasTracks && std::memcmp(magic, kMagicV2, 8) != 0) {
-        error = "not a tessera model file (or a model from an older version): " + path;
+        error = "not a TesserACT model file (or a model from an older version): " + path;
         return false;
     }
 

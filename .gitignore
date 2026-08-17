@@ -17,8 +17,8 @@ build_*/
 core
 fastplus.json
 perf.data*
-tessera
-tessera-model
-tessera-test.*/
-tessera_out/
+tesseract-asm
+tesseract-model
+tesseract-test.*/
+tesseract_out/
 tests/tmp/

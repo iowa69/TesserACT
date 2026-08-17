@@ -1,7 +1,7 @@
-// tessera-model: builds a genus prior from closed reference genomes.
+// tesseract-model: builds a genus prior from closed reference genomes.
 //
-//   tessera-model --organism klebsiella --out kleb.tsm ref/*.fasta
-//   tessera-model --organism klebsiella --out kleb.tsm --exclude ERR123
+//   tesseract-model --organism klebsiella --out kleb.tsm ref/*.fasta
+//   tesseract-model --organism klebsiella --out kleb.tsm --exclude ERR123
 //                 --plasmids plasmid_db.fasta ref/*.fasta
 //
 // Inputs are classified by file name: `*_chr.fasta` is chromosome, anything
@@ -169,8 +169,8 @@ void learnReplicons(ts::OrganismModel& model, const std::vector<std::vector<Mark
 
 void usage(std::FILE* to = stderr) {
     std::fprintf(to,
-                 "tessera-model -- build a genus prior from closed genomes\n\n"
-                 "usage: tessera-model --organism NAME --out FILE [options] FASTA...\n\n"
+                 "tesseract-model -- build a genus prior from closed genomes\n\n"
+                 "usage: tesseract-model --organism NAME --out FILE [options] FASTA...\n\n"
                  "  --organism NAME     organism the model describes (e.g. klebsiella)\n"
                  "  --out FILE          model file to write\n"
                  "  --exclude ACC       omit this accession from the panel (repeatable)\n"
@@ -251,7 +251,7 @@ int main(int argc, char** argv) {
         else if (a == "--marker-density") markerDenom = count("--marker-density");
         else if (a == "-h" || a == "--help") { usage(stdout); return 0; }
         else if (a == "-v" || a == "--version") {
-            std::printf("tessera-model %s\n", kVersion);
+            std::printf("tesseract-model %s\n", kVersion);
             return 0;
         }
         else if (!a.empty() && a[0] == '-') {

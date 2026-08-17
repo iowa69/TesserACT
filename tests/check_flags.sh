@@ -3,8 +3,8 @@
 # effect. A flag that is documented but silently ignored is worse than one that
 # is missing, because nothing fails.
 set -uo pipefail
-BIN=${1:-./tessera}
-MODELBIN=${2:-./tessera-model}
+BIN=${1:-./tesseract-asm}
+MODELBIN=${2:-./tesseract-model}
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 pass=0; fail=0
@@ -101,9 +101,9 @@ for n in "BCDEFGHIJ":
 PY
   if "$MODELBIN" --organism test --out "$TMP/test.tsm" --min-support 2 "$TMP"/mdl/*.fasta \
        > "$TMP/model.log" 2>&1 && [ -s "$TMP/test.tsm" ]; then
-    ok "tessera-model builds a model"
+    ok "tesseract-model builds a model"
   else
-    bad "tessera-model" "did not produce a model"
+    bad "tesseract-model" "did not produce a model"
   fi
   if grep -q "excluded" "$TMP/model.log"; then ok "model reports exclusions"; else bad "model exclusions" "not reported"; fi
 
@@ -120,7 +120,7 @@ PY
     bad "--model" "stage did not run"
   fi
 
-  # A model the user named and tessera cannot read is fatal rather than a
+  # A model the user named and TesserACT cannot read is fatal rather than a
   # warning: an assembly built without the model differs from one built with it
   # in exactly the junctions the model exists to settle, so carrying on would
   # return a different result under the same command line.

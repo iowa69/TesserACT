@@ -566,7 +566,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         const double crossed = scoreCandidate(from, alt, interLen) +
                                scoreCandidate(other, terminal, interLen);
         static const double dom = [] {
-            const char* e = std::getenv("TESSERA_MATCH_DOMINANCE");
+            const char* e = std::getenv("TESSERACT_MATCH_DOMINANCE");
             return e ? std::atof(e) : kMatchDominance;
         }();
         return matched >= 1.0 && matched >= dom * crossed;
@@ -816,7 +816,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         if (joins == 0) break;
     }
 
-    if (getenv("TESSERA_DEBUG_RESOLVE")) {
+    if (getenv("TESSERACT_DEBUG_RESOLVE")) {
         std::fprintf(stderr,
                      "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
                      "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld matched=%lld  "
@@ -923,7 +923,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         // the units that matter, with a floor of 3 so a shallow library still
         // needs corroboration.
         static const double scafOverride = [] {
-            const char* e = std::getenv("TESSERA_SCAF_SUPPORT");
+            const char* e = std::getenv("TESSERACT_SCAF_SUPPORT");
             return e ? std::atof(e) : 0.0;
         }();
         const double minScaffoldSupport =
@@ -977,7 +977,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // unchanged at 1.000, because the sequence it adds is sequence every
     // candidate continuation agreed on. Set to 0 to disable.
     static const double kPrefixBudget = [] {
-        const char* e = std::getenv("TESSERA_COMMON_PREFIX");
+        const char* e = std::getenv("TESSERACT_COMMON_PREFIX");
         return e ? std::atof(e) : 3000.0;
     }();
     auto extendByCommonPrefix = [&](uint64_t tail, std::string& seq,

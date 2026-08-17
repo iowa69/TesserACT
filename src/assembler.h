@@ -24,7 +24,7 @@ bool parseRunMode(const std::string& s, RunMode& out);
 
 struct AssemblyOptions {
     std::vector<Library> libraries;
-    std::string outDir = "tessera_out";
+    std::string outDir = "tesseract_out";
     std::vector<int> kValues;        // empty means "choose from mode and read length"
     int threads = 0;                 // 0 = hardware concurrency
     uint32_t forcedCutoff = 0;       // 0 = auto

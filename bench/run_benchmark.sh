@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assemble the benchmark panel with tessera and SPAdes, then score both with
+# Assemble the benchmark panel with TesserACT and SPAdes, then score both with
 # QUAST against the reference.
 #
 # Requires: spades.py and quast.py on PATH (or set SPADES=/QUAST= to point at
@@ -10,7 +10,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-TESSERA="${TESSERA:-$HERE/../tessera}"
+TESSERA="${TESSERA:-$HERE/../tesseract-asm}"
 SPADES="${SPADES:-spades.py}"
 QUAST="${QUAST:-quast.py}"
 THREADS="${THREADS:-16}"
@@ -21,7 +21,7 @@ RESULTS="$HERE/results"
 WORK="$HERE/work"
 mkdir -p "$RESULTS" "$WORK"
 
-[[ -x "$TESSERA" ]] || { echo "error: tessera binary not found at $TESSERA (run make first)" >&2; exit 1; }
+[[ -x "$TESSERA" ]] || { echo "error: TesserACT binary not found at $TESSERA (run make first)" >&2; exit 1; }
 
 for g in "${@:-ecoli saureus kpneu lmono}"; do
   R1="$READS/${g}_1.fq.gz"
@@ -32,13 +32,13 @@ for g in "${@:-ecoli saureus kpneu lmono}"; do
   zcat "$REFS/${g}.fna.gz" > "$REF"
   echo "=================== $g ==================="
 
-  if [[ ! -s "$RESULTS/${g}_tessera.fasta" ]]; then
-    echo "[tessera] $g"
-    /usr/bin/time -f "TESSERA_TIME %e s  MEM %M KB" \
+  if [[ ! -s "$RESULTS/${g}_tesseract.fasta" ]]; then
+    echo "[TesserACT] $g"
+    /usr/bin/time -f "TESSERACT_TIME %e s  MEM %M KB" \
       "$TESSERA" -1 "$R1" -2 "$R2" -o "$WORK/ts_$g" -t "$THREADS" -q \
-      > "$RESULTS/${g}_tessera.log" 2>&1
-    tail -1 "$RESULTS/${g}_tessera.log"
-    cp "$WORK/ts_$g/contigs.fasta" "$RESULTS/${g}_tessera.fasta" 2>/dev/null
+      > "$RESULTS/${g}_tesseract.log" 2>&1
+    tail -1 "$RESULTS/${g}_tesseract.log"
+    cp "$WORK/ts_$g/contigs.fasta" "$RESULTS/${g}_tesseract.fasta" 2>/dev/null
     rm -rf "$WORK/ts_$g"
   fi
 
@@ -54,8 +54,8 @@ for g in "${@:-ecoli saureus kpneu lmono}"; do
   fi
 
   echo "[quast] $g"
-  ASSEMBLIES=("$RESULTS/${g}_tessera.fasta")
-  LABELS="tessera"
+  ASSEMBLIES=("$RESULTS/${g}_tesseract.fasta")
+  LABELS="TesserACT"
   for extra in spades spades_scaf; do
     if [[ -s "$RESULTS/${g}_${extra}.fasta" ]]; then
       ASSEMBLIES+=("$RESULTS/${g}_${extra}.fasta")

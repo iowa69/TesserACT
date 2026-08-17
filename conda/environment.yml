@@ -1,9 +1,9 @@
-# Everything needed to run tessera and to reproduce the benchmark around it.
+# Everything needed to run TesserACT and to reproduce the benchmark around it.
 #
 #   conda env create -f conda/environment.yml
 #   conda activate tesseract
 #
-# tessera itself needs only a C++17 compiler and zlib; the rest of this file is
+# TesserACT itself needs only a C++17 compiler and zlib; the rest of this file is
 # the evaluation stack -- the tools that build a model, score an assembly
 # against a closed genome, and draw the graph.
 name: tesseract

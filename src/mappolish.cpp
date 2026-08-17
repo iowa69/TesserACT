@@ -107,11 +107,11 @@ MapPolishStats mapPolish(std::vector<std::string>& contigs, const MapPolishOptio
     // belongs to whichever copy is commonest rather than to the locus being
     // polished. Only near-unanimity distinguishes a real error from a copy that
     // outvoted its neighbour. Tunable for experiments.
-    const double minFraction = std::getenv("TESSERA_MAPPOLISH_FRACTION")
-                                   ? std::atof(std::getenv("TESSERA_MAPPOLISH_FRACTION"))
+    const double minFraction = std::getenv("TESSERACT_MAPPOLISH_FRACTION")
+                                   ? std::atof(std::getenv("TESSERACT_MAPPOLISH_FRACTION"))
                                    : opt.minFraction;
-    const int minDepth = std::getenv("TESSERA_MAPPOLISH_DEPTH")
-                             ? std::atoi(std::getenv("TESSERA_MAPPOLISH_DEPTH"))
+    const int minDepth = std::getenv("TESSERACT_MAPPOLISH_DEPTH")
+                             ? std::atoi(std::getenv("TESSERACT_MAPPOLISH_DEPTH"))
                              : opt.minDepth;
     // bowtie2 takes its mates as a comma-separated list, so a comma inside a
     // read path cannot be told from a separator no matter how it is quoted.

@@ -58,7 +58,7 @@ make -j                     # needs zlib headers; on conda, CPATH=$CONDA_PREFIX/
 make test                   # 21 end-to-end checks on synthetic genomes
 ```
 
-Produces `./tessera`.
+Produces `./tesseract-asm`.
 
 ## Quick start
 
@@ -66,8 +66,8 @@ For *Klebsiella*, one command does everything -- it builds the assembler if need
 and checks the model, and assembles every read pair it is given:
 
 ```sh
-./run-klebsiella.sh reads/            # a directory of pairs
-./run-klebsiella.sh sample_R1.fq.gz   # the mate is found automatically
+./tesseract-klebsiella reads/            # a directory of pairs
+./tesseract-klebsiella sample_R1.fq.gz   # the mate is found automatically
 ```
 
 Interrupt it and run it again; it picks up where it stopped. Everything below is the general
@@ -75,22 +75,22 @@ interface.
 
 ```sh
 # Paired-end isolate, all cores
-tessera -1 reads_R1.fq.gz -2 reads_R2.fq.gz -o out/
+tesseract-asm -1 reads_R1.fq.gz -2 reads_R2.fq.gz -o out/
 
 # Interleaved, 8 threads
-tessera --12 reads.fq.gz -o out/ -t 8
+tesseract-asm --12 reads.fq.gz -o out/ -t 8
 
 # Maximum contiguity, accepting more misassembly risk
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode aggressive
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode aggressive
 
 # Maximum caution: more simplification passes, stricter joins
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode careful
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode careful
 
 # With a genus model, for junctions no fragment spans
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella --model kleb.tsm
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella --model kleb.tsm
 
 # Hand it a QC report from scepter (see below)
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
 ```
 
 Outputs `contigs.fasta`, `assembly_graph.gfa`, and `report.html` / `report.json` —
@@ -135,7 +135,7 @@ Run it first and hand the report to the assembler:
 
 ```sh
 scepter -i R1.fq.gz -I R2.fq.gz --qc-only --preset wgs-bacteria -j sample.json
-tessera -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
 ```
 
 The report carries read depth, an estimated genome size, a substitution rate measured by
@@ -147,7 +147,7 @@ truth at Spearman 0.95.
 What that currently buys you: the run reports what the library actually is, and the
 assembler will refuse a QC file that does not match its reads. The decisions those numbers
 could drive are implemented but **off by default**, because none of them has yet beaten
-what the assembler already infers from its own graph. They are exposed as `TESSERA_QC_*`
+what the assembler already infers from its own graph. They are exposed as `TESSERACT_QC_*`
 environment variables for anyone who wants to experiment. Accurate measurement in search
 of a use is worth shipping as exactly that, and not as a feature.
 
@@ -163,7 +163,7 @@ Pre-built *Klebsiella* models are attached to the
 the model builder alongside the assembler:
 
 ```sh
-tessera-model --organism klebsiella --out kleb.tsm --layout-tracks \
+tesseract-model --organism klebsiella --out kleb.tsm --layout-tracks \
               --plasmids plasmid_panel.fna --exclude-plasmids withheld.txt \
               --marker-density 64 \
               closed/*.fasta
@@ -293,7 +293,7 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
 | `--min-contig N` | shortest contig to report (default 2k) |
 | `--max-memory GB` | counting-table budget (default 80 % of RAM) |
 
-`tessera --help` lists the rest, including the repeat-resolution and polishing knobs.
+`tesseract-asm --help` lists the rest, including the repeat-resolution and polishing knobs.
 
 ---
 

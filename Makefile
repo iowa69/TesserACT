@@ -1,7 +1,7 @@
-# tessera - de novo short-read assembler
+# TesserACT - de novo short-read assembler
 
-BIN       := tessera
-MODELBIN  := tessera-model
+BIN       := tesseract-asm
+MODELBIN  := tesseract-model
 SRCDIR    := src
 BUILDDIR  := build
 PREFIX    ?= /usr/local

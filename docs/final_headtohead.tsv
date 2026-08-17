@@ -1,6 +1,6 @@
 # TesserACT head-to-head, contig level (QUAST -s, the _broken column).
 # 40 Klebsiella pneumoniae isolates with closed reference genomes.
-# Columns: vanilla tessera / tessera with a per-isolate genus model / SPAdes 4.2.0.
+# Columns: vanilla TesserACT / TesserACT with a per-isolate genus model / SPAdes 4.2.0.
 # The model panel is the 400 mash-nearest closed genomes of the isolate's own
 # draft, from a corpus separate from the isolates scored here.
 isolate	NGA50_vanilla	NGA50_model	NGA50_spades	misasm_vanilla	misasm_model	misasm_spades	mm_vanilla	mm_model	mm_spades	GF_vanilla	GF_model	GF_spades

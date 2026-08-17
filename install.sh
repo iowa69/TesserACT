@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Install tessera.
+# Install TesserACT.
 #
 #   ./install.sh                 build and install into the active conda env,
 #                                or into ~/.local/bin if conda is not active
@@ -8,7 +8,7 @@
 #                                create (or reuse) that conda environment from
 #                                conda/environment.yml, then install into it
 #
-# tessera needs only a C++17 compiler, zlib and pthreads. The conda environment
+# TesserACT needs only a C++17 compiler, zlib and pthreads. The conda environment
 # is for the tools around it -- mash to choose a model panel, QUAST to score
 # against a reference, Bandage to look at the graph.
 set -euo pipefail
@@ -67,15 +67,15 @@ make -C "$here" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" CXX="$cxx
 
 # ---- install ---------------------------------------------------------------
 mkdir -p "$prefix/bin"
-install -m 0755 "$here/tessera" "$prefix/bin/tessera"
-install -m 0755 "$here/tessera-model" "$prefix/bin/tessera-model"
-say "installed tessera and tessera-model into $prefix/bin"
+install -m 0755 "$here/tesseract-asm" "$prefix/bin/tesseract-asm"
+install -m 0755 "$here/tesseract-model" "$prefix/bin/tesseract-model"
+say "installed TesserACT and tesseract-model into $prefix/bin"
 
 # ---- verify ----------------------------------------------------------------
-if ! "$prefix/bin/tessera" --version >/dev/null 2>&1; then
+if ! "$prefix/bin/tesseract-asm" --version >/dev/null 2>&1; then
     die "the installed binary does not run"
 fi
-say "$("$prefix/bin/tessera" --version)"
+say "$("$prefix/bin/tesseract-asm" --version)"
 
 case ":$PATH:" in
     *":$prefix/bin:"*) ;;
@@ -85,13 +85,13 @@ esac
 cat <<EOF
 
 Next:
-  tessera -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
+  tesseract-asm -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
 
 For Klebsiella there is nothing to set up -- this fetches the model and runs everything:
-  ./run-klebsiella.sh reads/          every read pair in the directory
-  ./run-klebsiella.sh R1.fq.gz        the mate is found automatically
+  ./tesseract-klebsiella reads/          every read pair in the directory
+  ./tesseract-klebsiella R1.fq.gz        the mate is found automatically
 
 To build a model of your own instead:
-  tessera-model --organism klebsiella --out kleb.tsm references/*.fasta
-  tessera --organism klebsiella --model kleb.tsm -1 R1.fq.gz -2 R2.fq.gz -o out
+  tesseract-model --organism klebsiella --out kleb.tsm references/*.fasta
+  tesseract-asm --organism klebsiella --model kleb.tsm -1 R1.fq.gz -2 R2.fq.gz -o out
 EOF

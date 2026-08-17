@@ -46,7 +46,7 @@ say what happens when it moves, ideally with the number that was measured.
 An assembly that comes out wrong is much easier to diagnose with:
 
 - the exact command line,
-- the tessera version (`tessera --version`),
+- the TesserACT version (`tesseract-asm --version`),
 - `report.json` from the output directory,
 - read length, approximate coverage, and expected genome size.
 

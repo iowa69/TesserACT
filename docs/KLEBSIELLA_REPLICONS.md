@@ -1,6 +1,6 @@
 # Replicon calls on *Klebsiella pneumoniae*
 
-> **Scope.** tessera **with** a genus model carrying chromosome layout tracks and an
+> **Scope.** TesserACT **with** a genus model carrying chromosome layout tracks and an
 > Enterobacterales plasmid panel. This page measures what the model adds beyond contiguity:
 > which molecule each contig belongs to, which contigs belong together, and which contigs are
 > whole replicons. For the model-free head-to-head against SPAdes see
@@ -174,4 +174,4 @@ total group length, so `_plas_1` is the largest molecule in that isolate.
   plasmid in the model maps to one, and contigs start naming the same cluster where before
   every argmax was unique. Across 40 isolates it moves one contig. Clustering changes *which*
   panel entry a contig names, not *whether* it can name one. The pass ships behind
-  `TESSERA_HUB_GROUP`, off.
+  `TESSERACT_HUB_GROUP`, off.

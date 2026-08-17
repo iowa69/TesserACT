@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# tessera end-to-end test suite.
+# TesserACT end-to-end test suite.
 #
 # Everything is generated from scratch in a temporary directory: synthetic
 # genomes and reads come from the embedded python helper, so the suite has no
@@ -12,10 +12,10 @@
 set -u
 
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
-TESSERA=$ROOT/tessera
+TESSERACT=$ROOT/tesseract-asm
 
-if [ ! -x "$TESSERA" ]; then
-    echo "error: $TESSERA not built -- run 'make' first" >&2
+if [ ! -x "$TESSERACT" ]; then
+    echo "error: $TESSERACT not built -- run 'make' first" >&2
     exit 1
 fi
 if ! command -v python3 >/dev/null 2>&1; then
@@ -23,11 +23,11 @@ if ! command -v python3 >/dev/null 2>&1; then
     exit 1
 fi
 
-TMP=$(mktemp -d "${TMPDIR:-/tmp}/tessera-test.XXXXXXXX")
+TMP=$(mktemp -d "${TMPDIR:-/tmp}/tesseract-test.XXXXXXXX")
 trap 'rm -rf "$TMP"' EXIT INT TERM
 
 GEN="$TMP/gen.py"
-LOG="$TMP/tessera.log"
+LOG="$TMP/tesseract.log"
 
 PASSED=0
 FAILED=0
@@ -43,12 +43,12 @@ check() {
 TIMEOUT=""
 if command -v timeout >/dev/null 2>&1; then TIMEOUT="timeout 180"; fi
 
-# asm OUTDIR [tessera args...] -- always quiet, stdout+stderr captured in $LOG
+# asm OUTDIR [TesserACT args...] -- always quiet, stdout+stderr captured in $LOG
 asm() {
     local out=$1
     shift
     rm -rf "$out"
-    $TIMEOUT "$TESSERA" "$@" -o "$out" -q >"$LOG" 2>&1
+    $TIMEOUT "$TESSERACT" "$@" -o "$out" -q >"$LOG" 2>&1
 }
 
 # absdiff A B
@@ -56,7 +56,7 @@ absdiff() { if [ "$1" -ge "$2" ]; then echo $(( $1 - $2 )); else echo $(( $2 - $
 
 cat > "$GEN" <<'PYEOF'
 #!/usr/bin/env python3
-"""Fixture generator and assembly checker for the tessera test suite.
+"""Fixture generator and assembly checker for the TesserACT test suite.
 
 Subcommands print a one-line summary and exit non-zero when a check fails.
 """
@@ -373,8 +373,8 @@ PYEOF
 
 gen() { python3 "$GEN" "$@"; }
 
-echo "tessera test suite"
-echo "  binary   $TESSERA"
+echo "TesserACT test suite"
+echo "  binary   $TESSERACT"
 echo "  workdir  $TMP"
 echo
 
@@ -388,7 +388,7 @@ if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
     detail=$(gen exact "$D/out/contigs.fasta" "$D/g.fa"); rc=$?
     check "trivial 20kb reconstruction" $rc "$detail"
 else
-    fail "trivial 20kb reconstruction" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "trivial 20kb reconstruction" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -401,7 +401,7 @@ if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
     detail=$(gen exact "$D/out/contigs.fasta" "$D/g.fa"); rc=$?
     check "two chromosomes -> two contigs" $rc "$detail"
 else
-    fail "two chromosomes -> two contigs" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "two chromosomes -> two contigs" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -416,7 +416,7 @@ if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
     [ "$n" -eq 1 ] || rc=1
     check "1% substitution errors" $rc "contigs=$n $detail"
 else
-    fail "1% substitution errors" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "1% substitution errors" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -436,7 +436,7 @@ if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
     check "spanned repeat resolved to one contig" $rc \
           "contigs=$n length=$total expected=$EXPECT delta=$delta"
 else
-    fail "spanned repeat resolved to one contig" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "spanned repeat resolved to one contig" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
     [ "$largest" -lt $((GLEN * 8 / 10)) ] || rc=1
     check "unspanned repeat left unjoined" $rc "$sub $km total=$total largest=$largest"
 else
-    fail "unspanned repeat left unjoined" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "unspanned repeat left unjoined" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -483,7 +483,7 @@ if asm "$D/single" -s "$D/s_s.fq.gz" -t 4; then
     gen substr "$D/single/contigs.fasta" "$D/g.fa" >/dev/null || rc=1
     check "single-end input (-s)" $rc "contigs=$n total=$total"
 else
-    fail "single-end input (-s)" "tessera exited $? ($(tail -1 "$LOG"))"
+    fail "single-end input (-s)" "TesserACT exited $? ($(tail -1 "$LOG"))"
 fi
 
 # 7. interleaved
@@ -491,7 +491,7 @@ if [ $paired_rc -eq 0 ] && asm "$D/inter" --12 "$D/i_12.fq.gz" -t 4; then
     detail=$(gen sameset "$D/paired/contigs.fasta" "$D/inter/contigs.fasta"); rc=$?
     check "interleaved (--12) matches two-file run" $rc "$detail"
 else
-    fail "interleaved (--12) matches two-file run" "tessera exited non-zero ($(tail -1 "$LOG"))"
+    fail "interleaved (--12) matches two-file run" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
 fi
 
 # 8. FASTA input
@@ -499,7 +499,7 @@ if [ $paired_rc -eq 0 ] && asm "$D/fasta" -1 "$D/a_1.fa" -2 "$D/a_2.fa" -t 4; th
     detail=$(gen sameset "$D/paired/contigs.fasta" "$D/fasta/contigs.fasta"); rc=$?
     check "FASTA input accepted" $rc "$detail"
 else
-    fail "FASTA input accepted" "tessera exited non-zero ($(tail -1 "$LOG"))"
+    fail "FASTA input accepted" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
 fi
 
 # 9. gzipped vs plain
@@ -510,7 +510,7 @@ if [ $paired_rc -eq 0 ] && asm "$D/plain" -1 "$D/p_1.fq" -2 "$D/p_2.fq" -t 4; th
         fail "gzipped and plain input identical" "outputs differ"
     fi
 else
-    fail "gzipped and plain input identical" "tessera exited non-zero ($(tail -1 "$LOG"))"
+    fail "gzipped and plain input identical" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -518,7 +518,7 @@ fi
 # ---------------------------------------------------------------------------
 kbad() { # kbad LABEL KSPEC
     local err out
-    err=$($TIMEOUT "$TESSERA" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" \
+    err=$($TIMEOUT "$TESSERACT" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" \
           -o "$TMP/t10" -k "$2" 2>&1 >/dev/null)
     local status=$?
     if [ $status -ne 0 ] && [ -n "$err" ]; then
@@ -538,13 +538,13 @@ if asm "$TMP/t10ok" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" -k 95 -t 4; th
     check "largest legal k (-k 95) accepted" $([ "$n" -ge 1 ] && echo 0 || echo 1) \
           "contigs=$n total=$total"
 else
-    fail "largest legal k (-k 95) accepted" "tessera exited non-zero ($(tail -1 "$LOG"))"
+    fail "largest legal k (-k 95) accepted" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
 # 11. Missing input file
 # ---------------------------------------------------------------------------
-err=$($TIMEOUT "$TESSERA" -1 "$TMP/does-not-exist.fq.gz" -o "$TMP/t11" 2>&1 >/dev/null)
+err=$($TIMEOUT "$TESSERACT" -1 "$TMP/does-not-exist.fq.gz" -o "$TMP/t11" 2>&1 >/dev/null)
 status=$?
 if [ $status -ne 0 ] && printf '%s' "$err" | grep -qi "not found"; then
     pass "missing input file reported" "exit=$status \"$err\""
@@ -622,7 +622,7 @@ check "contigs.fasta header format and order" $rc "$detail"
 # model records its own density from version 5 on; this checks that the flag reaches the
 # build, that the denser model really is denser, and that both files load.
 # ---------------------------------------------------------------------------
-MODELBIN=$ROOT/tessera-model
+MODELBIN=$ROOT/tesseract-model
 if [ -x "$MODELBIN" ]; then
     gen genome "$TMP/m.fa" 15 40000 >/dev/null
     m512=$($TIMEOUT "$MODELBIN" --organism testus --out "$TMP/m512.tsm" "$TMP/m.fa" 2>&1 |
@@ -635,9 +635,9 @@ if [ -x "$MODELBIN" ]; then
         # density in the file rather than compiling it in.
         gen reads "$TMP/m.fa" "$TMP/mr" 50 150 350 30 0 1015 paired fastq gz >/dev/null
         ok512=0; ok64=0
-        $TIMEOUT "$TESSERA" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_512" \
+        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_512" \
             --organism testus --model "$TMP/m512.tsm" >/dev/null 2>&1 && ok512=1
-        $TIMEOUT "$TESSERA" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_64" \
+        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_64" \
             --organism testus --model "$TMP/m64.tsm" >/dev/null 2>&1 && ok64=1
         if [ "$ok512" -eq 1 ] && [ "$ok64" -eq 1 ]; then
             pass "model marker density round-trips" \
@@ -651,14 +651,14 @@ if [ -x "$MODELBIN" ]; then
              "markers 1/512=${m512:-none} 1/64=${m64:-none} (denser must yield more)"
     fi
 else
-    pass "model marker density round-trips" "skipped: no tessera-model built"
+    pass "model marker density round-trips" "skipped: no tesseract-model built"
 fi
 
 # ---------------------------------------------------------------------------
 # 16. Empty and tiny input
 # ---------------------------------------------------------------------------
 : > "$TMP/empty.fq"
-err=$($TIMEOUT "$TESSERA" -1 "$TMP/empty.fq" -o "$TMP/t16a" 2>&1 >/dev/null)
+err=$($TIMEOUT "$TESSERACT" -1 "$TMP/empty.fq" -o "$TMP/t16a" 2>&1 >/dev/null)
 status=$?
 if [ $status -ne 0 ] && [ $status -ne 124 ] && [ -n "$err" ]; then
     pass "empty input rejected cleanly" "exit=$status \"$(printf '%s' "$err" | tail -1)\""
@@ -667,7 +667,7 @@ else
 fi
 
 gen tiny "$TMP/tiny.fq" >/dev/null
-err=$($TIMEOUT "$TESSERA" -s "$TMP/tiny.fq" -o "$TMP/t16b" 2>&1 >/dev/null)
+err=$($TIMEOUT "$TESSERACT" -s "$TMP/tiny.fq" -o "$TMP/t16b" 2>&1 >/dev/null)
 status=$?
 if [ $status -ne 0 ] && [ $status -ne 124 ] && [ -n "$err" ]; then
     pass "tiny input rejected cleanly" "exit=$status \"$(printf '%s' "$err" | tail -1)\""

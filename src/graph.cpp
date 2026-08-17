@@ -152,7 +152,7 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
     // threads leaves the walk itself sequential, so unitigs come out in exactly
     // the same order and the assembly stays byte-identical.
     util::Timer phaseTimer;
-    const bool phaseDebug = std::getenv("TESSERA_GRAPH_PHASES") != nullptr;
+    const bool phaseDebug = std::getenv("TESSERACT_GRAPH_PHASES") != nullptr;
     const double tKeys = phaseTimer.elapsed();
 
     std::vector<uint8_t> startFlag(keys.size() * 2, 0);
@@ -965,7 +965,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // bound -- not the coverage ratio -- is what dominates: on ERR11578724 the ratio
         // change alone gave 24,171 while ratio+length gave 353,308 against a legacy
         // 8,989, a 39x gain, with genome fraction RISING 95.48 -> 95.78.
-        const char* e = std::getenv("TESSERA_TIP_LEN_MULT");
+        const char* e = std::getenv("TESSERACT_TIP_LEN_MULT");
         return e ? std::atof(e) : 3.5;
     }();
     static const double kTipRatio = [] {
@@ -973,7 +973,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // gain (353,308 vs 173,770), so copying their constant would have left half the
         // improvement behind. Different strains prefer different values, which is the
         // argument for measuring rather than adopting.
-        const char* e = std::getenv("TESSERA_TIP_RATIO");
+        const char* e = std::getenv("TESSERACT_TIP_RATIO");
         return e ? std::atof(e) : 1.0;
     }();
     size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
@@ -1001,7 +1001,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
         st.merged += compact();
         static const double chimeraFactor = [] {
-            const char* e = std::getenv("TESSERA_CHIMERA_FACTOR");
+            const char* e = std::getenv("TESSERACT_CHIMERA_FACTOR");
             return e ? std::atof(e) : 0.12;
         }();
         // Cutting long low-coverage connectors risks severing real sequence,
@@ -1019,7 +1019,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // So give it a floor just above the abundance cutoff. Below that the call is a
         // no-op dressed up as a simplification step.
         static const double chimeraFloor = [] {
-            const char* e = std::getenv("TESSERA_CHIMERA_FLOOR");
+            const char* e = std::getenv("TESSERACT_CHIMERA_FLOOR");
             return e ? std::atof(e) : 3.0;
         }();
         const double chimeraCut = std::max(meanCoverage * chimeraFactor * ramp,
@@ -1036,7 +1036,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // real outdeg/indeg gate the operation can only remove edges whose junctions both
         // survive, which is what makes the longer reach safe.
         static const double kEcLenMult = [] {
-            const char* e = std::getenv("TESSERA_EC_LEN_MULT");
+            const char* e = std::getenv("TESSERACT_EC_LEN_MULT");
             return e ? std::atof(e) : 5.0;
         }();
         const double ecK = std::min<double>(k_, readLength / 2.0);
@@ -1054,9 +1054,9 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // matching SPAdes. Misassemblies go 13 -> 16, still well under SPAdes'
         // 26, and mismatches 0.14 -> 0.21 against its 0.44 -- the extra
         // sequence recovered is repeat-adjacent and carries more of them.
-        // Set TESSERA_LOCAL_WEAK=0 to turn it off.
+        // Set TESSERACT_LOCAL_WEAK=0 to turn it off.
         static const double localWeak = [] {
-            const char* e = std::getenv("TESSERA_LOCAL_WEAK");
+            const char* e = std::getenv("TESSERACT_LOCAL_WEAK");
             return e ? std::atof(e) : 0.10;
         }();
         if (localWeak > 0) {
@@ -1074,7 +1074,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // rule can supply, because there was no edge to decide between. Default it on at
         // a conservative overlap; set 0 to restore the old behaviour.
         static const size_t joinOverlap = [] {
-            const char* e = std::getenv("TESSERA_JOIN_DEADENDS");
+            const char* e = std::getenv("TESSERACT_JOIN_DEADENDS");
             return e ? static_cast<size_t>(std::atoi(e)) : 31u;
         }();
         if (joinOverlap > 0) {

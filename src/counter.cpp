@@ -321,8 +321,8 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
     // -- but on a real bacterial genome the counts between them are not empty,
     // they hold the genuinely low-coverage sequence: AT-rich prophages and
     // genomic islands, low-copy plasmids, the k-mers either side of a repeat.
-    // Diffing tessera against SPAdes on the closed-reference panel, every large
-    // region SPAdes recovered and tessera did not was AT-rich (GC 29-42%
+    // Diffing TesserACT against SPAdes on the closed-reference panel, every large
+    // region SPAdes recovered and TesserACT did not was AT-rich (GC 29-42%
     // against a 57% genome), and the whole difference was this threshold.
     //
     // Measured on one such isolate, cutting at the valley (5) against a flat 2:

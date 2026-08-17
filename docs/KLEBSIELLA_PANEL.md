@@ -1,6 +1,6 @@
 # The *Klebsiella pneumoniae* panel
 
-> **Scope.** Vanilla tessera, **no organism model**, against vanilla SPAdes.
+> **Scope.** Vanilla TesserACT, **no organism model**, against vanilla SPAdes.
 > This page is about what the model-free assembler does and which measurement
 > sets each default. The model-guided head-to-head the README quotes is a
 > different configuration on the same panel.
@@ -11,9 +11,9 @@ accessions. That is what makes it possible to measure completeness and accuracy
 rather than infer them from contiguity alone.
 
 Both assemblers get the same `fastplus`-trimmed reads, and **every number is
-contig level**: QUAST runs with `-s`, so tessera's scaffolds are split at their
+contig level**: QUAST runs with `-s`, so TesserACT's scaffolds are split at their
 N runs before scoring and neither tool is credited for a gap it did not close.
-Comparing tessera's scaffolds against SPAdes' contigs flatters tessera and is
+Comparing TesserACT's scaffolds against SPAdes' contigs flatters TesserACT and is
 not done here.
 
 The per-isolate table behind the README's head-to-head is
@@ -36,7 +36,7 @@ consequences run through everything below:
 Roughly 86% of pairs will merge into a single ~238 bp read. Merging was tried
 and is **not** used: it halves k-mer depth by removing the overlap's
 double-counting, which starves the top of the ladder — on one isolate it cost
-73% of contig NGA50. tessera does accept merged output
+73% of contig NGA50. TesserACT does accept merged output
 (`-1 unmerged_1 -2 unmerged_2 -s merged`) for anyone who wants it.
 
 ## The defaults this panel sets, in descending order of what they are worth
@@ -199,7 +199,7 @@ throughout. Batch 3 played no part in choosing any parameter.
 the position and it is stable: the ratio measured on isolates used for tuning
 and on isolates that were not is the same to within a percentage point.
 
-Against that, tessera makes **less than half the structural errors** -- 12
+Against that, TesserACT makes **less than half the structural errors** -- 12
 against 26 across the forty -- and wins per-base accuracy on most isolates,
 while running four to five times faster.
 
@@ -215,7 +215,7 @@ how much of the evidence it accounts for, which is the question that survives
 when there is no closed reference. Both assemblers explain essentially all of
 it, so neither is discarding data:
 
-| isolate | tessera | SPAdes |
+| isolate | TesserACT | SPAdes |
 |---|---|---|
 | ERR11578909 | 99.89% | 99.95% |
 | ERR11578837 | 99.87% | 99.94% |
@@ -224,7 +224,7 @@ it, so neither is discarding data:
 
 ## Runtime
 
-Graph construction was profiled with `TESSERA_GRAPH_PHASES=1`. The unitig walk
+Graph construction was profiled with `TESSERACT_GRAPH_PHASES=1`. The unitig walk
 was 78–84% of it, against 13–16% for the start classification. The walk
 parallelises exactly — the walks are disjoint by construction — taking graph
 build from 8.5 s to 3.4 s per k-rung with byte-identical output.
@@ -270,7 +270,7 @@ measured against the closed reference on the isolate furthest behind
 
 | tested | result |
 |---|---|
-| SPAdes' read correction | tessera on their BayesHammer reads: 461,007 |
+| SPAdes' read correction | TesserACT on their BayesHammer reads: 461,007 |
 | k ceiling | k<=95: 268,882 against k=127's 472,260 |
 | bubble popping | disabled entirely: NGA50 identical |
 | chimera removal | 0.12 / 0.30 / 0.50: all 472,260 |
@@ -380,7 +380,7 @@ the assembly, and the largest pieces are eight stretches of 3.5-4.0 kb at ~52%
 GC and 1.3-2.4x typical depth: the rRNA operons. They are not absent from the
 assembly. They are shattered:
 
-| | tessera | SPAdes |
+| | TesserACT | SPAdes |
 |---|---|---|
 | operon at chr 4,151,374-4,155,420 | five contigs, 365-428 bp, cov 212-280x | one contig, 2,801 bp, cov 211x |
 
@@ -402,7 +402,7 @@ evidence on this library by any decision rule.**
 SPAdes crosses them anyway, on coverage multiplicity rather than evidence, and
 the price is visible in the same reports: on ERR11578413, contig level,
 
-| | tessera | SPAdes |
+| | TesserACT | SPAdes |
 |---|---|---|
 | NGA50 | 234,964 | 320,313 |
 | genome fraction | 98.95 | 99.14 |

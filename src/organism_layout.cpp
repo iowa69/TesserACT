@@ -222,9 +222,9 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
         //
         // ON by default: a wrong sequence is worse than a missing one for anything that
         // gets reported clinically, and the residual is meant to be a work list rather
-        // than a guess. TESSERA_PLASMID_COMPLETE=1 takes the other side.
+        // than a guess. TESSERACT_PLASMID_COMPLETE=1 takes the other side.
         const bool keepPlasmidsOff = [] {
-            const char* e = std::getenv("TESSERA_PLASMID_COMPLETE");
+            const char* e = std::getenv("TESSERACT_PLASMID_COMPLETE");
             return !(e && *e && *e != '0');
         }();
         if (keepPlasmidsOff) {
@@ -309,7 +309,7 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
               [](const Placement& a, const Placement& b) { return a.start < b.start; });
     st.placed = chosen.size();
 
-    if (std::getenv("TESSERA_DEBUG_LAYOUT")) {
+    if (std::getenv("TESSERACT_DEBUG_LAYOUT")) {
         for (size_t i = 0; i < chosen.size(); ++i) {
             const Placement& p = chosen[i];
             std::fprintf(stderr,

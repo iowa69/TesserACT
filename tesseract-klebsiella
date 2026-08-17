@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# run-klebsiella.sh -- assemble Klebsiella reads and say what each contig is, in one command.
+# tesseract-klebsiella -- assemble Klebsiella reads and say what each contig is, in one command.
 #
-#   ./run-klebsiella.sh reads/                     every read pair in the directory
-#   ./run-klebsiella.sh sample_R1.fq.gz            the mate is found automatically
-#   ./run-klebsiella.sh sample_R1.fq.gz sample_R2.fq.gz
+#   tesseract-klebsiella reads/                     every read pair in the directory
+#   tesseract-klebsiella sample_R1.fq.gz            the mate is found automatically
+#   tesseract-klebsiella sample_R1.fq.gz sample_R2.fq.gz
 #
 # Builds the assembler if it is not built, downloads the model if it is not cached, checks
 # what it downloaded, assembles, and leaves one FASTA per isolate with every contig labelled
@@ -16,12 +16,7 @@
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# Installed as `tessera-klebsiella`, run from a checkout as `./run-klebsiella.sh`. The help
-# should name whichever one the user actually typed.
-SELF="$(basename "${BASH_SOURCE[0]}")"
-# From a checkout you type ./run-klebsiella.sh; installed on PATH you just type the command.
-# The help should show whichever is actually true.
-case "$SELF" in run-klebsiella.sh) INVOKE="./$SELF" ;; *) INVOKE="$SELF" ;; esac
+# The file and the installed command are now the same name, so the help needs no rewriting.
 REPO=iowa69/TesserACT
 # The release the MODELS are attached to. Deliberately separate from the assembler's own
 # version: a patch release of the binary does not re-upload a 1.3 GB model, so this pin
@@ -30,14 +25,14 @@ MODEL_RELEASE=v1.2.0
 
 # The models live outside the repository -- they are 339 MB and 2.9 GB. Cached per user so a
 # second project does not download them again.
-CACHE="${TESSERA_MODEL_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tessera}"
+CACHE="${TESSERACT_MODEL_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tessera}"
 
 # Pinned: a download is checked against these before it is used. A truncated model otherwise
 # fails much later with a confusing complaint about the file not being a model.
 SHA_DEFAULT=cf40b986899a50ddf7b888e75762d1764b646e6d264dde13b041b6aadc9a0606
 SHA_PLASMID=308a097f2c39bd5961a00ed1d603419109ad462f747578a503016907215b5880
 
-OUT=tessera-out
+OUT=tesseract-out
 THREADS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 JOBS=1
 MODEL=""
@@ -52,7 +47,7 @@ warn() { printf '%swarn:%s %s\n' "$c_warn" "$c_off" "$*" >&2; }
 die()  { printf '%serror:%s %s\n' "$c_err" "$c_off" "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed -e 's/^# \{0,1\}//' -e "s|\./run-klebsiella\.sh|$INVOKE|g" -e "s|run-klebsiella\.sh|$SELF|g"
+    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
@@ -94,11 +89,11 @@ case "$JOBS"    in ''|*[!0-9]*) die "-j wants a number, got '$JOBS'" ;; esac
 # 1. the assembler
 # ---------------------------------------------------------------------------
 TESSERA=""
-for cand in "$HERE/tessera" "$(command -v tessera 2>/dev/null || true)"; do
+for cand in "$HERE/tesseract-asm" "$(command -v tesseract-asm 2>/dev/null || true)"; do
     [ -n "$cand" ] && [ -x "$cand" ] && { TESSERA=$cand; break; }
 done
 if [ -z "$TESSERA" ]; then
-    say "no tessera binary yet, building it"
+    say "no TesserACT binary yet, building it"
     command -v make >/dev/null || die "make is not installed, so the assembler cannot be built"
     cxx="${CXX:-g++}"
     command -v "$cxx" >/dev/null || die "no C++ compiler found (install g++, or set CXX)"
@@ -112,7 +107,7 @@ int main(){return 0;}' | "$cxx" -x c++ - -o /dev/null -lz 2>/dev/null; then
       conda:          conda install -c conda-forge zlib   (then CPATH=\$CONDA_PREFIX/include)"
     fi
     make -C "$HERE" -j"$THREADS" CXX="$cxx" >/dev/null || die "the build failed; run 'make' in $HERE to see why"
-    TESSERA="$HERE/tessera"
+    TESSERA="$HERE/tesseract-asm"
     [ -x "$TESSERA" ] || die "the build reported success but produced no binary"
 fi
 ok "assembler: $("$TESSERA" --version 2>/dev/null || echo "$TESSERA")"
@@ -205,10 +200,10 @@ sha_of() {
 
 if [ -z "$MODEL" ]; then
     if [ "$WANT" = plasmid ]; then
-        asset="tessera-klebsiella-plasmid-$MODEL_RELEASE.tsm.zst"; want_sha=$SHA_PLASMID
-        MODEL="$CACHE/tessera-klebsiella-plasmid-$MODEL_RELEASE.tsm"
+        asset="tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm.zst"; want_sha=$SHA_PLASMID
+        MODEL="$CACHE/tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm"
     else
-        asset="tessera-klebsiella-default-$MODEL_RELEASE.tsm"; want_sha=$SHA_DEFAULT
+        asset="tesseract-klebsiella-default-$MODEL_RELEASE.tsm"; want_sha=$SHA_DEFAULT
         MODEL="$CACHE/$asset"
     fi
 
@@ -218,7 +213,7 @@ if [ -z "$MODEL" ]; then
         free_mb=$(df -Pm "$CACHE" 2>/dev/null | awk 'NR==2{print $4}')
         if [ -n "$free_mb" ] && [ "$free_mb" -lt "$need_mb" ]; then
             die "not enough space in $CACHE: need about ${need_mb} MB, have ${free_mb} MB.
-      Point TESSERA_MODEL_DIR somewhere roomier and run again."
+      Point TESSERACT_MODEL_DIR somewhere roomier and run again."
         fi
         url="https://github.com/$REPO/releases/download/$MODEL_RELEASE/$asset"
         say "downloading the $WANT model once into $CACHE"

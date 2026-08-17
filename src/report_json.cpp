@@ -92,7 +92,7 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.s += "{\n";
     w.indent = 1;
 
-    w.str("tool", "tessera");
+    w.str("tool", "TesserACT");
     w.str("version", rep.version);
     w.str("author", "Giovanni Lorenzin");
     w.str("organisation", "IOWA-BioTech");

@@ -36,13 +36,13 @@ constexpr const char* kLogo =
 void usage() {
     std::printf("%s\n", kLogo);
     std::printf(
-        "tessera %s - de novo short-read assembler (de Bruijn, multi-k)\n"
+        "TesserACT %s - de novo short-read assembler (de Bruijn, multi-k)\n"
         "  %s  \u00b7  %s\n"
         "\n"
         "USAGE\n"
-        "  tessera -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [options]\n"
-        "  tessera --12 interleaved.fq.gz -o OUTDIR\n"
-        "  tessera -s single.fq.gz -o OUTDIR\n"
+        "  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [options]\n"
+        "  tesseract-asm --12 interleaved.fq.gz -o OUTDIR\n"
+        "  tesseract-asm -s single.fq.gz -o OUTDIR\n"
         "\n"
         "INPUT\n"
         "  -1, --read1 FILE        forward reads (FASTQ/FASTA, optionally gzipped)\n"
@@ -51,13 +51,13 @@ void usage() {
         "  -s, --single FILE       unpaired reads\n"
         "\n"
         "OUTPUT\n"
-        "  -o, --out DIR           output directory (default: tessera_out)\n"
+        "  -o, --out DIR           output directory (default: tesseract_out)\n"
         "      --min-contig N      minimum contig length to report (default: 2*k)\n"
         "\n"
         "ORGANISM MODEL\n"
         "      --organism NAME     organism the reads come from (e.g. klebsiella);\n"
         "                          with --model the two must agree\n"
-        "      --model FILE        genus model built by tessera-model. Used only at\n"
+        "      --model FILE        genus model built by tesseract-model. Used only at\n"
         "                          junctions no fragment can span: the chromosome is\n"
         "                          reconstructed first from conserved gene order, then\n"
         "                          plasmids are refined against the plasmid table.\n"
@@ -73,7 +73,7 @@ void usage() {
         "      --no-layout         do not order and orient the finished contigs against\n"
         "                          the panel chromosome they most resemble. Layout is what\n"
         // Escaped, and it matters: this is a printf format string, so a bare % begins a
-        // conversion. `% o` is not a valid one, and printf stopped there -- `tessera --help`
+        // conversion. `% o` is not a valid one, and printf stopped there -- `tesseract-asm --help`
         // printed four lines and no option list at all. A conda recipe test that greps the
         // help for a flag is what surfaced it.
         "                          closes the chromosome -- on this cohort 95.6%% of\n"
@@ -139,8 +139,8 @@ void usage() {
         "  -h, --help              print this message\n"
         "\n"
         "EXAMPLES\n"
-        "  tessera -1 R1.fq.gz -2 R2.fq.gz -o asm -t 16\n"
-        "  tessera -1 R1.fq.gz -2 R2.fq.gz -o asm -k 21,33,55 --min-contig 500\n",
+        "  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o asm -t 16\n"
+        "  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o asm -k 21,33,55 --min-contig 500\n",
         kVersion, kAuthor, kOrg);
 }
 
@@ -199,9 +199,9 @@ int main(int argc, char** argv) {
         std::string a = argv[i];
         if (a == "-h" || a == "--help") { usage(); return 0; }
         else if (a == "-v" || a == "--version") {
-            // First line stays exactly "tessera <version>" -- scripts, the conda package
+            // First line stays exactly "TesserACT <version>" -- scripts, the conda package
             // test and provenance records all read it. Attribution goes underneath.
-            std::printf("tessera %s\n%s, %s\n", kVersion, kAuthor, kOrg);
+            std::printf("TesserACT %s\n%s, %s\n", kVersion, kAuthor, kOrg);
             return 0;
         }
         else if (a == "-1" || a == "--read1") { lib.r1 = needValue(i, "-1"); haveLib = true; }
@@ -290,7 +290,7 @@ int main(int argc, char** argv) {
         else if (a == "-t" || a == "--threads") opt.threads = static_cast<int>(intInRange(needValue(i, "-t"), "-t/--threads", 1, 4096));
         else if (a == "-q" || a == "--quiet") opt.verbose = false;
         else {
-            std::fprintf(stderr, "error: unknown option '%s'\nRun 'tessera --help' for usage.\n", a.c_str());
+            std::fprintf(stderr, "error: unknown option '%s'\nRun 'tesseract-asm --help' for usage.\n", a.c_str());
             return 1;
         }
     }
