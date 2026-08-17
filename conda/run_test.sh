@@ -41,10 +41,10 @@ echo "assembled $n contig(s), $len bp (expected 1 contig, about 6000 bp)"
 
 # Flag checks, from help captured once. A flag that silently disappears is worse than one
 # that was never there: a pipeline built against it breaks with no explanation.
-tesseract-asm --help > tessera_help.txt
+tesseract-asm --help > tesseract_help.txt
 tesseract-model --help > model_help.txt
 for f in --organism --model --is-panel --map-polish; do
-    grep -q -- "$f" tessera_help.txt || { echo "tesseract-asm --help lost $f" >&2; exit 1; }
+    grep -q -- "$f" tesseract_help.txt || { echo "tesseract-asm --help lost $f" >&2; exit 1; }
 done
 grep -q -- --marker-density model_help.txt || { echo "tesseract-model --help lost --marker-density" >&2; exit 1; }
 echo "help lists every expected flag"

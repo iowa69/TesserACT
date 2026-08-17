@@ -6,7 +6,7 @@ set -euo pipefail
 make -j"${CPU_COUNT:-4}" CXX="${CXX:-g++}"
 
 mkdir -p "${PREFIX}/bin"
-install -m 0755 tesseract-asm "${PREFIX}/bin/tessera"
+install -m 0755 tesseract-asm "${PREFIX}/bin/tesseract-asm"
 install -m 0755 tesseract-model "${PREFIX}/bin/tesseract-model"
 
 # The Klebsiella runner ships too, as `tesseract-klebsiella`. Without it an installed package

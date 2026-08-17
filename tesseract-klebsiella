@@ -25,7 +25,7 @@ MODEL_RELEASE=v1.2.0
 
 # The models live outside the repository -- they are 339 MB and 2.9 GB. Cached per user so a
 # second project does not download them again.
-CACHE="${TESSERACT_MODEL_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tessera}"
+CACHE="${TESSERACT_MODEL_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tesseract}"
 
 # Pinned: a download is checked against these before it is used. A truncated model otherwise
 # fails much later with a confusing complaint about the file not being a model.
