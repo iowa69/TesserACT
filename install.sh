@@ -32,7 +32,16 @@ die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 # ---- create the environment if asked -------------------------------------
 if [ -n "$env_name" ]; then
     command -v conda >/dev/null 2>&1 || die "conda not found on PATH"
-    if conda env list | awk '{print $1}' | grep -qx "$env_name"; then
+    # Captured and matched in the shell rather than piped into `grep -q`. Under
+    # `set -o pipefail` -- which this script sets -- grep -q exits at the first match and
+    # closes the pipe, the producer takes SIGPIPE and exits 141, and the pipeline as a whole
+    # reports failure even though the match succeeded. The `if` would then take the wrong
+    # branch and try to create an environment that already exists, which conda refuses,
+    # which `set -e` turns into a dead install. It needs a long list to fire -- around ten
+    # thousand lines, so not at any plausible number of conda environments -- but the
+    # construct is wrong regardless and costs nothing to remove.
+    existing=$(conda env list | awk '{print $1}')
+    if [[ $'\n'"$existing"$'\n' == *$'\n'"$env_name"$'\n'* ]]; then
         say "reusing conda environment '$env_name'"
     else
         say "creating conda environment '$env_name'"
@@ -69,7 +78,12 @@ make -C "$here" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" CXX="$cxx
 mkdir -p "$prefix/bin"
 install -m 0755 "$here/tesseract-asm" "$prefix/bin/tesseract-asm"
 install -m 0755 "$here/tesseract-model" "$prefix/bin/tesseract-model"
-say "installed TesserACT and tesseract-model into $prefix/bin"
+# The Klebsiella runner as well, matching what the conda package installs. Without it the
+# two install routes disagree: conda users get a command that fetches the model and
+# assembles, while anyone installing from a checkout gets the assembler and is left to find
+# the release page and the flags themselves.
+install -m 0755 "$here/tesseract-klebsiella" "$prefix/bin/tesseract-klebsiella"
+say "installed tesseract-asm, tesseract-model and tesseract-klebsiella into $prefix/bin"
 
 # ---- verify ----------------------------------------------------------------
 if ! "$prefix/bin/tesseract-asm" --version >/dev/null 2>&1; then
