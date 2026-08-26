@@ -64,6 +64,24 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
     out.calls.assign(n, RepliconCall{});
     if (n == 0) return out;
 
+    // covs is indexed by contig below, and layoutMembers is read the same way. Nothing here
+    // can restore the correspondence if it has been lost upstream, and reading past the end
+    // would not crash -- it would feed a garbage depth ratio into the classifier and emit a
+    // contig labelled chromosome or plasmid on the strength of it. That is the failure mode
+    // worth refusing outright: silence, in a field a clinician reads.
+    //
+    // The invariant holds today. Every stage between the graph and here either preserves
+    // contig count and order or rebuilds both vectors together -- layoutByModel appends to
+    // `out` and `outCov` in the same two places, and the short-contig filter builds keptSeqs
+    // and keptCovs in one loop. This checks it rather than trusting that no future change
+    // breaks it, which is exactly how parallel vectors have drifted in this codebase before.
+    if (covs.size() != n) {
+        std::fprintf(stderr,
+                     "error: %zu contigs but %zu coverage values; refusing to classify\n",
+                     n, covs.size());
+        return out;   // every contig unassigned: no call is better than a wrong call
+    }
+
     // ---- modal depth --------------------------------------------------------
     // Length-weighted median rather than the mean: the mean is dragged by a handful of
     // very high-copy small plasmids, and the chromosome is most of the sequence, so the
