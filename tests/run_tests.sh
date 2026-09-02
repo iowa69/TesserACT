@@ -597,10 +597,17 @@ asm "$D/th8" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 8 || rc=1
 if [ $rc -eq 0 ]; then
     eval "$(gen stats "$D/th1/contigs.fasta")"; t1_total=$total; t1_n50=$n50
     eval "$(gen stats "$D/th8/contigs.fasta")"; t8_total=$total; t8_n50=$n50
-    if [ "$t1_total" -eq "$t8_total" ] && [ "$t1_n50" -eq "$t8_n50" ]; then
-        extra=""
-        cmp -s "$D/th1/contigs.fasta" "$D/th8/contigs.fasta" && extra=" (byte-identical)"
-        pass "thread invariance (-t 1 vs -t 8)" "total=$t1_total n50=$t1_n50$extra"
+    # Byte equality, not total and N50. Those two agree between assemblies that differ in
+    # contig order or in which bases sit where, so the weaker check passes on output the
+    # thread count demonstrably changed: injecting a tie-break that depends on opt_.threads
+    # left this test green while the "(byte-identical)" note it prints quietly disappeared.
+    # A run that reorders its own output by thread count is not thread-invariant, and this is
+    # the test that is supposed to say so.
+    if cmp -s "$D/th1/contigs.fasta" "$D/th8/contigs.fasta"; then
+        pass "thread invariance (-t 1 vs -t 8)" "total=$t1_total n50=$t1_n50 (byte-identical)"
+    elif [ "$t1_total" -eq "$t8_total" ] && [ "$t1_n50" -eq "$t8_n50" ]; then
+        fail "thread invariance (-t 1 vs -t 8)" \
+             "same total ($t1_total) and n50 ($t1_n50) but the files differ byte for byte"
     else
         fail "thread invariance (-t 1 vs -t 8)" \
              "t1: total=$t1_total n50=$t1_n50 / t8: total=$t8_total n50=$t8_n50"
