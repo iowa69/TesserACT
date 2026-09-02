@@ -614,6 +614,73 @@ detail=$(gen format "$D/out/contigs.fasta"); rc=$?
 check "contigs.fasta header format and order" $rc "$detail"
 
 # ---------------------------------------------------------------------------
+# 15c. assembly_graph.gfa is well formed, and keeps its P records
+#
+# The suite had no GFA coverage at all, which is how a real defect survived: gfaPaths was
+# cleared unconditionally before layout, but layout returns early on several paths without
+# touching the contigs -- so on those runs the walks were still valid and were discarded
+# anyway, and assembly_graph.gfa came out with S and L records and not one P. Nothing failed
+# and nothing warned; report.json said layout.run=false, which reads as "changed nothing".
+#
+# This checks both halves: the file parses and no link or path names a segment that is not
+# there, and at least one P record survives a run where layout did not rearrange anything.
+# ---------------------------------------------------------------------------
+D=$TMP/t15c; mkdir -p "$D"
+# An unspanned repeat, so the assembly comes out in several pieces. The layout stage is
+# guarded on seqs.size() > 1, so a genome that assembles into one contig never reaches the
+# code this test exists to cover -- which is the second way this test was written wrong.
+gen repeat_genome "$D/g.fa" 42 5000 5000 >/dev/null
+gen reads "$D/g.fa" "$D/r" 60 150 350 30 0 1042 paired fastq gz >/dev/null
+# A model carrying layout tracks, built from an UNRELATED genome. That combination is the
+# one the defect needed: layout is attempted, finds far too few shared markers, and returns
+# without touching the contigs -- so the graph walks are still valid and must survive. A run
+# with no model never enters that code at all, so testing without one looks like a pass
+# whether the bug is present or not. This test was written that way first, and reintroducing
+# the bug did not fail it.
+gen repeat_genome "$D/other.fa" 99 5000 5000 >/dev/null
+# No silent fallback. An earlier version of this test swallowed a failed model build and
+# carried on without --model, which drops it straight back into the no-model case where the
+# layout code is never entered -- so it passed whether the defect was present or not. If the
+# model cannot be built the test has nothing to say and must report that, not pass.
+$TIMEOUT "$ROOT/tesseract-model" --organism testus --out "$D/tracks.tsm" \
+    --layout-tracks --min-support 1 "$D/other.fa" > "$D/model.log" 2>&1
+if [ ! -s "$D/tracks.tsm" ]; then
+    fail "assembly_graph.gfa well formed, P records kept" \
+         "could not build the track model: $(tail -1 "$D/model.log")"
+elif asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 2 \
+         --organism testus --model "$D/tracks.tsm"; then
+    detail=$(python3 - "$D/out/assembly_graph.gfa" <<'PYGFA'
+import sys
+segs, dangling, pathbad, paths, links, malformed = set(), 0, 0, 0, 0, 0
+for line in open(sys.argv[1]):
+    f = line.rstrip("\n").split("\t")
+    if f[0] == "S":
+        if len(f) < 3: malformed += 1
+        else: segs.add(f[1])
+    elif f[0] == "L":
+        links += 1
+        if len(f) < 6: malformed += 1
+    elif f[0] == "P":
+        paths += 1
+        if len(f) < 3: malformed += 1
+# Second pass: references can only be checked once every segment is known.
+for line in open(sys.argv[1]):
+    f = line.rstrip("\n").split("\t")
+    if f[0] == "L" and len(f) >= 6:
+        if f[1] not in segs or f[3] not in segs: dangling += 1
+    elif f[0] == "P" and len(f) >= 3:
+        if any(s[:-1] not in segs for s in f[2].split(",") if s): pathbad += 1
+print("segments=%d links=%d paths=%d malformed=%d dangling=%d pathbad=%d"
+      % (len(segs), links, paths, malformed, dangling, pathbad))
+sys.exit(1 if (malformed or dangling or pathbad or not segs or not paths) else 0)
+PYGFA
+); rc=$?
+    check "assembly_graph.gfa well formed, P records kept" $rc "$detail"
+else
+    fail "assembly_graph.gfa well formed, P records kept" "tesseract-asm exited $?"
+fi
+
+# ---------------------------------------------------------------------------
 # 15b. Model marker density round-trips through the file
 #
 # Build and query must agree on the sampling denominator exactly. Sampling is by hash
