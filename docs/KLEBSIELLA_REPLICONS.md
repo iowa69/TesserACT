@@ -164,10 +164,26 @@ total group length, so `_plas_1` is the largest molecule in that isolate.
 
   The ≥90% line still favours the default: the reach-corrected build breaks a different set
   of four isolates while rescuing one badly broken one, so the tail moved rather than shrank.
-  A second mechanism is visible and is not reach — layout placements that collide and get
-  discarded track density, not neighbour count (0, 11, 15 displaced on one isolate across the
-  three arms), so the overlap-rejection rule is the next thread. 512 with 16 neighbours stays
-  the default; 1/128 with 64 is the build for anyone who wants the plasmid half.
+  512 with 16 neighbours stays the default; 1/128 with 64 is the build for anyone who wants
+  the plasmid half.
+
+  Two candidate mechanisms for the residual were then tested, and both are closed. Neither is
+  the overlap-rejection rule, which the displaced counts made the obvious suspect: displaced
+  placements do rise with density, but the isolates that lost closure have a median of 3
+  against 2 for those that did not, and the worst loser of all has 2. The other was the
+  scaffold split threshold `kMaxTrackGap`, and testing it turned up something that matters
+  more than the parameter. Raising it recovers the split isolates on `chr_best` — 80.3 → 98.1
+  on one — while leaving NGA50 and largest alignment identical to the base pair and adding
+  scaffold relocations. The recovery was the same aligned bases relabelled from three records
+  into one. The constant stays at 400 kb.
+
+  That result applies to the table above, because `chr_best` and the ≥90% line are the same
+  kind of measure and the two arms do not scaffold equally: the default places 12.44 contigs
+  per isolate, the reach-corrected build 10.04. Scored by QUAST over all 105 held-out
+  isolates, paired, the arms are close to parity — the dense build is more complete on 92 of
+  them and more contiguous on 60, the default has fewer misassemblies on 48 against 30 (584
+  against 674 cohort-wide), and median NGA50 differs by 1,547 bp on a 5.3 Mb chromosome. The
+  ≥90% row overstates a gap that alignment shows as a trade. Quote the two together.
 - Hub grouping over a clustered panel does not rescue it either. Clustering the 56,731-plasmid panel
   by mash single linkage at d < 0.01 — the last threshold before percolation; the largest
   component holds 2.1% there against 29.6% at d < 0.02 — gives 16,495 clusters, every panel
