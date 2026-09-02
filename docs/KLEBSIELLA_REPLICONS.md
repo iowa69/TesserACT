@@ -131,6 +131,38 @@ total group length, so `_plas_1` is the largest molecule in that isolate.
 
 ---
 
+## 4b. What layout costs, and how to decline it
+
+Every figure above measures how much chromosome lands in one record. That is what this project
+set out to deliver, but on its own it says nothing about whether the order inside that record
+is right, and layout takes its order from a different genome. Scored by QUAST against the full
+reference on the same 105 held-out isolates, with the assembly also re-scored after splitting
+it back into contigs at the N runs layout writes:
+
+| | misassemblies | median NGA50 |
+|---|---|---|
+| SPAdes input | 121 | 242,291 |
+| after join, gaps split | 358 | 315,291 |
+| after join + layout | 584 | 2,959,825 |
+
+The join stage buys 1.3× contiguity for roughly three times the misassemblies. Layout buys a
+further 9.4× for another 226, and **every one of those 226 sits at a gap layout inserted** —
+splitting the output at its N runs removes all of them and returns the assembly to 358. The
+input has none at all, because it has no gaps.
+
+Two things follow. The first is that these are not silent errors: they are localised at
+declared N runs, which are visibly not sequence, and a gap's *length* is copied from the panel
+genome, so it is wrong by construction rather than by mistake — QUAST charges 700 gap-size
+extensive misassemblies on this cohort for that alone. The second is that the choice is the
+user's and the tool already offers it. `--no-layout` stops before this stage, and splitting a
+finished assembly at `N{10,}` recovers the conservative version from an already-laid-out run.
+
+Take layout when you want a chromosome to look at, and decline it when you need order you can
+defend per junction — for a structural-variant call, a rearrangement claim, or anything where
+a 5 Mb record implying observed contiguity would mislead. The default is on, because for the
+question this tool exists to answer it is the right trade; it is documented here so that it is
+a choice rather than a surprise.
+
 ## 5. What this does not do
 
 - It does not close most plasmids. 14 of 60 assembled into one contig; grouping holds 15.9%
