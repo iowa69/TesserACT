@@ -494,6 +494,19 @@ bool Assembler::run(std::string& error) {
         std::remove(probe.c_str());
     }
 
+    // Check the model is a model before touching a single read. The full load happens after
+    // the k-mer ladder, so that its hundreds of megabytes are not resident through the
+    // memory-heaviest stage -- but that also means an unusable model went undiagnosed until
+    // read loading, error correction and the whole ladder had already run. On a clinical
+    // isolate that is minutes spent to be told the file was a truncated download.
+    if (!opt_.organismModelPath.empty()) {
+        std::string mErr;
+        if (!OrganismModel::checkHeader(opt_.organismModelPath, mErr)) {
+            error = mErr;
+            return false;
+        }
+    }
+
     if (opt_.verbose) std::fprintf(stderr, "[1/7] loading reads\n");
     reads_.setQualityTrim(opt_.qtrim);
     if (!reads_.load(opt_.libraries, opt_.threads, error)) return false;

@@ -118,6 +118,13 @@ class OrganismModel {
 public:
     bool load(const std::string& path, std::string& error);
 
+    // Reads only the magic and the header, without the hundreds of megabytes behind them.
+    // The full load happens after the k-mer ladder, where the model is first needed and
+    // where holding it earlier would add its size to the peak of the memory-heaviest stage.
+    // That leaves an unusable model undiagnosed until minutes of work have already been
+    // spent, so the file is checked for what it is up front and read in full later.
+    static bool checkHeader(const std::string& path, std::string& error);
+
     bool loaded() const { return loaded_; }
     uint32_t genomes(Replicon r) const {
         return r == Replicon::Chromosome ? genomesChr_ : genomesPls_;

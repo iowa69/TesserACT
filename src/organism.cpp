@@ -156,6 +156,54 @@ bool OrganismModel::save(const std::string& path, std::string& error) const {
     return ok;
 }
 
+bool OrganismModel::checkHeader(const std::string& path, std::string& error) {
+    std::FILE* raw = std::fopen(path.c_str(), "rb");
+    if (!raw) { error = "cannot open model file: " + path; return false; }
+    const std::unique_ptr<std::FILE, int (*)(std::FILE*)> guard(raw, std::fclose);
+
+    char magic[8];
+    if (std::fread(magic, 1, 8, raw) != 8) {
+        error = "not a TesserACT model file (too short): " + path;
+        return false;
+    }
+    const bool known = std::memcmp(magic, kMagic, 8) == 0 ||
+                       std::memcmp(magic, kMagicV4, 8) == 0 ||
+                       std::memcmp(magic, kMagicV3, 8) == 0 ||
+                       std::memcmp(magic, kMagicV2, 8) == 0;
+    if (!known) {
+        error = "not a TesserACT model file (or a model from an older version): " + path;
+        return false;
+    }
+    // The declared marker count against the bytes that could possibly hold it. A download
+    // cut short keeps a valid magic and a plausible header, so the magic alone would pass
+    // it; the size is what exposes the truncation without reading the whole file.
+    uint32_t kk = 0, denom = 0, gchr = 0, gpls = 0, nameLen = 0, nExcluded = 0;
+    bool ok = readPod(raw, kk);
+    if (ok && std::memcmp(magic, kMagic, 8) == 0) ok = readPod(raw, denom);
+    ok = ok && readPod(raw, gchr) && readPod(raw, gpls) && readPod(raw, nameLen);
+    if (ok && nameLen > 0) ok = std::fseek(raw, nameLen, SEEK_CUR) == 0;
+    ok = ok && readPod(raw, nExcluded);
+    for (uint32_t i = 0; i < nExcluded && ok; ++i) {
+        uint32_t n = 0;
+        ok = readPod(raw, n) && (n == 0 || std::fseek(raw, n, SEEK_CUR) == 0);
+    }
+    uint64_t nMarkers = 0;
+    ok = ok && readPod(raw, nMarkers);
+    if (!ok) { error = "truncated or corrupt model file: " + path; return false; }
+
+    long here = std::ftell(raw);
+    if (std::fseek(raw, 0, SEEK_END) == 0 && here >= 0) {
+        const long end = std::ftell(raw);
+        // 16 bytes per marker record, and the tables that follow are larger still, so this
+        // is a floor rather than an estimate: anything smaller cannot be a whole model.
+        if (end >= 0 && static_cast<uint64_t>(end - here) < nMarkers * 16ULL) {
+            error = "truncated or corrupt model file: " + path;
+            return false;
+        }
+    }
+    return true;
+}
+
 bool OrganismModel::load(const std::string& path, std::string& error) {
     std::FILE* raw = std::fopen(path.c_str(), "rb");
     if (!raw) { error = "cannot open model file: " + path; return false; }
