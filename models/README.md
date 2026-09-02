@@ -35,8 +35,7 @@ tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella \
 ## Which one
 
 **Take the default unless you specifically want plasmid grouping.** Every figure quoted in
-[`docs/KLEBSIELLA_REPLICONS.md`](../docs/KLEBSIELLA_REPLICONS.md) was measured with it, and it
-is the better chromosome model.
+[`docs/KLEBSIELLA_REPLICONS.md`](../docs/KLEBSIELLA_REPLICONS.md) was measured with it.
 
 | | default | plasmid |
 |---|---|---|
@@ -46,11 +45,30 @@ is the better chromosome model.
 | chromosome in one contig ≥90% | **98.1%** | 95.2% |
 | chromosome in one contig ≥98% | 64.8% | **69.5%** |
 
-The plasmid model nearly doubles whole-plasmid delivery and costs a tail of the chromosome
-result: it breaks four isolates in a held-out hundred while rescuing one badly broken one. The
-README's *Genus models* section explains why the two cannot currently be a single model — the
-adjacency reach has to scale with the sampling density, and doing that recovers most but not
-all of the cost.
+The plasmid model nearly doubles whole-plasmid delivery. The chromosome rows above are the
+share of isolates whose chromosome lands in one *record*, and that measure rewards a model for
+scaffolding aggressively whether or not the resulting order is right — the default model places
+12.44 contigs per isolate against the plasmid model's 10.04. So the same 105 held-out isolates
+were also scored by alignment, with QUAST against the full reference:
+
+| | default | plasmid |
+|---|---|---|
+| misassemblies, cohort total | **584** | 674 |
+| median NGA50 | 2,959,825 | 2,958,278 |
+| median genome fraction | 99.186% | **99.215%** |
+| isolates won, misassemblies | **48** | 30 (27 tied) |
+| isolates won, NGA50 | 35 | **60** (10 tied) |
+| isolates won, genome fraction | 10 | **92** (3 tied) |
+
+By alignment the two are close to parity: the plasmid model reconstructs more of the genome on
+92 of 105 isolates and is more contiguous on 60, and pays for it with 90 extra misassemblies
+across the cohort. Median NGA50 differs by 1,547 bp on a 5.3 Mb chromosome. That is a genuine
+trade, and it is a good deal narrower than the ≥90% row on its own suggests — quote the two
+together rather than either alone.
+
+The README's *Genus models* section explains why the two cannot currently be a single model —
+the adjacency reach has to scale with the sampling density, and doing that recovers most but
+not all of the cost.
 
 ## Provenance and leakage
 
