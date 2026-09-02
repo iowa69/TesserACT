@@ -152,8 +152,8 @@ input has none at all, because it has no gaps.
 
 Two things follow. The first is that these are not silent errors: they are localised at
 declared N runs, which are visibly not sequence, and a gap's *length* is copied from the panel
-genome, so it is wrong by construction rather than by mistake — QUAST charges 700 gap-size
-extensive misassemblies on this cohort for that alone. The second is that the choice is the
+genome, so it is wrong by construction rather than by mistake — QUAST charges 640 gap-size
+extensive misassemblies on this cohort for that alone (700 for the dense build). The second is that the choice is the
 user's and the tool already offers it. `--no-layout` stops before this stage, and splitting a
 finished assembly at `N{10,}` recovers the conservative version from an already-laid-out run.
 
