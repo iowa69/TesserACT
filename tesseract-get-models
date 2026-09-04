@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# tesseract-get-models -- download the organism models and check they arrived intact.
+#
+# Models are release assets, not part of the source tree: they total well over a hundred
+# megabytes and do not belong in a git history. This fetches them, verifies each against a
+# checksum, and puts them where tesseract-eskape looks by default.
+#
+# Written to be safe to re-run: an already-verified model is skipped, and a download that fails
+# verification is deleted rather than left in place, because a truncated model file produces a
+# confusing error much later in an assembly rather than an obvious one now.
+set -euo pipefail
+
+BASE="${TESSERACT_MODEL_URL:-https://github.com/iowa69/TesserACT/releases/download/models-v1}"
+DEST="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
+MANIFEST_LOCAL="$(dirname "$0")/models.sha256"
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'tesseract-get-models: %s\n' "$*" >&2; exit 1; }
+
+usage() {
+cat <<'USAGE'
+tesseract-get-models -- fetch the TesserACT organism models
+
+  tesseract-get-models              download every model
+  tesseract-get-models saureus      download just one (repeatable)
+  tesseract-get-models --list       show what is available and what you already have
+  tesseract-get-models --dir PATH   put them somewhere else
+
+They go to ~/.tesseract/models by default, which is where tesseract-eskape looks.
+About 150 MB for the full set. Re-running is safe: anything already verified is skipped.
+USAGE
+}
+
+ONLY=(); 
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+        --list) LIST=1; shift ;;
+        --dir) [ "$#" -ge 2 ] || die "--dir needs a path"; DEST="$2"; shift 2 ;;
+        --dir=*) DEST="${1#*=}"; shift ;;
+        -*) die "unknown option: $1 (try --help)" ;;
+        *) ONLY+=("$1"); shift ;;
+    esac
+done
+
+command -v curl >/dev/null 2>&1 || die "curl is not installed. On Ubuntu: sudo apt install curl"
+command -v sha256sum >/dev/null 2>&1 || die "sha256sum is not installed."
+[ -r "$MANIFEST_LOCAL" ] || die "cannot read the checksum list next to this script: $MANIFEST_LOCAL"
+
+mkdir -p "$DEST" || die "cannot create $DEST"
+
+verify() {  # verify FILE EXPECTED_SHA -> 0 if it matches
+    local got
+    got=$(sha256sum "$1" | cut -d' ' -f1)
+    [ "$got" = "$2" ]
+}
+
+n_ok=0; n_get=0; n_fail=0
+while read -r sha name; do
+    [ -n "${sha:-}" ] || continue
+    case "$sha" in \#*) continue ;; esac
+    if [ "${#ONLY[@]}" -gt 0 ]; then
+        want=0
+        for o in "${ONLY[@]}"; do case "$name" in "$o"*|"$o".tsm) want=1 ;; esac; done
+        [ "$want" = 1 ] || continue
+    fi
+    target="$DEST/$name"
+    if [ -s "$target" ] && verify "$target" "$sha"; then
+        say "  have  $name"; n_ok=$((n_ok+1)); continue
+    fi
+    if [ "${LIST:-0}" = 1 ]; then say "  need  $name"; continue
+    fi
+    say "  get   $name ..."
+    if ! curl -fL --retry 3 --retry-delay 5 -o "$target.part" "$BASE/$name"; then
+        say "        download failed"; rm -f "$target.part"; n_fail=$((n_fail+1)); continue
+    fi
+    if verify "$target.part" "$sha"; then
+        mv "$target.part" "$target"; n_get=$((n_get+1))
+    else
+        say "        checksum did not match - discarding (the file was corrupt or truncated)"
+        rm -f "$target.part"; n_fail=$((n_fail+1))
+    fi
+done < "$MANIFEST_LOCAL"
+
+if [ "${LIST:-0}" = 1 ]; then exit 0; fi
+say ""
+say "Models in $DEST: $((n_ok + n_get)) ready${n_fail:+, $n_fail failed}"
+[ "$n_fail" -gt 0 ] && die "some models did not download. Re-run to retry just those."
+say "You can now run, for example:"
+say "    tesseract-eskape --preset saureus -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o result"
