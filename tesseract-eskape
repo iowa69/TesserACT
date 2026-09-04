@@ -20,6 +20,33 @@ VERSION="1.0"
 TESSERACT_ASM="${TESSERACT_ASM:-/home/user/Desktop/KP_refine/tools/TesserACT_dev/tesseract-asm}"
 KP_MODEL="${TESSERACT_KP_MODEL:-/home/user/Desktop/KP_refine/data/bench/models/fold0_mem.tsm}"
 
+# Organism models are release assets, not part of the repository: six of them come to ~144 MB,
+# which does not belong in a git history.
+MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
+
+# Gains measured on four held-out genomes per species, each removed from the panel before the
+# model was trained. "free" means the model added no misassemblies; the others buy contiguity
+# and pay for it, which is a choice the user should make knowingly. See docs/ESKAPEE_MODELS.md.
+model_for() {
+    case "$1" in
+        saureus) printf '%s' "saureus.tsm" ;;  efaecium) printf '%s' "efaecium.tsm" ;;
+        abaumannii) printf '%s' "abaumannii.tsm" ;;  paeruginosa) printf '%s' "paeruginosa.tsm" ;;
+        ecloacae) printf '%s' "ecloacae.tsm" ;;  ecoli) printf '%s' "ecoli.tsm" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+model_note() {
+    case "$1" in
+        saureus) printf '%s' "+86% longer contigs, no extra misassemblies" ;;
+        ecloacae) printf '%s' "+17% longer contigs, no extra misassemblies" ;;
+        abaumannii) printf '%s' "+55% longer contigs, but adds some misassemblies" ;;
+        efaecium) printf '%s' "+36% longer contigs, but adds some misassemblies" ;;
+        paeruginosa) printf '%s' "+27% longer contigs, but adds some misassemblies" ;;
+        ecoli) printf '%s' "+24% longer contigs, but adds some misassemblies" ;;
+        *) printf '%s' "" ;;
+    esac
+}
+
 PROG="$(basename "$0")"
 
 # ---------------------------------------------------------------------------
@@ -93,12 +120,12 @@ Available presets (type either name - capital letters do not matter):
   short name     also accepted as        organism                    what the preset does
   -----------    --------------------    ------------------------    ---------------------------------
   kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       uses the trained Klebsiella model
-  saureus        staph, sa, mrsa         Staphylococcus aureus       assembler defaults
-  efaecium       enterococcus, ef, vre   Enterococcus faecium        assembler defaults
-  abaumannii     acinetobacter, ab       Acinetobacter baumannii     assembler defaults
-  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      assembler defaults
-  ecloacae       enterobacter, ecl       Enterobacter cloacae        assembler defaults
-  ecoli          escherichia, coli       Escherichia coli            assembler defaults
+  saureus        staph, sa, mrsa         Staphylococcus aureus       model: +86% contigs, free
+  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: +36%, adds misassemblies
+  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: +55%, adds misassemblies
+  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: +27%, adds misassemblies
+  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: +17% contigs, free
+  ecoli          escherichia, coli       Escherichia coli            model: +24%, adds misassemblies
 
 Why do six presets "do nothing"?
   Because we measured it. We tried the assembler's tuning knobs on three real
@@ -369,10 +396,27 @@ else
         EXTRA+=(--organism klebsiella --model "$MODEL_FILE")
         PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model"
     else
-        PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - assembler defaults, measured as best"
-        if [ -n "$MODEL_OVERRIDE" ]; then
-            die "--model only applies to the Klebsiella preset. There is no trained
-  model for $(preset_fullname "$PRESET"), so I will not pass one."
+        _mf="$(model_for "$PRESET")"
+        if [ -n "$_mf" ]; then
+            MODEL_FILE="${MODEL_OVERRIDE:-$MODEL_DIR/$_mf}"
+            if [ -r "$MODEL_FILE" ]; then
+                EXTRA+=(--organism "$PRESET" --model "$MODEL_FILE")
+                PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - trained model, $(model_note "$PRESET")"
+                info "Using the $PRESET model: $(model_note "$PRESET")."
+            else
+                PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - defaults, model not installed"
+                info "No $PRESET model found here:"
+                info "    $MODEL_FILE"
+                info "Carrying on with the assembler defaults. You still get a good assembly,"
+                info "it is just less contiguous. To install the model, download it from the"
+                info "releases page into that folder, or point me at it:"
+                info "    export TESSERACT_MODEL_DIR=/path/to/models"
+            fi
+        else
+            PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - assembler defaults"
+            if [ -n "$MODEL_OVERRIDE" ]; then
+                die "There is no trained model for $(preset_fullname "$PRESET"), so I will not pass one."
+            fi
         fi
     fi
 fi

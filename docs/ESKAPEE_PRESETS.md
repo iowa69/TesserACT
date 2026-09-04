@@ -1,3 +1,24 @@
+> ## UPDATE — six trained models now exist
+>
+> This page was written when only *Klebsiella* had a model and the measured answer was that
+> parameter tuning does nothing. **That finding stands**: no tuning flag beats the defaults on any
+> ESKAPEE organism. What has changed is that models were then built for the other six, from
+> panels of 124–157 mash-dereplicated closed chromosomes, and tested on genomes held out of the
+> panel before training:
+>
+> | organism | contig NG50 gain | misassembly cost |
+> |---|---|---|
+> | *S. aureus* | **+86.1%** | none |
+> | *A. baumannii* | +54.6% | +3 |
+> | *E. faecium* | +35.7% | +3 |
+> | *P. aeruginosa* | +27.1% | +5 |
+> | *E. coli* | +23.8% | +5 |
+> | *E. cloacae* | +16.6% | none |
+>
+> Every preset now selects its model when one is installed. See `ESKAPEE_MODELS.md` for the full
+> table, the held-out design, and the scaffold-inflation column — reported as contig NG50
+> throughout, because scaffold NG50 would overstate these by 8.9× to 43.9×.
+
 # `tesseract-eskape` presets — what was measured, and what we ship
 
 TesserACT 1.2.5 · presets frozen 2026-09 · seven ESKAPEE organisms
