@@ -1,0 +1,449 @@
+#!/usr/bin/env bash
+#
+# tesseract-eskape - a friendly front end to the TesserACT assembler for the
+# seven ESKAPEE bacteria.
+#
+# You give it two files of sequencing reads and the name of your bug.
+# It gives you back an assembled genome.
+#
+# Version 1.0  (settings measured on TesserACT 1.2.5)
+#
+set -euo pipefail
+
+VERSION="1.0"
+
+# ---------------------------------------------------------------------------
+# Where things live. Override any of these with an environment variable if
+# your copy is somewhere else, e.g.
+#     export TESSERACT_ASM=/opt/tesseract/tesseract-asm
+# ---------------------------------------------------------------------------
+TESSERACT_ASM="${TESSERACT_ASM:-/home/user/Desktop/KP_refine/tools/TesserACT_dev/tesseract-asm}"
+KP_MODEL="${TESSERACT_KP_MODEL:-/home/user/Desktop/KP_refine/data/bench/models/fold0_mem.tsm}"
+
+PROG="$(basename "$0")"
+
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+die() {
+    printf '\n%s: ERROR - %s\n\n' "$PROG" "$1" >&2
+    exit 1
+}
+
+info() { printf '%s\n' "$*"; }
+
+# ---------------------------------------------------------------------------
+# The presets.
+#
+# IMPORTANT, AND MEASURED: for six of the seven organisms the plain TesserACT
+# defaults were the best thing we could find. We tested --mode careful,
+# --mode aggressive, --simplify-rounds, --bubble-coverage, --min-link,
+# --tie-ratio and --link-per-x on 3 genomes per species and NONE of them beat
+# the default by the 10% margin we required. So those presets deliberately
+# add NO flags. That is not laziness - it is the result.
+#
+# Only Klebsiella pneumoniae has something to add: a trained genus model,
+# which is a data file, not a tuning knob.
+# See PRESETS.md for the numbers.
+# ---------------------------------------------------------------------------
+
+preset_fullname() {
+    case "$1" in
+        kpneumoniae) printf '%s' "Klebsiella pneumoniae" ;;
+        saureus)     printf '%s' "Staphylococcus aureus" ;;
+        efaecium)    printf '%s' "Enterococcus faecium" ;;
+        abaumannii)  printf '%s' "Acinetobacter baumannii" ;;
+        paeruginosa) printf '%s' "Pseudomonas aeruginosa" ;;
+        ecloacae)    printf '%s' "Enterobacter cloacae" ;;
+        ecoli)       printf '%s' "Escherichia coli" ;;
+        *) return 1 ;;
+    esac
+}
+
+# Turn whatever the user typed into one of the seven canonical names.
+# Case-insensitive; accepts the short name and the common/genus name.
+canonicalise_preset() {
+    local raw lower
+    raw="$1"
+    lower="$(printf '%s' "$raw" | tr '[:upper:]' '[:lower:]' | tr -d ' _.-')"
+    case "$lower" in
+        kpneumoniae|kpneumo|kpneu|kp|klebsiella|klebsiellapneumoniae|kleb)
+            printf '%s' "kpneumoniae" ;;
+        saureus|sa|staph|staphylococcus|staphaureus|staphylococcusaureus|mrsa)
+            printf '%s' "saureus" ;;
+        efaecium|ef|enterococcus|enterococcusfaecium|efaecalis|vre)
+            printf '%s' "efaecium" ;;
+        abaumannii|ab|acinetobacter|acinetobacterbaumannii|acineto)
+            printf '%s' "abaumannii" ;;
+        paeruginosa|pa|pseudomonas|pseudomonasaeruginosa|pseudo)
+            printf '%s' "paeruginosa" ;;
+        ecloacae|enterobacter|enterobactercloacae|ecl)
+            printf '%s' "ecloacae" ;;
+        ecoli|escherichia|escherichiacoli|coli)
+            printf '%s' "ecoli" ;;
+        *)
+            return 1 ;;
+    esac
+}
+
+print_list() {
+    cat <<'LIST_EOF'
+Available presets (type either name - capital letters do not matter):
+
+  short name     also accepted as        organism                    what the preset does
+  -----------    --------------------    ------------------------    ---------------------------------
+  kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       uses the trained Klebsiella model
+  saureus        staph, sa, mrsa         Staphylococcus aureus       assembler defaults
+  efaecium       enterococcus, ef, vre   Enterococcus faecium        assembler defaults
+  abaumannii     acinetobacter, ab       Acinetobacter baumannii     assembler defaults
+  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      assembler defaults
+  ecloacae       enterobacter, ecl       Enterobacter cloacae        assembler defaults
+  ecoli          escherichia, coli       Escherichia coli            assembler defaults
+
+Why do six presets "do nothing"?
+  Because we measured it. We tried the assembler's tuning knobs on three real
+  genomes for each of these species and not one of them made the assembly
+  meaningfully better than leaving the settings alone. Some made it worse.
+  So the honest preset for those six is: use the defaults. The preset name
+  still works, so you can write the same command for every organism.
+
+  Klebsiella pneumoniae is the exception, because someone trained a model file
+  for it. That model raised contiguity by about 26% on genomes it had never
+  seen. See PRESETS.md for the full table and the caveats.
+LIST_EOF
+}
+
+print_help() {
+    cat <<HELP_EOF
+$PROG $VERSION - assemble a bacterial genome from sequencing reads.
+
+WHAT THIS DOES
+  You hand it two files of short DNA reads (the "R1" and "R2" files that come
+  off an Illumina sequencer). It runs the TesserACT assembler and writes out a
+  FASTA file of assembled DNA sequences (contigs).
+
+COPY THIS EXAMPLE
+  $PROG --preset kpneumoniae \\
+      -1 reads_R1.fastq.gz \\
+      -2 reads_R2.fastq.gz \\
+      -o my_result
+
+  When it finishes, your assembled genome is the file:
+      my_result/contigs.fasta
+
+OPTIONS
+  --preset NAME     Which bug the reads came from. Run '$PROG --list'
+                    to see the names. If you leave this out, the assembler's
+                    default settings are used - which is fine, and for six of
+                    the seven organisms is exactly what the preset does anyway.
+  -1, --read1 FILE  Forward reads   (usually named something_R1.fastq.gz)
+  -2, --read2 FILE  Reverse reads   (usually named something_R2.fastq.gz)
+  -o, --out DIR     Where to put the results. Created if it does not exist.
+  -t, --threads N   How many CPU cores to use (default: 4). More = faster,
+                    but be polite on a shared machine.
+  --model FILE      Use a different Klebsiella model file than the built-in one.
+  --dry-run         Show the assembler command that would run, then stop.
+                    Good for checking things before committing to a long run.
+  --list            Print the available presets and exit.
+  -h, --help        Print this help and exit.
+  --version         Print the version and exit.
+
+  Anything else you type after these is passed straight through to
+  tesseract-asm. Run '$TESSERACT_ASM --help' to see what it accepts.
+
+HOW LONG WILL IT TAKE?
+  A few minutes for a typical 3-5 million base bacterial genome on 3-4 cores,
+  and roughly 2-4 GB of memory. Klebsiella with the model takes longer
+  (about 5 minutes) because it also loads the model file.
+
+IF SOMETHING GOES WRONG
+  This script checks your files before it starts anything slow, and tells you
+  in plain English what is wrong. The most common problems are a typo in a
+  filename and accidentally giving the same file twice for -1 and -2.
+HELP_EOF
+}
+
+# ---------------------------------------------------------------------------
+# Argument parsing
+# ---------------------------------------------------------------------------
+PRESET_RAW=""
+READ1=""
+READ2=""
+OUTDIR=""
+THREADS="4"
+MODEL_OVERRIDE=""
+DRY_RUN="no"
+PASSTHRU=()
+
+if [ "$#" -eq 0 ]; then
+    print_help
+    exit 0
+fi
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --preset)
+            [ "$#" -ge 2 ] || die "--preset needs a name after it, for example: --preset kpneumoniae"
+            PRESET_RAW="$2"; shift 2 ;;
+        --preset=*)
+            PRESET_RAW="${1#*=}"; shift ;;
+        -1|--read1)
+            [ "$#" -ge 2 ] || die "-1 needs a filename after it, for example: -1 reads_R1.fastq.gz"
+            READ1="$2"; shift 2 ;;
+        --read1=*) READ1="${1#*=}"; shift ;;
+        -2|--read2)
+            [ "$#" -ge 2 ] || die "-2 needs a filename after it, for example: -2 reads_R2.fastq.gz"
+            READ2="$2"; shift 2 ;;
+        --read2=*) READ2="${1#*=}"; shift ;;
+        -o|--out|--outdir)
+            [ "$#" -ge 2 ] || die "-o needs a directory name after it, for example: -o my_result"
+            OUTDIR="$2"; shift 2 ;;
+        --out=*) OUTDIR="${1#*=}"; shift ;;
+        -t|--threads)
+            [ "$#" -ge 2 ] || die "-t needs a number after it, for example: -t 4"
+            THREADS="$2"; shift 2 ;;
+        --threads=*) THREADS="${1#*=}"; shift ;;
+        --model)
+            [ "$#" -ge 2 ] || die "--model needs a filename after it"
+            MODEL_OVERRIDE="$2"; shift 2 ;;
+        --model=*) MODEL_OVERRIDE="${1#*=}"; shift ;;
+        --dry-run) DRY_RUN="yes"; shift ;;
+        --list) print_list; exit 0 ;;
+        -h|--help) print_help; exit 0 ;;
+        --version) printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
+        --) shift; while [ "$#" -gt 0 ]; do PASSTHRU+=("$1"); shift; done ;;
+        *) PASSTHRU+=("$1"); shift ;;
+    esac
+done
+
+# ---------------------------------------------------------------------------
+# Validation - all of this happens BEFORE anything slow starts
+# ---------------------------------------------------------------------------
+
+# 1. The assembler itself
+if [ ! -e "$TESSERACT_ASM" ]; then
+    die "I cannot find the assembler program at:
+    $TESSERACT_ASM
+  Either it is not installed, or it lives somewhere else. If it lives
+  somewhere else, tell me where with:
+    export TESSERACT_ASM=/path/to/tesseract-asm
+  See INSTALL.md for how to install it."
+fi
+if [ ! -x "$TESSERACT_ASM" ]; then
+    die "The assembler exists but is not marked runnable:
+    $TESSERACT_ASM
+  Fix it with:  chmod +x \"$TESSERACT_ASM\""
+fi
+
+# 2. The preset
+PRESET=""
+if [ -n "$PRESET_RAW" ]; then
+    if ! PRESET="$(canonicalise_preset "$PRESET_RAW")"; then
+        die "I do not know a preset called '$PRESET_RAW'.
+  Run '$PROG --list' to see the names I accept.
+  (Common ones: kpneumoniae, saureus, efaecium, abaumannii,
+   paeruginosa, ecloacae, ecoli - or klebsiella, staph, pseudomonas, ...)"
+    fi
+fi
+
+# 3. Required arguments present
+[ -n "$READ1" ] || die "You did not tell me where the forward reads are.
+  Add:  -1 yourfile_R1.fastq.gz
+  Run '$PROG --help' for a full example you can copy."
+[ -n "$READ2" ] || die "You did not tell me where the reverse reads are.
+  Add:  -2 yourfile_R2.fastq.gz
+  Run '$PROG --help' for a full example you can copy."
+[ -n "$OUTDIR" ] || die "You did not tell me where to put the results.
+  Add:  -o my_result
+  Run '$PROG --help' for a full example you can copy."
+
+# 4. Threads must be a positive whole number
+case "$THREADS" in
+    ''|*[!0-9]*) die "-t must be a whole number of CPU cores, not '$THREADS'. Try: -t 4" ;;
+esac
+[ "$THREADS" -ge 1 ] || die "-t must be at least 1, not '$THREADS'."
+
+# 5. The read files: exist, readable, non-empty, look like FASTQ
+check_read_file() {
+    local f label first2 firstchar
+    f="$1"; label="$2"
+
+    if [ ! -e "$f" ]; then
+        die "File not found: $f - check the spelling.
+  ($label, given with the $3 option.)
+  Tip: type the first few letters and press Tab to let the shell complete it."
+    fi
+    if [ -d "$f" ]; then
+        die "$f is a folder, not a file.
+  ($label, given with the $3 option.) I need the FASTQ file itself, for
+  example  $f/sample_R1.fastq.gz"
+    fi
+    if [ ! -r "$f" ]; then
+        die "I am not allowed to read this file: $f
+  ($label.) Check its permissions, e.g.  ls -l \"$f\""
+    fi
+    if [ ! -s "$f" ]; then
+        die "This file is empty (zero bytes): $f
+  ($label.) The download or the copy probably did not finish."
+    fi
+
+    # Does it look like FASTQ? gzip files start with the two bytes 1f 8b.
+    # Plain-text FASTQ starts with '@'.
+    first2="$(head -c 2 "$f" | od -An -tx1 | tr -d ' \n')"
+    if [ "$first2" = "1f8b" ]; then
+        return 0                      # gzipped - good enough
+    fi
+    firstchar="$(head -c 1 "$f")"
+    if [ "$firstchar" = "@" ]; then
+        return 0                      # plain-text FASTQ
+    fi
+    if [ "$firstchar" = ">" ]; then
+        die "$f looks like a FASTA file, not a FASTQ file.
+  ($label.) FASTA holds finished sequences; I need the raw reads from the
+  sequencer, which are FASTQ (their names usually end in .fastq.gz or .fq.gz)."
+    fi
+    die "$f does not look like a FASTQ file.
+  ($label.) A FASTQ file is either gzip-compressed (name ends .gz) or starts
+  with the '@' character. This one starts with something else, so it is
+  probably the wrong file, or it was damaged in transfer."
+}
+
+check_read_file "$READ1" "forward reads" "-1"
+check_read_file "$READ2" "reverse reads" "-2"
+
+# 6. R1 and R2 must not be the same file
+if [ "$READ1" = "$READ2" ]; then
+    die "You gave the same file for -1 and -2:
+    $READ1
+  The two files must be different: -1 is the forward reads (R1) and -2 is the
+  reverse reads (R2). Look for a matching file with R2 in its name."
+fi
+# ... and not the same file reached by two different paths, either
+R1_REAL="$(readlink -f -- "$READ1" 2>/dev/null || printf '%s' "$READ1")"
+R2_REAL="$(readlink -f -- "$READ2" 2>/dev/null || printf '%s' "$READ2")"
+if [ "$R1_REAL" = "$R2_REAL" ]; then
+    die "The -1 and -2 filenames look different but point at the same file:
+    $R1_REAL
+  I need two different files: forward reads (R1) and reverse reads (R2)."
+fi
+
+# 7. Output directory
+if [ -e "$OUTDIR" ] && [ ! -d "$OUTDIR" ]; then
+    die "'$OUTDIR' already exists and is a file, not a folder.
+  Pick a different name with -o, for example:  -o ${OUTDIR}_assembly"
+fi
+if [ -d "$OUTDIR" ] && [ -s "$OUTDIR/contigs.fasta" ]; then
+    info "Note: $OUTDIR already contains a contigs.fasta - it will be overwritten."
+fi
+if ! mkdir -p -- "$OUTDIR" 2>/dev/null; then
+    die "I could not create the results folder: $OUTDIR
+  Check that you have permission to write there, and that the parent folder exists."
+fi
+if [ ! -w "$OUTDIR" ]; then
+    die "I cannot write into the results folder: $OUTDIR
+  Check its permissions, or choose a different folder with -o."
+fi
+
+# ---------------------------------------------------------------------------
+# Build the command
+# ---------------------------------------------------------------------------
+EXTRA=()
+PRESET_DESC=""
+
+if [ -z "$PRESET" ]; then
+    info "No --preset given, so I am using the assembler's default settings."
+    info "That is a perfectly good choice. Presets available: kpneumoniae, saureus,"
+    info "efaecium, abaumannii, paeruginosa, ecloacae, ecoli  (see '$PROG --list')."
+    PRESET_DESC="none (assembler defaults)"
+else
+    if [ "$PRESET" = "kpneumoniae" ]; then
+        MODEL_FILE="${MODEL_OVERRIDE:-$KP_MODEL}"
+        if [ ! -r "$MODEL_FILE" ]; then
+            die "The Klebsiella preset needs the trained model file, but I cannot read:
+    $MODEL_FILE
+  Either point me at it with  --model /path/to/model.tsm
+  or set  export TESSERACT_KP_MODEL=/path/to/model.tsm
+  or drop the preset and run with plain defaults (leave out --preset).
+  Without the model, Klebsiella assembles no better than the defaults."
+        fi
+        EXTRA+=(--organism klebsiella --model "$MODEL_FILE")
+        PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model"
+    else
+        PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - assembler defaults, measured as best"
+        if [ -n "$MODEL_OVERRIDE" ]; then
+            die "--model only applies to the Klebsiella preset. There is no trained
+  model for $(preset_fullname "$PRESET"), so I will not pass one."
+        fi
+    fi
+fi
+
+CMD=("$TESSERACT_ASM" -1 "$READ1" -2 "$READ2" -o "$OUTDIR" -t "$THREADS")
+if [ "${#EXTRA[@]}" -gt 0 ]; then CMD+=("${EXTRA[@]}"); fi
+if [ "${#PASSTHRU[@]}" -gt 0 ]; then CMD+=("${PASSTHRU[@]}"); fi
+
+# Pretty-print the command with everything quoted, so it can be copied.
+printf '\n'
+printf 'Preset:  %s\n' "$PRESET_DESC"
+printf 'Reads:   %s\n' "$READ1"
+printf '         %s\n' "$READ2"
+printf 'Output:  %s\n' "$OUTDIR"
+printf 'Cores:   %s\n' "$THREADS"
+printf 'Running: '
+printf '%q ' "${CMD[@]}"
+printf '\n\n'
+
+if [ "$DRY_RUN" = "yes" ]; then
+    info "--dry-run given, so I stopped here without assembling anything."
+    exit 0
+fi
+
+# ---------------------------------------------------------------------------
+# Run it
+# ---------------------------------------------------------------------------
+LOGFILE="$OUTDIR/tesseract-eskape.log"
+START="$(date +%s)"
+
+set +e
+"${CMD[@]}" 2>&1 | tee -- "$LOGFILE"
+STATUS="${PIPESTATUS[0]}"
+set -e
+
+END="$(date +%s)"
+ELAPSED="$(( END - START ))"
+
+if [ "$STATUS" -ne 0 ]; then
+    printf '\n'
+    die "The assembler stopped with an error (exit code $STATUS) after ${ELAPSED}s.
+  The full messages are saved in:
+    $LOGFILE
+  Look at the last few lines of that file - the reason is usually there.
+  Common causes: not enough memory, or truncated/corrupt read files."
+fi
+
+MAIN_OUT="$OUTDIR/contigs.fasta"
+if [ ! -s "$MAIN_OUT" ]; then
+    die "The assembler finished without an error, but no contigs.fasta was
+  produced in $OUTDIR (or it is empty). That usually means there were far too
+  few reads to assemble anything. The log is at:
+    $LOGFILE"
+fi
+
+N_CONTIGS="$(grep -c '^>' "$MAIN_OUT" || true)"
+TOTAL_BP="$(grep -v '^>' "$MAIN_OUT" | tr -d '\n\r' | wc -c | tr -d ' ')"
+
+printf '\n'
+printf 'DONE in %s seconds.\n' "$ELAPSED"
+printf '\n'
+printf 'Your assembled genome is here:\n'
+printf '    %s\n' "$MAIN_OUT"
+printf '    (%s sequences, %s bases in total)\n' "$N_CONTIGS" "$TOTAL_BP"
+printf '\n'
+printf 'Everything else the assembler wrote is in:\n'
+printf '    %s\n' "$OUTDIR"
+printf 'Useful files in there:\n'
+printf '    contigs.fasta   <- THIS is the result: your assembled DNA sequences\n'
+printf '    report.html     <- a summary you can open in a web browser\n'
+printf '    report.json     <- the same summary, for scripts\n'
+printf '    tesseract-eskape.log <- everything printed while it ran\n'
+printf '\n'
+exit 0
