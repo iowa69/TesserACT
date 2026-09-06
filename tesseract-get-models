@@ -55,7 +55,7 @@ verify() {  # verify FILE EXPECTED_SHA -> 0 if it matches
     [ "$got" = "$2" ]
 }
 
-n_ok=0; n_get=0; n_fail=0
+n_ok=0; n_get=0; n_fail=0; n_404=0
 while read -r sha name; do
     [ -n "${sha:-}" ] || continue
     case "$sha" in \#*) continue ;; esac
@@ -71,8 +71,18 @@ while read -r sha name; do
     if [ "${LIST:-0}" = 1 ]; then say "  need  $name"; continue
     fi
     say "  get   $name ..."
-    if ! curl -fL --retry 3 --retry-delay 5 -o "$target.part" "$BASE/$name"; then
-        say "        download failed"; rm -f "$target.part"; n_fail=$((n_fail+1)); continue
+    # The HTTP status is kept, not just curl's exit code, because 404 and "the network went
+    # away" need opposite advice. A missing release asset is never fixed by retrying, and
+    # telling someone to retry it sends them round a loop that cannot terminate.
+    http=$(curl -fL --retry 3 --retry-delay 5 -o "$target.part" -w '%{http_code}' "$BASE/$name") || true
+    if [ "${http:-000}" != 200 ]; then
+        rm -f "$target.part"; n_fail=$((n_fail+1))
+        case "${http:-000}" in
+            404) say "        not on the release page (HTTP 404)"; n_404=$((n_404+1)) ;;
+            000) say "        download failed - could not reach $BASE" ;;
+            *)   say "        download failed (HTTP $http)" ;;
+        esac
+        continue
     fi
     if verify "$target.part" "$sha"; then
         mv "$target.part" "$target"; n_get=$((n_get+1))
@@ -85,6 +95,17 @@ done < "$MANIFEST_LOCAL"
 if [ "${LIST:-0}" = 1 ]; then exit 0; fi
 say ""
 say "Models in $DEST: $((n_ok + n_get)) ready${n_fail:+, $n_fail failed}"
+if [ "$n_404" -gt 0 ]; then
+    say ""
+    say "$n_404 model(s) are not on the release page at:"
+    say "    $BASE"
+    say "That is a publishing gap on our side, not a fault on this machine, and retrying"
+    say "will not fix it. TesserACT works without them -- tesseract-eskape says so and falls"
+    say "back to the assembler defaults, which still assembles the genome, just less"
+    say "contiguously. Point TESSERACT_MODEL_DIR at a copy if you have one:"
+    say "    export TESSERACT_MODEL_DIR=/path/to/models"
+    exit 1
+fi
 [ "$n_fail" -gt 0 ] && die "some models did not download. Re-run to retry just those."
 say "You can now run, for example:"
 say "    tesseract-eskape --preset saureus -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o result"
