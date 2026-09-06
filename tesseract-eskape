@@ -17,12 +17,28 @@ VERSION="1.0"
 # your copy is somewhere else, e.g.
 #     export TESSERACT_ASM=/opt/tesseract/tesseract-asm
 # ---------------------------------------------------------------------------
-TESSERACT_ASM="${TESSERACT_ASM:-/home/user/Desktop/KP_refine/tools/TesserACT_dev/tesseract-asm}"
-KP_MODEL="${TESSERACT_KP_MODEL:-/home/user/Desktop/KP_refine/data/bench/models/fold0_mem.tsm}"
+# The assembler is looked for beside this script first -- which is where install.sh,
+# the conda package and a plain `make` all leave it -- then on PATH. The previous
+# default was an absolute path under /home/user, so every copy of this script except
+# the one it was written on failed at startup with "I cannot find tesseract-asm"
+# until the user set TESSERACT_ASM by hand.
+_here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -n "${TESSERACT_ASM:-}" ]; then
+    :
+elif [ -x "$_here/tesseract-asm" ]; then
+    TESSERACT_ASM="$_here/tesseract-asm"
+else
+    TESSERACT_ASM="$(command -v tesseract-asm 2>/dev/null || printf '%s' "$_here/tesseract-asm")"
+fi
 
 # Organism models are release assets, not part of the repository: six of them come to ~144 MB,
 # which does not belong in a git history.
 MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
+
+# Klebsiella resolves like every other preset -- $MODEL_DIR/<organism>.tsm, which is where
+# tesseract-get-models installs it. It used to default to a path under /home/user, so the
+# one preset with a published model was also the one that could not find it.
+KP_MODEL="${TESSERACT_KP_MODEL:-$MODEL_DIR/kpneumoniae.tsm}"
 
 # Gains measured on four held-out genomes per species, each removed from the panel before the
 # model was trained. "free" means the model added no misassemblies; the others buy contiguity
