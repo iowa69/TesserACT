@@ -54,6 +54,25 @@ want them for a comparison of your own.
 ```sh
 git clone https://github.com/iowa69/TesserACT.git
 cd TesserACT
+./install.sh
+```
+
+Run in a terminal, `./install.sh` walks through it: it checks the four tools it needs and
+names the one command that installs any that are missing, asks where to put things, builds,
+puts the commands on your PATH, and offers to download the organism models. Nothing goes
+system-wide and no password is needed.
+
+It is also the non-interactive installer -- run from a script, a CI job or a pipe there is
+no terminal to ask, so it takes the defaults and says nothing. `--no-prompt` forces that in
+a terminal too, `--guided` forces the questions anywhere, and `--prefix DIR` or
+`--conda-env NAME` choose the destination outright.
+
+You end up with five commands: `tesseract-asm`, `tesseract-model`, `tesseract-klebsiella`,
+`tesseract-eskape` and `tesseract-get-models`.
+
+To build without installing:
+
+```sh
 make -j                     # needs zlib headers; on conda, CPATH=$CONDA_PREFIX/include
 make test                   # 21 end-to-end checks on synthetic genomes
 ```
