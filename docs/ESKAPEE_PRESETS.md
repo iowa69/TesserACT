@@ -1,23 +1,39 @@
-> ## UPDATE — six trained models now exist
+> ## UPDATE 2 — measured on 279 REAL clinical isolates; the simulated table below was wrong
 >
-> This page was written when only *Klebsiella* had a model and the measured answer was that
-> parameter tuning does nothing. **That finding stands**: no tuning flag beats the defaults on any
-> ESKAPEE organism. What has changed is that models were then built for the other six, from
-> panels of 124–157 mash-dereplicated closed chromosomes, and tested on genomes held out of the
-> panel before training:
+> The figures in the previous update were measured on **simulated reads** (wgsim). They have now
+> been remeasured on **279 real clinical isolates**, each with a closed genome as truth and its
+> own Illumina reads, against models retrained under leave-cluster-out. **Simulation inverted the
+> species ranking and reversed the misassembly result.**
 >
-> | organism | contig NG50 gain | misassembly cost |
-> |---|---|---|
-> | *S. aureus* | **+86.1%** | none |
-> | *A. baumannii* | +54.6% | +3 |
-> | *E. faecium* | +35.7% | +3 |
-> | *P. aeruginosa* | +27.1% | +5 |
-> | *E. coli* | +23.8% | +5 |
-> | *E. cloacae* | +16.6% | none |
+> | organism | real gain | simulated said | real misassemblies | simulated said | isolates improved |
+> |---|---|---|---|---|---|
+> | *A. baumannii* | **+69.6%** | +54.6% | **70 → 48** | 1 → 4 | 42/42 |
+> | *P. aeruginosa* | **+67.8%** | +27.1% | **101 → 54** | 0 → 5 | 49/49 |
+> | *E. cloacae* | **+49.3%** | +16.6% | **157 → 99** | 0 → 0 | 46/53 |
+> | *S. aureus* | **+42.5%** | +86.1% | **44 → 23** | 2 → 2 | 26/28 |
+> | *E. faecium* | **+29.7%** | +35.7% | **175 → 136** | 0 → 3 | 47/47 |
+> | *E. coli* | **+25.2%** | +23.8% | **215 → 154** | 1 → 6 | 59/60 |
+> | **all 279** | — | — | **762 → 514 (−33%)** | — | **269/279 (96%)** |
 >
-> Every preset now selects its model when one is installed. See `ESKAPEE_MODELS.md` for the full
-> table, the held-out design, and the scaffold-inflation column — reported as contig NG50
-> throughout, because scaffold NG50 would overstate these by 8.9× to 43.9×.
+> **The "adds misassemblies" warning was wrong for every organism.** Simulation predicted the
+> model adds 0–6 misassemblies per species; on real reads it *removes* 15–50% in all six. Genome
+> fraction also rises everywhere, most where it was worst (*E. coli* 93.9 → 98.4%,
+> *E. faecium* 94.5 → 99.1%), so contiguity is not being bought by discarding sequence.
+>
+> Why simulation misled: wgsim's uniform coverage, absent adapters, absent GC bias and absent
+> indels **flatter the baseline assembler**, so the model appears to add little. Real libraries
+> are uneven — coverage in this cohort spans 24× to 267× — and that unevenness is exactly what a
+> panel-informed layout resolves. *S. aureus* was the exception for the opposite reason: 22 of
+> its 137 panel genomes were near-duplicates of the test isolates, inflating its simulated figure
+> until leave-cluster-out removed them.
+>
+> **Every preset is now recommended, not opt-in.** No organism shows a misassembly cost on real
+> data.
+>
+> Caveat: reads for this run were fetched under a ~100× coverage cap that should not have
+> existed; an uncapped re-run was 565/720 files in when work paused. Ranking and direction are
+> robust, exact magnitudes will move. Full detail in `KP-analysis`, branch
+> `unfinished-real-world-eval`: `REAL_WORLD_RESULTS.md`.
 
 # `tesseract-eskape` presets — what was measured, and what we ship
 

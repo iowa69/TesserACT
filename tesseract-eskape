@@ -35,14 +35,19 @@ model_for() {
         *) printf '%s' "" ;;
     esac
 }
+# Measured on 279 REAL clinical isolates (closed genome as truth, the isolate's own Illumina
+# reads as input, model retrained under leave-cluster-out). An earlier version of these notes
+# came from simulated reads and was wrong in both directions: it inverted the species ranking
+# and it claimed four organisms "add misassemblies". On real data the model REMOVES 15-50% of
+# misassemblies in every organism, and genome fraction rises everywhere too.
 model_note() {
     case "$1" in
-        saureus) printf '%s' "+86% longer contigs, no extra misassemblies" ;;
-        ecloacae) printf '%s' "+17% longer contigs, no extra misassemblies" ;;
-        abaumannii) printf '%s' "+55% longer contigs, but adds some misassemblies" ;;
-        efaecium) printf '%s' "+36% longer contigs, but adds some misassemblies" ;;
-        paeruginosa) printf '%s' "+27% longer contigs, but adds some misassemblies" ;;
-        ecoli) printf '%s' "+24% longer contigs, but adds some misassemblies" ;;
+        abaumannii) printf '%s' "+70% longer contigs, and fewer misassemblies" ;;
+        paeruginosa) printf '%s' "+68% longer contigs, and fewer misassemblies" ;;
+        ecloacae) printf '%s' "+49% longer contigs, and fewer misassemblies" ;;
+        saureus) printf '%s' "+43% longer contigs, and fewer misassemblies" ;;
+        efaecium) printf '%s' "+30% longer contigs, and fewer misassemblies" ;;
+        ecoli) printf '%s' "+25% longer contigs, and fewer misassemblies" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -120,12 +125,12 @@ Available presets (type either name - capital letters do not matter):
   short name     also accepted as        organism                    what the preset does
   -----------    --------------------    ------------------------    ---------------------------------
   kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       uses the trained Klebsiella model
-  saureus        staph, sa, mrsa         Staphylococcus aureus       model: +86% contigs, free
-  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: +36%, adds misassemblies
-  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: +55%, adds misassemblies
-  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: +27%, adds misassemblies
-  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: +17% contigs, free
-  ecoli          escherichia, coli       Escherichia coli            model: +24%, adds misassemblies
+  saureus        staph, sa, mrsa         Staphylococcus aureus       model: +43% contigs, fewer mis
+  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: +30% contigs, fewer mis
+  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: +70% contigs, fewer mis
+  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: +68% contigs, fewer mis
+  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: +49% contigs, fewer mis
+  ecoli          escherichia, coli       Escherichia coli            model: +25% contigs, fewer mis
 
 Why do six presets "do nothing"?
   Because we measured it. We tried the assembler's tuning knobs on three real
