@@ -98,20 +98,34 @@ def main():
     budget = int(len(sel) * a.max_withheld)
     half = a.n // 2
     chosen, used, spent = [], set(), 0
-    for pool, want, stratum in ((clonal, half, "clonal"), (single, a.n - half, "singleton")):
+    # Two passes. The first fills each stratum to its share; the second backfills from
+    # whichever stratum still has candidates. Without the backfill a species with few
+    # deep lineages -- A. baumannii has 4 with in-band reads -- loses the whole other
+    # half of the cohort too, and the run ends up with 19 isolates instead of 30 for no
+    # reason but bookkeeping. The stratum label is recorded either way, so the two
+    # regimes stay separable in the results even when the split is uneven.
+    plan = [(clonal, half, "clonal"), (single, a.n - half, "singleton")]
+    for pool, want, stratum in plan:
         got = 0
         for s, rd, depth in pool:
             if got >= want:
                 break
             c = by_safe[s]["cluster"]
-            if c in used:
-                continue
-            if spent + size.get(c, 1) > budget:
+            if c in used or spent + size.get(c, 1) > budget:
                 continue
             chosen.append((s, c, rd, stratum, depth))
             used.add(c); spent += size.get(c, 1); got += 1
         if got < want:
-            sys.stderr.write(f"  only {got}/{want} available in stratum '{stratum}'\n")
+            sys.stderr.write(f"  stratum '{stratum}': {got}/{want} available\n")
+    for pool, _, stratum in plan:
+        for s, rd, depth in pool:
+            if len(chosen) >= a.n:
+                break
+            c = by_safe[s]["cluster"]
+            if c in used or spent + size.get(c, 1) > budget:
+                continue
+            chosen.append((s, c, rd, stratum, depth))
+            used.add(c); spent += size.get(c, 1)
 
     with open(a.out, "w") as fh:
         fh.write("safe_acc\tcluster\tcluster_size\tstratum\trun\tbases\treadlen\t"

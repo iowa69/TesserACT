@@ -40,7 +40,7 @@ PY
 [ -n "$ref" ] && [ -s "$ref" ] || { echo "  no reference for $safe" >&2; exit 1; }
 
 names=(base)
-for spec in "$@"; do names+=("${spec##*:}"); done
+for spec in "$@"; do r="${spec#*:}"; names+=("${r%%:*}"); done
 names+=(spades)
 
 need=0
@@ -60,12 +60,27 @@ if [ "$need" = 1 ]; then
         || { echo "  $run not paired" >&2; rm -rf "$rd"; exit 1; }
 
     for spec in base "$@"; do
+        envs=""
         if [ "$spec" = base ]; then n=base; extra=()
-        else n="${spec##*:}"; extra=(--organism "$org" --model "${spec%%:*}"); fi
+        else
+            # MODEL:NAME[:VAR=VAL,VAR=VAL] -- the optional third field sets the join
+            # thresholds for this arm only, so a tuning change is measured on the same
+            # reads and the same model as its own control rather than across runs.
+            mdl="${spec%%:*}"; restspec="${spec#*:}"; n="${restspec%%:*}"
+            envs=""; case "$restspec" in *:*) envs="${restspec#*:}" ;; esac
+            extra=(--organism "$org" --model "$mdl")
+        fi
         [ -s "$outdir/$n/contigs.fasta" ] && continue
-        "$asm" -1 "$rd/${run}_1.fastq" -2 "$rd/${run}_2.fastq" -o "$outdir/$n" \
-               -t "$threads" "${extra[@]}" > "$outdir/$n.log" 2>&1 \
-            || echo "  assembly failed: $n" >&2
+        if [ -n "${envs:-}" ]; then
+            env $(printf '%s' "$envs" | tr ',' ' ') \
+                "$asm" -1 "$rd/${run}_1.fastq" -2 "$rd/${run}_2.fastq" -o "$outdir/$n" \
+                -t "$threads" "${extra[@]}" > "$outdir/$n.log" 2>&1 \
+                || echo "  assembly failed: $n" >&2
+        else
+            "$asm" -1 "$rd/${run}_1.fastq" -2 "$rd/${run}_2.fastq" -o "$outdir/$n" \
+                -t "$threads" "${extra[@]}" > "$outdir/$n.log" 2>&1 \
+                || echo "  assembly failed: $n" >&2
+        fi
     done
 
     if [ ! -s "$outdir/spades/contigs.fasta" ]; then

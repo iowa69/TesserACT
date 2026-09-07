@@ -81,6 +81,9 @@ def main():
                     help="max genomes per clonal cluster; 1 reproduces the "
                          "shipped dereplication, 0 keeps every non-redundant genome")
     ap.add_argument("--tag", default="panel")
+    ap.add_argument("--max-clusters", type=int, default=0,
+                    help="keep at most N clonal clusters (0 = all). Used to ask whether "
+                         "panel BREADTH helps or hurts, holding depth fixed")
     ap.add_argument("--d-dup", type=float, default=0.00002,
                     help="at or below this two assemblies are the same isolate")
     ap.add_argument("--d-clone", type=float, default=0.0005,
@@ -193,8 +196,16 @@ def main():
     # junction survives, while bounding any one outbreak clone's share of the
     # panel, which was the original and correct objection to keeping them all.
     cap = a.cap if a.cap > 0 else 10**9
+    pool = clon
+    if a.max_clusters and len(clon) > a.max_clusters:
+        # Spread the sample across the size-ordered cluster list rather than taking the
+        # N largest, which would keep only the outbreak clones and none of the species.
+        # Deterministic: no RNG, so a rebuild reproduces the panel exactly.
+        step = len(clon) / float(a.max_clusters)
+        pool = [clon[int(i * step)] for i in range(a.max_clusters)]
+        sys.stderr.write(f"{a.org}: restricted to {len(pool)} of {len(clon)} clonal clusters\n")
     chosen = []
-    for c in clon:
+    for c in pool:
         chosen.extend(sorted(c, key=rank)[:cap])
     if len(chosen) < a.target:
         sys.stderr.write(f"{a.org}: WARNING only {len(chosen)} genomes, below target {a.target}\n")
