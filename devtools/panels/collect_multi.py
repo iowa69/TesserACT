@@ -81,13 +81,26 @@ def main(evaldir, out, holdout):
     def block(title, isos):
         if not isos:
             return
+        # Medians are computed over the isolates where EVERY config has the metric, and
+        # the n is printed. Taking each column's median over whatever isolates happen to
+        # have it compares different cohorts: SPAdes crashed on 13 of 30 A. baumannii
+        # isolates, so its column was a median over 17 and the baseline's over 30, and
+        # the 13 missing were exactly the chemistry where TesserACT does worst. That
+        # inflated a reported gap by roughly 60%. Per-column coverage is printed too, so
+        # a crashed arm is visible rather than silently changing the denominator.
         print(f"\n=== {title} (n={len(isos)}) ===")
+        cov = {c: sum(1 for i in isos if c in data[i]) for c in configs}
         print(f"{'metric':<28}" + "".join(f"{c:>17}" for c in configs))
+        print(f"{'(isolates with output)':<28}" + "".join(f"{cov[c]:>17}" for c in configs))
         for m in WANT:
+            paired = [i for i in isos
+                      if all(c in data[i] and m in data[i][c] for c in configs)]
             line = f"{m:<28}"
             for c in configs:
-                v = [data[i][c][m] for i in isos if c in data[i] and m in data[i][c]]
+                v = [data[i][c][m] for i in paired]
                 line += f"{statistics.median(v):>17,.2f}" if v else f"{'-':>17}"
+            if len(paired) != len(isos):
+                line += f"   [paired n={len(paired)}]"
             print(line)
         print(f"\n{'win/loss vs base':<28}" + "".join(f"{c:>17}" for c in configs))
         for m in WANT:

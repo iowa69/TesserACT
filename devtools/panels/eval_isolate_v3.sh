@@ -24,7 +24,7 @@ source "$HOME/miniconda3/etc/profile.d/conda.sh"; conda activate tesseract
 # and scaffolds.agp beside it. TESSERACT_ASM overrides.
 asm="${TESSERACT_ASM:-$root/../repo/tesseract-asm}"
 threads="${THREADS:-8}"
-spades_mem="${SPADES_MEM:-12}"
+spades_mem="${SPADES_MEM:-14}"
 mkdir -p "$outdir"
 
 ref=$(python3 - "$root/genomes/$org" "$safe" <<'PY'
@@ -85,9 +85,22 @@ if [ "$need" = 1 ]; then
 
     if [ ! -s "$outdir/spades/contigs.fasta" ]; then
         # SPAdes writes a large working tree; only contigs/scaffolds are kept below.
-        conda run -n spades spades.py -1 "$rd/${run}_1.fastq" -2 "$rd/${run}_2.fastq" \
-            -o "$outdir/spades_work" -t "$threads" -m "$spades_mem" \
-            > "$outdir/spades.log" 2>&1 || echo "  spades failed" >&2
+        #
+        # Retried at double the memory on failure. A too-low -m makes BayesHammer die
+        # with "Cannot allocate memory", and because the failure is silent in the
+        # aggregate it does not look like a crash -- it looks like a smaller cohort.
+        # That is worse than a crash: 13 of 30 A. baumannii runs died at -m 6, the 13
+        # were exactly the 2x300 libraries, and comparing SPAdes' median over the
+        # surviving 17 against TesserACT's over all 30 manufactured a 60% gap that was
+        # mostly the changed denominator.
+        for mem in "$spades_mem" $(( spades_mem * 2 )); do
+            rm -rf "$outdir/spades_work"
+            conda run -n spades spades.py -1 "$rd/${run}_1.fastq" -2 "$rd/${run}_2.fastq" \
+                -o "$outdir/spades_work" -t "$threads" -m "$mem" \
+                > "$outdir/spades.log" 2>&1 && break
+            echo "  spades failed at -m $mem, retrying" >&2
+        done
+        [ -s "$outdir/spades_work/contigs.fasta" ] || echo "  spades FAILED for $safe" >&2
         if [ -s "$outdir/spades_work/contigs.fasta" ]; then
             mkdir -p "$outdir/spades"
             cp "$outdir/spades_work/contigs.fasta" "$outdir/spades/contigs.fasta"
