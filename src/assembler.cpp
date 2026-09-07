@@ -25,6 +25,9 @@
 
 namespace ts {
 
+static void computeContigStats(const std::vector<std::string>& seqs, AssemblyReport& rep);
+
+
 const char* runModeName(RunMode m) {
     switch (m) {
         case RunMode::Fast:       return "fast";
@@ -1136,6 +1139,7 @@ bool Assembler::run(std::string& error) {
     }
     report_.command = opt_.commandLine;
     report_.finalize();
+    computeContigStats(outSeqs, report_);
 
     // ---- write outputs --------------------------------------------------
     if (!util::makeDirs(opt_.outDir)) {
@@ -1206,6 +1210,45 @@ bool Assembler::run(std::string& error) {
         }
     }
     return true;
+}
+
+// Contig-level statistics: the assembly as it is counted once split at scaffold gaps.
+// A run of 10 or more N is the conventional threshold and the one QUAST uses; a shorter run
+// is an ambiguous base inside a contig, not an asserted join, so it stays in the piece.
+static void computeContigStats(const std::vector<std::string>& seqs, AssemblyReport& rep) {
+    auto isN = [](char c) { return c == 'N' || c == 'n'; };
+    std::vector<size_t> lens;
+    rep.scaffoldGaps = 0;
+    for (const std::string& s : seqs) {
+        size_t pieceLen = 0;
+        for (size_t i = 0; i < s.size();) {
+            if (!isN(s[i])) { ++pieceLen; ++i; continue; }
+            size_t j = i;
+            while (j < s.size() && isN(s[j])) ++j;
+            if (j - i >= 10) {
+                ++rep.scaffoldGaps;
+                if (pieceLen) { lens.push_back(pieceLen); pieceLen = 0; }
+            } else {
+                pieceLen += j - i;
+            }
+            i = j;
+        }
+        if (pieceLen) lens.push_back(pieceLen);
+    }
+    rep.contigPieces = lens.size();
+    rep.contigTotal = 0;
+    rep.contigLargest = 0;
+    for (size_t l : lens) {
+        rep.contigTotal += l;
+        rep.contigLargest = std::max(rep.contigLargest, l);
+    }
+    std::sort(lens.begin(), lens.end(), std::greater<size_t>());
+    size_t acc = 0;
+    rep.contigN50 = 0;
+    for (size_t l : lens) {
+        acc += l;
+        if (acc * 2 >= rep.contigTotal) { rep.contigN50 = l; break; }
+    }
 }
 
 void AssemblyReport::finalize() {

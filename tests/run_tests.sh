@@ -61,6 +61,7 @@ cat > "$GEN" <<'PYEOF'
 Subcommands print a one-line summary and exit non-zero when a check fails.
 """
 import gzip
+import json
 import random
 import re
 import sys
@@ -363,11 +364,43 @@ def cmd_format(a):
         sys.exit(1)
 
 
+def cmd_contigstats(a):
+    """contigstats CONTIGS REPORT_JSON -- report.json's contig_* fields must match the FASTA.
+
+    The scaffold figures (n50, largest) are raised by asserting an order across a gap, which
+    assembles no additional base; the contig figures are what QUAST and every published
+    comparison report. Quoting the first as if it were the second has already misled a
+    comparison in this project, so the invariant is pinned here: whatever the assembler says
+    the contig statistics are, splitting its own contigs.fasta at runs of 10+ N must agree.
+    """
+    seqs = [s for _, s in read_fasta(a[0])]
+    rep = json.load(open(a[1]))["assembly"]
+    gaps = sum(1 for s in seqs for _ in re.finditer("[Nn]{10,}", s))
+    pieces = [p for s in seqs for p in re.split("[Nn]{10,}", s) if p]
+    total = sum(len(p) for p in pieces)
+    acc, n50 = 0, 0
+    for l in sorted((len(p) for p in pieces), reverse=True):
+        acc += l
+        if acc * 2 >= total:
+            n50 = l
+            break
+    want = {"scaffold_gaps": gaps, "contig_count": len(pieces),
+            "contig_total_length": total, "contig_n50": n50,
+            "contig_largest": max((len(p) for p in pieces), default=0)}
+    bad = [k for k, v in want.items() if rep.get(k) != v]
+    print("gaps=%d contigs=%d contig_n50=%d scaffold_n50=%d mismatched=%s"
+          % (gaps, len(pieces), n50, rep.get("n50", 0), ",".join(bad) if bad else "none"))
+    if bad:
+        for k in bad:
+            print("  %s: report says %s, contigs.fasta says %s" % (k, rep.get(k), want[k]))
+        sys.exit(1)
+
+
 if __name__ == "__main__":
     table = {"genome": cmd_genome, "repeat_genome": cmd_repeat_genome, "reads": cmd_reads,
              "tiny": cmd_tiny, "stats": cmd_stats, "exact": cmd_exact, "substr": cmd_substr,
              "kmercheck": cmd_kmercheck, "identity": cmd_identity, "sameset": cmd_sameset,
-             "format": cmd_format}
+             "format": cmd_format, "contigstats": cmd_contigstats}
     table[sys.argv[1]](sys.argv[2:])
 PYEOF
 
@@ -620,6 +653,17 @@ fi
 detail=$(gen format "$D/out/contigs.fasta"); rc=$?
 check "contigs.fasta header format and order" $rc "$detail"
 
+# 15b. The contig statistics in report.json describe the contigs actually written.
+#
+# n50 and largest are scaffold figures whenever the assembly carries gaps: layout asserts an
+# order across a gap and fills it with N, which raises both without assembling another base.
+# The summary printed "N50 3,034,032" on a real S. aureus isolate whose contig N50 was 86,836,
+# a 35x gap, and next to it "0 joins spanning 97,073 N bases" -- a join count taken from one
+# stage while the N came from another. Both numbers are now derived from the sequences, and
+# this pins them to the file so they cannot drift apart again.
+detail=$(gen contigstats "$D/out/contigs.fasta" "$D/out/report.json"); rc=$?
+check "report.json contig stats match contigs.fasta" $rc "$detail"
+
 # ---------------------------------------------------------------------------
 # 15c. assembly_graph.gfa is well formed, and keeps its P records
 #
@@ -683,6 +727,12 @@ sys.exit(1 if (malformed or dangling or pathbad or not segs or not paths) else 0
 PYGFA
 ); rc=$?
     check "assembly_graph.gfa well formed, P records kept" $rc "$detail"
+    # Same invariant as 15b, but on the run that goes through layout -- the only stage that
+    # scaffolds, so the only one that can produce the gaps the contig figures exist to expose.
+    # The detail line prints the gap count, so a run where layout happened to join nothing is
+    # visible as gaps=0 rather than passing as if the gap arithmetic had been exercised.
+    detail=$(gen contigstats "$D/out/contigs.fasta" "$D/out/report.json"); rc=$?
+    check "contig stats match after layout" $rc "$detail"
 else
     fail "assembly_graph.gfa well formed, P records kept" "tesseract-asm exited $?"
 fi

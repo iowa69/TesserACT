@@ -112,6 +112,17 @@ struct AssemblyReport {
     size_t gfaSegments = 0;
     size_t gfaLinks = 0;
 
+    // The same assembly split at every run of 10 or more N -- which is how QUAST, NCBI and
+    // every published contig statistic count it. Scaffolding raises n50/largest above these
+    // by asserting an order across gaps; it adds no assembled sequence. Reporting only the
+    // scaffold figure is how a layout change gets read as an assembly improvement, so both
+    // travel together everywhere they are shown.
+    size_t scaffoldGaps = 0;     // number of N runs >= 10
+    size_t contigPieces = 0;     // sequences after splitting at them
+    size_t contigN50 = 0;
+    size_t contigLargest = 0;
+    size_t contigTotal = 0;      // called bases, i.e. total length minus the N
+
     // Recomputes the derived summary fields from `contigs`.
     void finalize();
 };

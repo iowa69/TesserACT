@@ -326,13 +326,22 @@ int main(int argc, char** argv) {
     const AssemblyReport& rep = asmb.report();
     const int finalK = rep.iterations.empty() ? 0 : rep.iterations.back().k;
 
+    // Two rows when the assembly is scaffolded, never one. The records written to
+    // contigs.fasta are scaffolds: layout asserts an order across a gap and fills it with N,
+    // which raises N50 and `largest` without assembling another base. Split at those gaps and
+    // the contig figures are what QUAST, NCBI and every published comparison report -- here
+    // 35x lower on a real isolate. Printing only the scaffold row is how a layout change gets
+    // read as an assembly improvement, and it has already misled one comparison in this
+    // project, so the honest number is not left for the reader to derive.
+    const bool scaffolded = rep.scaffoldGaps > 0;
     std::fprintf(stderr,
                  "\n"
-                 "  contigs      %s\n"
+                 "  %-12s %s\n"
                  "  total length %s bp\n"
                  "  largest      %s bp\n"
                  "  N50          %s bp    N90 %s bp    L50 %s\n"
                  "  GC           %.2f%%\n",
+                 scaffolded ? "scaffolds" : "contigs",
                  util::commify(static_cast<long long>(st.contigs)).c_str(),
                  util::commify(static_cast<long long>(st.totalLength)).c_str(),
                  util::commify(static_cast<long long>(st.largest)).c_str(),
@@ -340,6 +349,21 @@ int main(int argc, char** argv) {
                  util::commify(static_cast<long long>(rep.n90)).c_str(),
                  util::commify(static_cast<long long>(rep.l50)).c_str(),
                  st.gcPercent);
+
+    if (scaffolded) {
+        std::fprintf(stderr,
+                     "  -- split at the %s scaffold gap%s (runs of 10+ N), which is how QUAST counts:\n"
+                     "  contigs      %s\n"
+                     "  total length %s bp    (the rest is N)\n"
+                     "  largest      %s bp\n"
+                     "  N50          %s bp\n",
+                     util::commify(static_cast<long long>(rep.scaffoldGaps)).c_str(),
+                     rep.scaffoldGaps == 1 ? "" : "s",
+                     util::commify(static_cast<long long>(rep.contigPieces)).c_str(),
+                     util::commify(static_cast<long long>(rep.contigTotal)).c_str(),
+                     util::commify(static_cast<long long>(rep.contigLargest)).c_str(),
+                     util::commify(static_cast<long long>(rep.contigN50)).c_str());
+    }
 
     // k-mer depth and read depth differ by a factor of L/(L-k+1); reporting one
     // as "coverage" invites reading it as the other.
@@ -349,8 +373,12 @@ int main(int argc, char** argv) {
                      rep.polish.meanDepth);
     }
     if (rep.gapBases) {
+        // rep.resolve.scaffoldJoins counts only the joins the read-pair resolve stage made,
+        // while gapBases sums the N from every stage that scaffolds -- layout included. Pairing
+        // them printed "0 joins spanning 97,073 N bases" on a real isolate: self-contradictory,
+        // and it hid the scaffolding entirely. The gap count now comes from the sequences.
         std::fprintf(stderr, "  scaffold gaps %s joins spanning %s N bases\n",
-                     util::commify(static_cast<long long>(rep.resolve.scaffoldJoins)).c_str(),
+                     util::commify(static_cast<long long>(rep.scaffoldGaps)).c_str(),
                      util::commify(static_cast<long long>(rep.gapBases)).c_str());
     }
     std::fprintf(stderr, "  elapsed      %.1fs   peak memory %s\n",
