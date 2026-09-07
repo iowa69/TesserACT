@@ -62,7 +62,13 @@ for g in "${@:-ecoli saureus kpneu lmono}"; do
       LABELS="$LABELS,$extra"
     fi
   done
-  "$QUAST" -r "$REF" -o "$RESULTS/quast_$g" -t 8 --silent -l "$LABELS" \
+  # -s is not optional. TesserACT's output is scaffolded and SPAdes' contigs.fasta is
+  # not, so without it this table compares N-padded scaffolds against contigs and
+  # overstates TesserACT by the scaffold-inflation factor -- 7.9x to 43.9x on the
+  # panels in docs/ESKAPEE_MODELS.md. docs/KLEBSIELLA_PANEL.md and
+  # docs/CLOSED_REFERENCE_BENCHMARK.md both state contig-level scoring as the rule;
+  # this script was the one place that broke it.
+  "$QUAST" -r "$REF" -o "$RESULTS/quast_$g" -t 8 -s --silent -l "$LABELS" \
     "${ASSEMBLIES[@]}" > /dev/null 2>&1
   grep -E "^(# contigs +|Largest contig|NGA50|Genome fraction|# misassemblies|# mismatches|# indels|Duplication)" \
     "$RESULTS/quast_$g/report.txt"

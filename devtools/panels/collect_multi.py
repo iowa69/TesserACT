@@ -11,10 +11,14 @@ choice about which flatters.
 import csv, glob, os, statistics, sys
 
 HIGHER_BETTER = {"NGA50", "NG50", "NA50", "N50", "Genome fraction (%)", "Largest alignment"}
-LOWER_BETTER = {"# misassemblies", "# mismatches per 100 kbp", "# indels per 100 kbp",
-                "# contigs", "Duplication ratio"}
-WANT = ["NGA50", "NG50", "Genome fraction (%)", "# misassemblies",
-        "# mismatches per 100 kbp", "Largest alignment", "# contigs", "Duplication ratio"]
+LOWER_BETTER = {"# misassemblies", "# local misassemblies", "# mismatches per 100 kbp",
+                "# indels per 100 kbp", "# contigs", "Duplication ratio"}
+# "# local misassemblies" is here because leaving it out hid a real regression: it rises
+# from a cohort sum of 6 to 18-23 with the model, and was invisible in every table until
+# it was asked for by name.
+WANT = ["NGA50", "NG50", "Genome fraction (%)", "# misassemblies", "# local misassemblies",
+        "# mismatches per 100 kbp", "# indels per 100 kbp", "Largest alignment",
+        "# contigs", "Duplication ratio"]
 
 
 def read_report(path):

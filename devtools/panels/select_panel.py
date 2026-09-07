@@ -216,6 +216,18 @@ def main():
     with open(os.path.join(a.out, a.tag + "_selected.txt"), "w") as fh:
         for n in sorted(sel): fh.write(n + "\n")
 
+    # Redundancy-group membership, written once per panel directory. Withholding an
+    # isolate has to withhold every accession within d_dup of it -- those are the SAME
+    # isolate redeposited, and one of them contributes plasmid records byte-identical to
+    # the held-out genome's own. The panel tsv lists only group REPRESENTATIVES, so an
+    # exclusion built from it alone leaves the non-representative deposits in training.
+    with open(os.path.join(a.out, "dup_members.tsv"), "w") as fh:
+        fh.write("representative\tmember\n")
+        for g in dup:
+            rep = sorted(g, key=rank_dup)[0]
+            for m in g:
+                fh.write(f"{rep}\t{m}\n")
+
     nclin = sum(1 for n in sel if is_clinical(meta.get(n, {})))
     ncl = len({cl_of[n] for n in sel if n in cl_of})
     sys.stderr.write(f"{a.org}: SELECTED {len(sel)} genomes over {ncl} clonal clusters, "

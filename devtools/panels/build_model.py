@@ -36,8 +36,21 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     a = ap.parse_args()
 
-    rows = [r for r in csv.DictReader(open(os.path.join(a.panel, a.tag + ".tsv")), delimiter="\t")
-            if r["selected"] == "1"]
+    allrows = list(csv.DictReader(open(os.path.join(a.panel, a.tag + ".tsv")), delimiter="\t"))
+    rows = [r for r in allrows if r["selected"] == "1"]
+
+    # Redundancy-group expansion. An accession within d_dup of a held-out isolate is that
+    # isolate redeposited under another accession, and its plasmid records can be
+    # byte-identical to the held-out genome's own. Building the exclusion set from the
+    # SELECTED rows alone leaves those deposits in the plasmid database: measured,
+    # GCF022405375v1 sits at mash d=0 from hold-out GCF022405275v1, is not selected, and
+    # contributed a record with the same md5 as the hold-out's. 6 of 30 S. aureus
+    # hold-outs retained 8 of their own plasmid records that way.
+    members = {}
+    dpath = os.path.join(a.panel, "dup_members.tsv")
+    if os.path.exists(dpath):
+        for r in csv.DictReader(open(dpath), delimiter="\t"):
+            members.setdefault(r["representative"], set()).add(r["member"])
     hold = {c.strip() for c in a.hold_clusters.split(",") if c.strip()}
     holdacc = {c.strip() for c in a.hold_accs.split(",") if c.strip()}
     if hold and holdacc:
@@ -48,6 +61,17 @@ def main():
 
     keep = [r for r in rows if not withheld(r)]
     drop = [r for r in rows if withheld(r)]
+
+    # Every accession that must not appear anywhere in training: the withheld panel rows,
+    # any unselected row that falls in a withheld cluster, and every redundancy-group
+    # member of all of those.
+    dropped_safe = set()
+    for r in allrows:
+        if withheld(r):
+            dropped_safe.add(r["safe_acc"])
+            dropped_safe |= members.get(r["safe_acc"], set())
+    for s_ in list(dropped_safe):
+        dropped_safe |= members.get(s_, set())
     if not keep:
         sys.exit("error: every panel genome was withheld")
 
@@ -58,7 +82,6 @@ def main():
     # Plasmids of every withheld genome, by exact record name. The whole cluster's
     # plasmids go, not just the test isolate's.
     xpls = os.path.join(a.out + ".exclude_plasmids.txt")
-    dropped_safe = {r["safe_acc"] for r in drop}
     npl = 0
     pmap = os.path.join(a.panel, "plasmid_map.tsv")
     with open(xpls, "w") as fh:

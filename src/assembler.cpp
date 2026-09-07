@@ -1083,6 +1083,12 @@ bool Assembler::run(std::string& error) {
     });
 
     std::vector<std::string> outSeqs, outNames;
+    // Kept beside each scaffold so the gap split at the write can rebuild a name in the
+    // documented format. The replicon tag has to stay at the END of the name: aligners
+    // and scorers ignore anything after the first space, which is why the call was put
+    // in the name rather than after it.
+    std::vector<std::string> outTags;
+    std::vector<double> outCovs;
     std::vector<GfaPath> outPaths;
     outSeqs.reserve(order.size());
     outNames.reserve(order.size());
@@ -1113,6 +1119,8 @@ bool Assembler::run(std::string& error) {
         std::snprintf(name, sizeof(name), "NODE_%zu_length_%zu_cov_%.4f%s",
                       rank + 1, seqs[i].size(), covs[i], tag);
         outNames.emplace_back(name);
+        outTags.emplace_back(tag);
+        outCovs.push_back(covs[i]);
 
         ContigRecord rec;
         rec.length = seqs[i].size();
@@ -1144,9 +1152,101 @@ bool Assembler::run(std::string& error) {
     }
     if (opt_.verbose) std::fprintf(stderr, "[7/7] writing output\n");
 
+    // A gap is an assertion of adjacency with no sequence behind it. Emitting it as N
+    // inside contigs.fasta states in the delivered file something the reads never showed,
+    // and it is invisible to anyone who does not know to split first -- QUAST has to be
+    // told (-s) before it scores honestly, and bench/run_benchmark.sh forgets to, which
+    // is precisely how a scaffold-against-contig table gets published.
+    //
+    // So contigs.fasta is now what its name claims: contigs, split at every gap, zero N.
+    // The ordered, oriented form is kept whole in scaffolds.fasta and scaffolds.agp
+    // records order, orientation and gap length, so the scaffolding is not lost -- it is
+    // simply no longer asserted as sequence.
+    //
+    // The split happens HERE, at the write, and nowhere earlier. Replicon assignment and
+    // polishing reason over scaffold-scale sequence (replicon.cpp's 500 bp classifiable
+    // floor, and its circularity test against the longest chromosome), so splitting
+    // sooner would change replicon calls, plasmid grouping and file order. Every stage
+    // still sees exactly what it saw before.
+    size_t gapBasesTotal = 0;
+    for (const std::string& sq : outSeqs) {
+        for (char c : sq) if (c == 'N' || c == 'n') ++gapBasesTotal;
+    }
+
+    if (gapBasesTotal > 0) {
+        const std::string scafPath = opt_.outDir + "/scaffolds.fasta";
+        if (!writeFasta(scafPath, outSeqs, outNames, 80, error)) return false;
+        if (opt_.verbose) std::fprintf(stderr, "      %s\n", scafPath.c_str());
+
+        const std::string agpPath = opt_.outDir + "/scaffolds.agp";
+        std::FILE* agp = std::fopen(agpPath.c_str(), "w");
+        if (agp) {
+            std::fprintf(agp, "##agp-version\t2.1\n");
+            std::fprintf(agp, "# TesserACT -- order and orientation of contigs.fasta.\n");
+            std::fprintf(agp, "# An N row is an adjacency the assembly asserts without\n"
+                              "# sequence; it is not evidence of the intervening bases.\n");
+            for (size_t i = 0; i < outSeqs.size(); ++i) {
+                const std::string& sq = outSeqs[i];
+                size_t part = 0, pos = 0, piece = 0;
+                while (pos < sq.size()) {
+                    size_t e = pos;
+                    while (e < sq.size() && sq[e] != 'N' && sq[e] != 'n') ++e;
+                    if (e > pos) {
+                        ++part; ++piece;
+                        std::fprintf(agp, "%s\t%zu\t%zu\t%zu\tW\t%s_%zu\t1\t%zu\t+\n",
+                                     outNames[i].c_str(), pos + 1, e, part,
+                                     outNames[i].c_str(), piece, e - pos);
+                    }
+                    size_t g = e;
+                    while (g < sq.size() && (sq[g] == 'N' || sq[g] == 'n')) ++g;
+                    if (g > e) {
+                        ++part;
+                        std::fprintf(agp,
+                                     "%s\t%zu\t%zu\t%zu\tN\t%zu\tscaffold\tyes\talign_genus\n",
+                                     outNames[i].c_str(), e + 1, g, part, g - e);
+                    }
+                    pos = g > e ? g : e;
+                }
+            }
+            std::fclose(agp);
+            if (opt_.verbose) std::fprintf(stderr, "      %s\n", agpPath.c_str());
+        }
+    }
+
+    std::vector<std::string> splitSeqs, splitNames;
+    splitSeqs.reserve(outSeqs.size());
+    splitNames.reserve(outSeqs.size());
+    for (size_t i = 0; i < outSeqs.size(); ++i) {
+        const std::string& sq = outSeqs[i];
+        const std::string tag = i < outTags.size() ? outTags[i] : std::string();
+        const double cov = i < outCovs.size() ? outCovs[i] : 0.0;
+        size_t pos = 0;
+        while (pos < sq.size()) {
+            while (pos < sq.size() && (sq[pos] == 'N' || sq[pos] == 'n')) ++pos;
+            if (pos >= sq.size()) break;
+            size_t e = pos;
+            while (e < sq.size() && sq[e] != 'N' && sq[e] != 'n') ++e;
+            splitSeqs.emplace_back(sq.substr(pos, e - pos));
+            char nm[256];
+            std::snprintf(nm, sizeof(nm), "NODE_%zu_length_%zu_cov_%.4f%s",
+                          splitSeqs.size(), e - pos, cov, tag.c_str());
+            splitNames.emplace_back(nm);
+            pos = e;
+        }
+    }
+
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
-    if (!writeFasta(contigPath, outSeqs, outNames, 80, error)) return false;
-    if (opt_.verbose) std::fprintf(stderr, "      %s\n", contigPath.c_str());
+    if (!writeFasta(contigPath, splitSeqs, splitNames, 80, error)) return false;
+    if (opt_.verbose) {
+        if (gapBasesTotal > 0) {
+            std::fprintf(stderr,
+                         "      %s  (%zu contigs, split at %zu gap bases; "
+                         "scaffolded form in scaffolds.fasta)\n",
+                         contigPath.c_str(), splitSeqs.size(), gapBasesTotal);
+        } else {
+            std::fprintf(stderr, "      %s\n", contigPath.c_str());
+        }
+    }
 
     if (opt_.emitUnitigs) {
         std::vector<std::string> us;
