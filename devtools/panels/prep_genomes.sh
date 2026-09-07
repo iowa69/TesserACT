@@ -30,8 +30,19 @@ split -l 500 -d "$acclist" "$raw/batch."
 # actually matters, because resume is the whole point of an interrupted fetch.
 for b in "$raw"/batch.[0-9][0-9]; do
     z="$b.zip"
-    [ -s "$z" ] || datasets download genome accession --inputfile "$b" \
-        --include genome --no-progressbar --filename "$z"
+    # Verified, not merely present. A download interrupted by a transient network
+    # failure leaves a non-empty but truncated archive, and a "-s" test accepts it
+    # forever after -- the resume then dies in unzip rather than refetching. Each
+    # archive is integrity-checked and refetched up to three times.
+    for attempt in 1 2 3; do
+        if [ -s "$z" ] && unzip -tqq "$z" >/dev/null 2>&1; then break; fi
+        rm -f "$z"
+        datasets download genome accession --inputfile "$b" \
+            --include genome --no-progressbar --filename "$z" || true
+    done
+    if ! unzip -tqq "$z" >/dev/null 2>&1; then
+        echo "error: $z is unreadable after 3 attempts" >&2; exit 1
+    fi
     rm -rf "$b.d" && mkdir -p "$b.d" && unzip -q -o "$z" -d "$b.d"
 done
 

@@ -26,21 +26,27 @@ step "genomes"
 [ -s "panel/$org/plasmid_map.tsv" ] || python3 plasmid_map.py "genomes/$org" "panel/$org/plasmid_map.tsv"
 
 step "reads available"
+# Two passes. The first pairs reads to a genome through a shared BioSample; the
+# second joins on strain name through ENA, which indexes runs the BioSample key
+# misses because curated collections often deposit assembly and reads separately.
 [ -s "meta/$org.reads.tsv" ] || python3 find_reads.py "meta/$org.tsv" "meta/$org.reads.tsv"
+[ -s "meta/$org.reads2.tsv" ] || python3 find_reads_ena.py "meta/$org.tsv" "$taxid" \
+    "meta/$org.reads.tsv" "meta/$org.reads2.tsv"
+READS="meta/$org.reads2.tsv"
 
 step "panels"
 for spec in "1:panel_derep" "16:panel_clonal"; do
     cap=${spec%%:*}; tag=${spec##*:}
     [ -s "panel/$org/$tag.tsv" ] || python3 select_panel.py --org "$org" \
         --meta "meta/$org.tsv" --chrdir "panel/$org/chr" --out "panel/$org" \
-        --cap "$cap" --tag "$tag" --reads "meta/$org.reads.tsv" \
+        --cap "$cap" --tag "$tag" --reads "$READS" \
         --min-len "$minlen" --max-len "$maxlen"
 done
 
 step "hold-out"
 mkdir -p eval
 [ -s "eval/$org.holdout.tsv" ] || python3 choose_holdout.py --panel "panel/$org" \
-    --tag panel_clonal --reads "meta/$org.reads.tsv" --n "$nhold" \
+    --tag panel_clonal --reads "$READS" --n "$nhold" \
     --out "eval/$org.holdout.tsv"
 
 step "models"
