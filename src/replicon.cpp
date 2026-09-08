@@ -225,6 +225,30 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
     // have some.
     if (links && links->usable()) {
         const std::vector<RepliconCall> seed = out.calls;
+        // Propagation compares a contig's chromosomal pair weight against its plasmid pair
+        // weight. If nothing in the assembly was called chromosomal there is no comparison
+        // to make: chrW is 0 for every contig, the 3:1 test below reduces to "plsW > 0",
+        // and one read pair to any depth-called contig is enough to relabel a chromosome
+        // fragment as plasmid.
+        //
+        // That is not hypothetical. Without a model nothing is EVER called chromosomal --
+        // both routes to Chromosome, layout placement and the marker vote, are inside the
+        // model-loaded branch -- so in a no-model run this degenerate case is the only case.
+        // Measured on 33 held-out S. aureus isolates: 0 chromosomal calls in every run, and
+        // of 179 contigs wrongly called plasmid, 79 sit between the depth floor and ceiling
+        // where only propagation can have fired. Those 79 carry 8,374,589 of the 8,894,268
+        // chromosomal bases mislabelled, including one isolate whose entire 2.51 Mb
+        // chromosome was emitted as a single 19-contig plasmid group.
+        //
+        // The asymmetry is deliberate. The chromosome is the majority replicon, so spreading
+        // a chromosomal call onto an unknown contig is usually right, while spreading a
+        // plasmid call with nothing to weigh it against is usually wrong. Chromosome
+        // propagation is therefore left alone; only the plasmid direction requires that
+        // some contig was actually called chromosomal first.
+        bool anyChromosomeSeed = false;
+        for (size_t i = 0; i < n; ++i) {
+            if (seed[i].cls == RepliconClass::Chromosome) { anyChromosomeSeed = true; break; }
+        }
         for (size_t i = 0; i < n; ++i) {
             if (out.calls[i].cls != RepliconClass::Unassigned) continue;
             // Unassigned is two populations, and only one of them is evidence-free. A
@@ -248,7 +272,7 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
             if (chrW > 0 && chrW >= plsW * kVoteRatio) {
                 out.calls[i].cls = RepliconClass::Chromosome;
                 out.calls[i].basis = "pair_propagated";
-            } else if (plsW > 0 && plsW >= chrW * kVoteRatio) {
+            } else if (anyChromosomeSeed && plsW > 0 && plsW >= chrW * kVoteRatio) {
                 out.calls[i].cls = RepliconClass::Plasmid;
                 out.calls[i].basis = "pair_propagated";
             }
