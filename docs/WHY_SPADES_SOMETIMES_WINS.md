@@ -118,6 +118,27 @@ That is a real piece of work, not a parameter, and it is the honest end of this 
 enquiry. No threshold in TesserACT closes this gap, and every threshold that was tried is
 recorded above so the same ground is not covered twice.
 
+## What implementing it would actually cost
+
+The cheap form of BayesHammer's idea is: admit a count-1 k-mer only when it has no
+Hamming-1 neighbour at high count -- an error is a near-miss of something abundant, a
+genuine low-coverage k-mer is not. That is the discrimination a flat threshold cannot make
+and it is why SPAdes can keep count-1 k-mers safely.
+
+It does not fit TesserACT's counting as written, and the obstacle is memory rather than
+logic. `extractSolid` (counter.cpp) compacts the sharded tables into the solid table and
+frees each shard as it goes; counter.h states plainly that this "is what keeps peak memory
+near the size of the genome rather than the size of the error cloud". A Hamming-1 lookup
+needs the whole k-mer space available while deciding, because sharding is by hash and a
+k-mer's 3k neighbours land in unrelated shards. So the rescue pass needs both structures
+resident at once.
+
+On these libraries the error cloud is 50-88% of distinct k-mers (from SPAdes' own
+BayesHammer accounting on the same reads), so peak memory roughly doubles: 2-3 GB today,
+5-7 GB with the rescue. That is a deliberate design decision being reversed, not an
+oversight, and it should be taken as its own piece of work with its own measurement --
+not slipped in alongside a benchmark run.
+
 ## What would fix it, and why it is not done here
 
 Opening both gates recovers the contiguity and costs base accuracy: on the four isolates
