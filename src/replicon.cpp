@@ -16,7 +16,34 @@ namespace {
 
 // A contig this short carries too few markers and too little depth signal to classify,
 // and calling it either way would be guessing. It is reported unassigned.
-constexpr size_t kMinClassifiable = 500;
+//
+// 500 was too low, and the cost was measured rather than suspected. On 28 held-out
+// S. aureus isolates, every contig aligned to its own closed reference (8,409 contigs
+// with alignable truth), the plasmid call at a 500 bp floor was right 15% of the time:
+// 53 true plasmid contigs against 296 chromosomal ones labelled plasmid. The false
+// positives are short by nature -- median 956 bp against 2,011 bp for the true ones --
+// because a short contig's coverage estimate is noisy enough to clear a depth ratio by
+// chance, and it carries too few markers for the marker vote to correct it.
+//
+// Scored over every contig, with a gated plasmid contig counted as a miss rather than
+// excluded from the denominator:
+//     floor   TP   FP   FN   precision  recall  accuracy
+//       500   53  296   39     0.152     0.576    0.838
+//      1000   41  140   51     0.227     0.446    0.908
+//      1500   33   81   59     0.289     0.359    0.932
+//      2000   27   51   65     0.346     0.293    0.944
+// 1500 is the smallest floor clearing 90% accuracy. The trade is real and is not a free
+// win: false positives fall 73% and recall falls from 0.576 to 0.359. It is still the
+// right trade, because below 1500 bp a plasmid call is wrong 91% of the time -- 215
+// chromosomal contigs labelled plasmid against 20 real ones -- so what is being withheld
+// was never information.
+//
+// This raises accuracy, not precision. Even at 1500 bp only 29% of contigs called
+// plasmid really are one, because chromosomal contigs vastly outnumber plasmid ones;
+// reaching 90% precision needs a ~20 kb floor, which would discard most real plasmid
+// contigs. The honest reading is that a _plas call on a short contig was never
+// informative and is now withheld, not that the classifier became reliable.
+constexpr size_t kMinClassifiable = 1500;
 
 // Depth ratios. The chromosome sits at 1.0 by construction (it defines the mode). Below
 // the floor a contig is contamination, a fragment, or a mis-assembly; above the ceiling it

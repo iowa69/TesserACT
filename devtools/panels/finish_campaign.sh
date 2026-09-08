@@ -47,4 +47,23 @@ for org in efaecium abaumannii paeruginosa ecloacae ecoli kpneumoniae; do
     cp -f "eval/$org.final.tsv" "../repo/docs/${org}_headtohead.tsv" 2>/dev/null || true
     echo "==> $org collected"
 done
+# Repair pass. An isolate can be dropped mid-run -- a killed worker, a refused
+# download, or (once) a reads directory deleted out from under an in-flight fetch.
+# eval_isolate_v3.sh skips every arm already on disk, so a second pass costs only the
+# isolates that are actually missing, and without it the cohort silently ends up at 29
+# or 28 with no record of which isolate went or why.
+echo "==> repair pass"
+for org in efaecium abaumannii paeruginosa ecloacae ecoli kpneumoniae; do
+    n=0
+    for d in "eval/${org}_final"/*/; do
+        [ -d "$d" ] || continue
+        [ "$(ls -d "$d"/quast_* 2>/dev/null | wc -l)" -ge 5 ] && n=$((n+1))
+    done
+    [ "$n" -ge 30 ] && continue
+    echo "==> repairing $org ($n/30 complete)"
+    TOTAL_THREADS=24 SPADES_MEM=14 ./run_definitive_v2.sh "$org" 2 2>&1 | tail -5 || true
+    python3 collect_multi.py "eval/${org}_final" "eval/$org.final.tsv" \
+        "eval/$org.holdout.tsv" > "eval/$org.final.summary.txt" 2>&1 || true
+    cp -f "eval/$org.final.tsv" "../repo/docs/${org}_headtohead.tsv" 2>/dev/null || true
+done
 echo "CAMPAIGN COMPLETE: all seven organisms measured"
