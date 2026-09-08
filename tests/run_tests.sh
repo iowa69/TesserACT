@@ -11,6 +11,11 @@
 
 set -u
 
+# The model tests exercise the author path: building a model and assembling against
+# it. --model only accepts a path under TESSERACT_MODEL_AUTHOR, because a model is
+# a curated artifact and --organism selects a bundled one for everybody else.
+export TESSERACT_MODEL_AUTHOR=1
+
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 TESSERACT=$ROOT/tesseract-asm
 

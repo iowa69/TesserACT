@@ -7,7 +7,7 @@ make -j"${CPU_COUNT:-4}" CXX="${CXX:-g++}"
 
 mkdir -p "${PREFIX}/bin"
 install -m 0755 tesseract-asm "${PREFIX}/bin/tesseract-asm"
-install -m 0755 tesseract-model "${PREFIX}/bin/tesseract-model"
+# tesseract-model is not packaged; see the Makefile comment on `all`.
 
 # The Klebsiella runner ships too, as `tesseract-klebsiella`. Without it an installed package
 # is the assembler and nothing else: the user still has to find the release page, download a

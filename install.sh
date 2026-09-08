@@ -177,7 +177,8 @@ make -C "$here" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" CXX="$cxx
 [ "$guided" = 1 ] && step "Step 4 of 5: installing the commands"
 mkdir -p "$prefix/bin"
 install -m 0755 "$here/tesseract-asm"        "$prefix/bin/tesseract-asm"
-install -m 0755 "$here/tesseract-model"      "$prefix/bin/tesseract-model"
+# tesseract-model is not installed: models are curated artifacts, distributed
+# checksummed via tesseract-get-models and selected with --organism.
 install -m 0755 "$here/tesseract-klebsiella" "$prefix/bin/tesseract-klebsiella"
 # tesseract-eskape and tesseract-get-models are the whole ESKAPEE path: one command per
 # organism, and the fetcher that puts the models where it looks for them. Leaving them out
@@ -188,7 +189,7 @@ install -m 0755 "$here/tesseract-get-models" "$prefix/bin/tesseract-get-models"
 # tesseract-get-models reads the checksum list from beside itself, so the list has to travel
 # with it or every model it downloads fails verification and is deleted.
 install -m 0644 "$here/models.sha256"        "$prefix/bin/models.sha256"
-say "installed tesseract-asm, tesseract-model, tesseract-klebsiella, tesseract-eskape and tesseract-get-models into $prefix/bin"
+say "installed tesseract-asm, tesseract-klebsiella, tesseract-eskape and tesseract-get-models into $prefix/bin"
 
 # ---- verify ----------------------------------------------------------------
 if ! "$prefix/bin/tesseract-asm" --version >/dev/null 2>&1; then
@@ -271,7 +272,7 @@ For the other six ESKAPEE organisms:
   tesseract-eskape --list                the preset name for each organism
 
 To build a model of your own instead:
-  tesseract-model --organism klebsiella --out kleb.tsm references/*.fasta
+  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
   tesseract-asm --organism klebsiella --model kleb.tsm -1 R1.fq.gz -2 R2.fq.gz -o out
 EOF
 fi

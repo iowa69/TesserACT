@@ -34,7 +34,13 @@ PROBEOBJS := $(filter-out $(BUILDDIR)/main.o $(BUILDDIR)/model_main.o,$(ALLOBJS)
 
 .PHONY: all native debug asan clean install uninstall test unittest check model flagcheck probe
 
-all: $(BIN) $(MODELBIN)
+# The model builder is deliberately NOT part of `all` or `install`. A model's value
+# is in how its panel was assembled and what was withheld from it; a file of the
+# right shape built from an arbitrary panel yields confident joins with nothing
+# behind them. Users get bundled, checksummed models via tesseract-get-models and
+# select them with --organism. Build the tool with `make model` if you are the one
+# curating the panels.
+all: $(BIN)
 
 # Each of these rebuilds from scratch with different flags. Sub-makes rather
 # than "clean $(BIN)" prerequisites, which make is free to run in either order
@@ -95,12 +101,10 @@ $(UNITBIN): $(UNITSRC) $(UNITOBJS) | $(BUILDDIR)
 # Everything: unit tests then the end-to-end suite.
 check: unittest test flagcheck
 
-install: $(BIN) $(MODELBIN)
+install: $(BIN)
 	@install -d $(DESTDIR)$(PREFIX)/bin
 	@install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
-	@install -m 755 $(MODELBIN) $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)
 	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BIN)"
-	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)"
 
 uninstall:
 	@rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)

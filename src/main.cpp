@@ -55,14 +55,16 @@ void usage() {
         "      --min-contig N      minimum contig length to report (default: 2*k)\n"
         "\n"
         "ORGANISM MODEL\n"
-        "      --organism NAME     organism the reads come from (e.g. klebsiella);\n"
-        "                          with --model the two must agree\n"
-        "      --model FILE        genus model built by tesseract-model. Used only at\n"
-        "                          junctions no fragment can span: the chromosome is\n"
-        "                          reconstructed first from conserved gene order, then\n"
-        "                          plasmids are refined against the plasmid table.\n"
-        "                          Without it those junctions are left broken rather\n"
-        "                          than guessed at.\n"
+        "      --organism NAME     use the bundled model for this organism. Run\n"
+        "                          tesseract-get-models once to install them; they go\n"
+        "                          to ~/.tesseract/models and TESSERACT_MODEL_DIR moves\n"
+        "                          that. Names: saureus, efaecium, abaumannii,\n"
+        "                          paeruginosa, ecloacae, ecoli, kpneumoniae.\n"
+        "                          The model is consulted only at junctions no fragment\n"
+        "                          can span: the chromosome is reconstructed first from\n"
+        "                          conserved gene order, then plasmids are refined\n"
+        "                          against the plasmid table. Without it those junctions\n"
+        "                          are left broken rather than guessed at.\n"
         "\n"
         "      --is-panel FILE     FASTA of known insertion sequences. Contig ends\n"
         "                          lying inside one are left unjoined: that is where\n"
@@ -218,7 +220,25 @@ int main(int argc, char** argv) {
         }
         else if (a == "-o" || a == "--out") opt.outDir = needValue(i, "-o");
         else if (a == "--organism") opt.organism = needValue(i, "--organism");
-        else if (a == "--model") opt.organismModelPath = needValue(i, "--model");
+        // --model is not part of the supported interface. A model is a curated artifact:
+        // its panel composition, its leave-cluster-out provenance and the exclusion lists
+        // behind it are what make its output meaningful, and a file of the right shape
+        // built from an arbitrary panel produces confident joins with nothing behind them.
+        // --organism therefore selects a bundled, checksummed model and nothing else.
+        // The flag is retained, undocumented, for building and validating the bundled
+        // models themselves; it does nothing unless TESSERACT_MODEL_AUTHOR is set.
+        else if (a == "--model") {
+            const std::string mv = needValue(i, "--model");
+            if (std::getenv("TESSERACT_MODEL_AUTHOR")) {
+                opt.organismModelPath = mv;
+            } else {
+                std::fprintf(stderr,
+                    "error: --model is not a supported option.\n"
+                    "  Use --organism NAME to select a bundled model, and run\n"
+                    "  tesseract-get-models once to install them.\n");
+                return 2;
+            }
+        }
         else if (a == "--qc") opt.qcPath = needValue(i, "--qc");
         else if (a == "--mapper-dir") opt.mapperDir = needValue(i, "--mapper-dir");
         else if (a == "--is-panel") opt.isPanelPath = needValue(i, "--is-panel");
@@ -292,6 +312,34 @@ int main(int argc, char** argv) {
         else {
             std::fprintf(stderr, "error: unknown option '%s'\nRun 'tesseract-asm --help' for usage.\n", a.c_str());
             return 1;
+        }
+    }
+
+    // --organism resolves to a bundled model. This is the only supported way to reach
+    // one: the model's value is in how its panel was assembled and what was withheld
+    // from it, none of which survives being pointed at an arbitrary file. Resolution
+    // matches tesseract-get-models' install location and tesseract-eskape's default, so
+    // the three cannot drift apart.
+    if (!opt.organism.empty() && opt.organismModelPath.empty()) {
+        std::string dir;
+        if (const char* d = std::getenv("TESSERACT_MODEL_DIR")) {
+            dir = d;
+        } else if (const char* h = std::getenv("HOME")) {
+            dir = std::string(h) + "/.tesseract/models";
+        }
+        const std::string cand = dir.empty() ? std::string() : dir + "/" + opt.organism + ".tsm";
+        if (!cand.empty() && util::fileExists(cand)) {
+            opt.organismModelPath = cand;
+        } else {
+            std::fprintf(stderr,
+                "error: no bundled model for organism '%s'.\n"
+                "  Looked for: %s\n"
+                "  Install the models once with:  tesseract-get-models\n"
+                "  Or point TESSERACT_MODEL_DIR at a directory holding them.\n"
+                "  Assembling without a model is fine -- omit --organism -- but the\n"
+                "  junctions no fragment spans will be left broken rather than joined.\n",
+                opt.organism.c_str(), cand.empty() ? "(no HOME or TESSERACT_MODEL_DIR)" : cand.c_str());
+            return 2;
         }
     }
 
