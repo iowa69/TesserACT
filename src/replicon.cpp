@@ -56,6 +56,11 @@ constexpr double kLowDepth = 0.35;
 // about what a contig is.
 constexpr uint32_t kVoteRatio = 3;
 
+// Length above which a plasmid call may stand on its own signal, model runs only. Twenty
+// sampled markers is enough for a contig's own marker vote to be evidence; a 1 kb contig
+// gets one or two and its vote is noise.
+constexpr size_t kLoneCall = 10000;
+
 // Pairs linking two contigs before they are called co-resident on one molecule. Low
 // absolute counts are dominated by mismapping, and IS elements shared between replicons
 // are exactly the sequence that links a plasmid to the chromosome.
@@ -619,18 +624,64 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
     std::unordered_map<uint32_t, uint32_t> groupOf;
     for (size_t i = 0; i < n; ++i) {
         RepliconCall& call = out.calls[i];
+        if (call.cls != RepliconClass::Plasmid) continue;
+        const uint32_t root = find(static_cast<uint32_t>(i));
+        if (rootSize[root] < 2) continue;
+        auto it = groupOf.find(root);
+        if (it == groupOf.end()) {
+            const uint32_t g = static_cast<uint32_t>(groupOf.size()) + 1;
+            groupOf.emplace(root, g);
+            call.group = g;
+        } else {
+            call.group = it->second;
+        }
+    }
+
+    // A plasmid call standing on depth alone is not a call. This header says four
+    // independent signals decide the class, "none of which is sufficient alone", and the
+    // depth rule above contradicts that: it is terminal and unguarded. kMultiCopy means
+    // "more copies of this than of the chromosome", which a chromosomal repeat in five
+    // copies satisfies exactly, and nothing downstream retracts it.
+    //
+    // Measured on 33 held-out S. aureus isolates, model arm, contigs >= kMinClassifiable
+    // aligned to their own closed reference: contigs wrongly called plasmid hit a median
+    // of 6 distinct chromosomal loci (86% hit two or more) and align 4.01x their own
+    // length; true plasmid contigs hit a median of 0 and align 1.00x. The depth ratio does
+    // not separate them -- 2.78 against 2.33, the false ones shallower than the true. What
+    // separates them is whether a SECOND signal agrees, and that signal is already
+    // computed: a group means read pairs or panel co-membership tied this contig to
+    // another plasmid contig at a compatible depth, and circular means its own ends are
+    // joined.
+    //
+    // Requiring one of them, on the same 33 isolates, floor 1500:
+    //     arm          TP  FP  FN   precision      recall
+    //     model        33  81  59     0.289   ->   0.359      before
+    //     model        30  25  62     0.545   ->   0.326      after
+    //     careful      30  27  70     0.526                   after
+    //     aggressive   27  41  64     0.397                   after
+    // False positives fall 69% for 3.3 points of recall.
+    //
+    // The length escape exists because a 10 kb contig carries roughly twenty sampled
+    // markers, so its own marker vote is evidence rather than the one-or-two-marker noise
+    // the sampling rate leaves on a 1 kb contig. It is gated on a model being loaded
+    // because without one there are no marker votes at all -- in the no-model arm nothing
+    // is ever called chromosomal, so the vote guard degenerates and propagation, not
+    // depth, is what mislabels.
+    //
+    // Demotion only ever removes a call, and only from contigs whose group is 0 by
+    // construction, so the group numbering above and the counters below stay consistent.
+    for (size_t i = 0; i < n; ++i) {
+        RepliconCall& call = out.calls[i];
+        if (call.cls != RepliconClass::Plasmid) continue;
+        if (call.group > 0 || call.circular) continue;
+        if (model.loaded() && contigs[i].size() >= kLoneCall) continue;
+        call.cls = RepliconClass::Unassigned;
+        call.basis = "uncorroborated";   // not "no_signal": one signal reached it, alone
+    }
+
+    for (size_t i = 0; i < n; ++i) {
+        const RepliconCall& call = out.calls[i];
         if (call.cls == RepliconClass::Plasmid) {
-            const uint32_t root = find(static_cast<uint32_t>(i));
-            if (rootSize[root] >= 2) {
-                auto it = groupOf.find(root);
-                if (it == groupOf.end()) {
-                    const uint32_t g = static_cast<uint32_t>(groupOf.size()) + 1;
-                    groupOf.emplace(root, g);
-                    call.group = g;
-                } else {
-                    call.group = it->second;
-                }
-            }
             ++out.plasmidContigs;
         } else if (call.cls == RepliconClass::Chromosome) {
             ++out.chromosomeContigs;
