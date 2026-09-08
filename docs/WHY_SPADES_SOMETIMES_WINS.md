@@ -89,6 +89,35 @@ read by whether it is fully supported, instead of trimming the part that is not.
 a change to correct.cpp, it is not made here, and the flags needed to measure it
 (`--mask-min-run`, `--trust-cutoff`, `-c`) are now independent so it can be.
 
+## It is not the thresholds. It is the corrector.
+
+Masking harder does nothing: `--mask-min-run 1` masks the same 0.57% of input as the
+default 8, because every unvouchable stretch is already longer than 8 bases. With the
+cutoff open as well it still gives 35,068.
+
+So the whole +38% in "mask off + cutoff 1" comes from the masked tails themselves. Those
+tails are not noise -- they carry the real low-coverage sequence SPAdes recovers. They
+also carry the errors, which is why keeping them raw costs 5.4x the mismatch rate.
+
+That leaves one difference, and it is not a threshold:
+
+* TesserACT's corrector will not change a base unless the k-mers following the correction
+  stay solid for four more steps (`kMinCorroboration`, correct.cpp), and MASKS whatever it
+  cannot vouch for. The reasoning is recorded in the file and is sound in itself: a
+  corrector free to rewrite a degraded tail turns noise into plausible fiction, and that
+  fiction enters the graph as evidence.
+* BayesHammer CORRECTS those tails instead, by clustering each k-mer against solid centres
+  under a Bayesian sub-cluster model (`hammer/kmer_cluster.cpp`), and only then decides
+  what is solid.
+
+So SPAdes keeps the sequence and keeps it clean: 51,105 at 0.60 mismatches, where
+TesserACT must choose between 35,068 at 0.46 and 48,447 at 2.48. The missing capability is
+a corrector strong enough to rescue a low-coverage tail rather than having to discard it.
+
+That is a real piece of work, not a parameter, and it is the honest end of this line of
+enquiry. No threshold in TesserACT closes this gap, and every threshold that was tried is
+recorded above so the same ground is not covered twice.
+
 ## What would fix it, and why it is not done here
 
 Opening both gates recovers the contiguity and costs base accuracy: on the four isolates
