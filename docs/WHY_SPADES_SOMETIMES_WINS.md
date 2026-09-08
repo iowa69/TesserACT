@@ -27,45 +27,67 @@ The only covariate that separates the two groups is **insert size relative to re
 length**: median 1.364 where SPAdes wins against 1.513 where it does not. At 1.14 the
 mates overlap by roughly 85%, so a pair carries barely more information than one read.
 
-And the sequence SPAdes recovers is **sub-threshold k-mers**. Running with the
-abundance cutoff forced to 1:
+And the sequence SPAdes recovers is removed by TesserACT **twice**, which is why it took
+three experiments to see it.
 
-| isolate | `-c 1` | default | SPAdes | genome fraction, default |
+TesserACT has two gates that discard the same low-coverage bases:
+
+1. the read corrector masks stretches it cannot vouch for -- 923,741 bases (0.57%) on a
+   clean library, **16,631,849 bases (10.4%)** on a noisy one
+2. the abundance cutoff then discards k-mers seen fewer than `cutoff` times
+
+Either gate alone removes the sequence, so opening either alone changes nothing. Measured
+on GCF016591995v1, contig NGA50:
+
+| configuration | NGA50 | contigs | genome fraction | mismatches/100kb |
 |---|---|---|---|---|
-| GCF010364725v2 | 2,874 | **5,781** | 14,366 | 94.9% |
-| GCF003111725v1 | 7,044 | **17,440** | 28,223 | 95.6% |
-| GCF016591995v1 | **51,105** | 35,068 | **51,105** | 98.6% |
+| default (correction on, cutoff auto) | 35,068 | 214 | 98.561 | 0.46 |
+| `--no-correct` (correction off, cutoff auto) | 35,068 | - | - | - |
+| cutoff 1, correction **on** | 35,068 | 218 | 98.602 | 0.74 |
+| cutoff 1, correction **off** | **51,105** | 165 | 98.832 | - |
+| SPAdes | 51,105 | 139 | 98.286 | 0.60 |
 
-On the third isolate `-c 1` reaches NGA50 **51,105 -- exactly SPAdes' figure**, +46% over
-the default, with better genome fraction (98.83 against 98.56) and fewer contigs (165
-against 214). The missing sequence is there, in k-mers seen once, and it is recoverable.
+Only the fourth row moves, and it needs both gates open at once. That row reaches SPAdes'
+figure exactly.
 
-On the other two the same setting is a disaster: genome fraction falls to 89.3%. The
-split is by library quality -- `-c 1` helps the clean library and wrecks the noisy ones.
-On a clean library a count-1 k-mer is real low-coverage sequence; on a noisy one it is
-an error.
+**A defect made this hard to see, and it is fixed.** `-c N` used to set the abundance
+cutoff *and* the trusted set the read corrector anchors on, because both read
+`opt_.forcedCutoff`. At `-c 1` every k-mer became trusted, so no k-mer run ever broke and
+the corrector silently did nothing -- every `-c 1` run on disk reports "0 bases corrected
+in 0 reads". So `-c 1` was never a cutoff experiment; it was a cutoff-and-correction
+experiment. The trusted set now has its own `--trust-cutoff` and never inherits `-c`.
+
+The earlier version of this page concluded that the missing sequence was count-1 k-mers.
+That was measured with the confounded flag and is wrong: with the corrector actually
+running, cutoff 1 changes NGA50 by nothing at all.
 
 ## What would fix it, and why it is not done here
 
-Not a lower cutoff. A rescue that admits a sub-threshold k-mer only when it **bridges**
-two solid ones, so the decision is made on graph topology rather than on a count.
+Opening both gates recovers the contiguity and costs base accuracy: on the four isolates
+where it was measured with correction off, mismatches per 100 kbp rose 2-12x
+(0.72 -> 8.62, 0.69 -> 5.37, 0.00 -> 3.64, 2.22 -> 4.16) and misassemblies rose. That is
+the trade, and it is not obviously worth taking -- TesserACT's base accuracy is one of the
+things it currently wins on.
 
-That is harder than it sounds and is the reason it is not in this release. A single
-substitution error produces a chain of k count-1 k-mers, and so does a genuine
-low-coverage stretch; in both cases the interior k-mers' immediate neighbours are also
-sub-threshold. A rule that requires both neighbours solid therefore rescues almost
-nothing, and a rule that accepts short sub-threshold chains between solid regions is a
-graph operation, not a counting one -- and is exactly where error k-mers return.
+What SPAdes does instead is worth stating precisely, because it is not "keep everything".
+BayesHammer filters at the READ level before any k-mer table exists, and it will not
+promote a read unless every base of it is covered by a solid k-mer
+(`hammer/expander.cpp`, `covered_by_solid`). On our own libraries that removes 50-88% of
+distinct k-mers. What survives at count 1 in SPAdes' graph is therefore disproportionately
+real low-coverage sequence, and SPAdes keeps it, applying its remaining error removal to
+graph structures with a fitted per-dataset bound rather than to raw counts.
 
-The evidence here is three isolates. `counter.cpp` already carries a measured table for
-this threshold (cutoff 5 / 3 / 2 giving NGA50 39,855 / 86,779 / 132,059), and changing a
-default that was set that carefully needs more than three isolates against it. The
-larger cohort now running is what should settle it.
+TesserACT's corrector is the analogous stage and it currently MASKS what it cannot vouch
+for rather than dropping the read. The open question -- and the smallest experiment that
+would settle it -- is whether masking less aggressively while keeping the cutoff at 2
+recovers the contiguity without the mismatch cost. That is one flag away now that the
+trusted set is decoupled, and it is what the cohort should be used for.
 
 ## The honest summary
 
-TesserACT wins contig NGA50 on 70% of these isolates and loses on 30%. The losses are
-concentrated on libraries whose fragments barely exceed their reads, and the mechanism
-is low-coverage sequence discarded at the abundance threshold rather than anything about
-repeats, k, pairing, correction or contamination. Every one of those was tested and
-none of them is the cause.
+TesserACT wins contig NGA50 on 70% of these isolates and loses on 30%. The losses
+concentrate on libraries whose fragments barely exceed their reads. The mechanism is
+low-coverage sequence removed twice over -- once by the corrector's masking and again by
+the abundance cutoff -- and recovering it costs base accuracy, which is an axis TesserACT
+currently wins. Repeats, the k ladder, pairing rules and contamination were each tested
+directly and none of them is the cause.

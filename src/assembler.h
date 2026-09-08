@@ -28,6 +28,15 @@ struct AssemblyOptions {
     std::vector<int> kValues;        // empty means "choose from mode and read length"
     int threads = 0;                 // 0 = hardware concurrency
     uint32_t forcedCutoff = 0;       // 0 = auto
+    // The trusted k-mer set the READ CORRECTOR anchors on is a separate decision from
+    // the abundance cutoff applied to the graph, and tying them together makes -c a
+    // silent two-variable change: at -c 1 every k-mer becomes trusted, so no k-mer run
+    // ever breaks, nothing is corrected and nothing is masked. Measured on five isolates
+    // -- every -c 1 run reported "0 bases corrected in 0 reads" against 121k-257k
+    // corrected and up to 16.6 Mb masked in the paired default runs. Any experiment that
+    // varied -c was therefore also turning correction off without saying so.
+    // 0 = auto, and it never inherits -c.
+    uint32_t trustCutoff = 0;
     size_t minContigLen = 0;         // 0 = 2*maxK
     bool verbose = true;
     bool correctReads = true;

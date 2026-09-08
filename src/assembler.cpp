@@ -558,12 +558,17 @@ bool Assembler::run(std::string& error) {
         // abundance cutoff even in thin coverage, so the trusted set covers the
         // genome densely enough to anchor almost every read.
         const int kc = ladder.front();
-        if (opt_.verbose) std::fprintf(stderr, "[2/7] read error correction (k=%d)\n", kc);
+        if (opt_.verbose) {
+            std::fprintf(stderr, "[2/7] read error correction (k=%d, trust cutoff %s, "
+                         "graph cutoff %s)\n", kc,
+                         opt_.trustCutoff ? std::to_string(opt_.trustCutoff).c_str() : "auto",
+                         opt_.forcedCutoff ? std::to_string(opt_.forcedCutoff).c_str() : "auto");
+        }
         util::Timer t;
         KmerCounter cc(kc, opt_.threads);
         cc.count(reads_, {}, 0);
         KmerTable trusted;
-        cc.extractSolid(opt_.forcedCutoff, trusted);
+        cc.extractSolid(opt_.trustCutoff, trusted);
         report_.correction = correctReads(reads_, trusted, kc, opt_.threads);
         report_.correctionSeconds = t.elapsed();
         report_.correctionK = kc;

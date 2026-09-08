@@ -270,6 +270,8 @@ int main(int argc, char** argv) {
             opt.userSetK = true;
         }
         else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(intInRange(needValue(i, "-c"), "-c/--cutoff", 0, 1000000));
+        // Separate from -c on purpose: see AssemblyOptions::trustCutoff.
+        else if (a == "--trust-cutoff") opt.trustCutoff = static_cast<uint32_t>(intInRange(needValue(i, "--trust-cutoff"), "--trust-cutoff", 0, 1000000));
         else if (a == "--min-link") { opt.minLinkSupport = static_cast<int>(intInRange(needValue(i, "--min-link"), "--min-link", 1, 1000)); opt.userSetMinLink = true; }
         else if (a == "--link-per-x") {
             opt.linkSupportPerX = numInRange(needValue(i, "--link-per-x"), "--link-per-x", 0.0, 10.0);
