@@ -37,6 +37,10 @@ struct AssemblyOptions {
     // varied -c was therefore also turning correction off without saying so.
     // 0 = auto, and it never inherits -c.
     uint32_t trustCutoff = 0;
+    // Shortest unvouchable stretch the corrector masks. Masking and the abundance
+    // cutoff discard the same low-coverage bases, so either alone hides the other's
+    // effect; exposing this makes the two separable.
+    uint32_t minMaskRun = 8;
     size_t minContigLen = 0;         // 0 = 2*maxK
     bool verbose = true;
     bool correctReads = true;

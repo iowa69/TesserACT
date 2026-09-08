@@ -26,7 +26,7 @@ constexpr int kMinCorroboration = 4;
 // Once correction stalls, the rest of the read is sequence we cannot vouch for.
 // Masking it keeps its k-mers out of the graph instead of relying on the
 // abundance cutoff to catch them one by one.
-constexpr uint32_t kMinMaskRun = 8;
+constexpr uint32_t kMinMaskRun = 8;   // the default for the parameter of the same name
 
 struct Fix {
     uint32_t read;
@@ -42,7 +42,8 @@ struct Mask {
 
 }  // namespace
 
-CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k, int threads) {
+CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k, int threads,
+                             uint32_t minMaskRun) {
     // Fix and Mask hold the read index in 32 bits. Past 2^32 reads it would
     // wrap and rewrite a different, valid read -- in bounds, so silent. That
     // needs about 645 Gbp, far beyond the isolates this targets, but the
@@ -186,12 +187,12 @@ CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k
             // the k-mer spectrum does not support. Drop it rather than let it
             // seed spurious branches. Short stretches are left alone: they cost
             // little and are usually just the read running out of coverage.
-            if (stopRight < len && static_cast<uint32_t>(len - stopRight) >= kMinMaskRun) {
+            if (stopRight < len && static_cast<uint32_t>(len - stopRight) >= minMaskRun) {
                 masks.push_back({static_cast<uint32_t>(r), static_cast<uint32_t>(stopRight),
                                  static_cast<uint32_t>(len)});
                 localMasked += static_cast<size_t>(len - stopRight);
             }
-            if (stopLeft > 0 && static_cast<uint32_t>(stopLeft) >= kMinMaskRun) {
+            if (stopLeft > 0 && static_cast<uint32_t>(stopLeft) >= minMaskRun) {
                 masks.push_back({static_cast<uint32_t>(r), 0, static_cast<uint32_t>(stopLeft)});
                 localMasked += static_cast<size_t>(stopLeft);
             }

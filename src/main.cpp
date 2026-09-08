@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "-c" || a == "--cutoff") opt.forcedCutoff = static_cast<uint32_t>(intInRange(needValue(i, "-c"), "-c/--cutoff", 0, 1000000));
         // Separate from -c on purpose: see AssemblyOptions::trustCutoff.
+        else if (a == "--mask-min-run") opt.minMaskRun = static_cast<uint32_t>(intInRange(needValue(i, "--mask-min-run"), "--mask-min-run", 1, 100000));
         else if (a == "--trust-cutoff") opt.trustCutoff = static_cast<uint32_t>(intInRange(needValue(i, "--trust-cutoff"), "--trust-cutoff", 0, 1000000));
         else if (a == "--min-link") { opt.minLinkSupport = static_cast<int>(intInRange(needValue(i, "--min-link"), "--min-link", 1, 1000)); opt.userSetMinLink = true; }
         else if (a == "--link-per-x") {

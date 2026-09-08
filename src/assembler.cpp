@@ -569,7 +569,7 @@ bool Assembler::run(std::string& error) {
         cc.count(reads_, {}, 0);
         KmerTable trusted;
         cc.extractSolid(opt_.trustCutoff, trusted);
-        report_.correction = correctReads(reads_, trusted, kc, opt_.threads);
+        report_.correction = correctReads(reads_, trusted, kc, opt_.threads, opt_.minMaskRun);
         report_.correctionSeconds = t.elapsed();
         report_.correctionK = kc;
         report_.correctionRun = true;

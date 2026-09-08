@@ -24,6 +24,11 @@ struct CorrectionStats {
 };
 
 // Rewrites `reads` in place. `solid` is the trusted k-mer set at `k`.
-CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k, int threads);
+// `minMaskRun` is the shortest unvouchable stretch that is masked. Raising it masks
+// less; a value above the read length masks nothing while still correcting. It is a
+// parameter because masking and the abundance cutoff remove the SAME low-coverage
+// bases, so separating them is the only way to measure either.
+CorrectionStats correctReads(SequenceStore& reads, const KmerTable& solid, int k, int threads,
+                             uint32_t minMaskRun = 8);
 
 }  // namespace ts

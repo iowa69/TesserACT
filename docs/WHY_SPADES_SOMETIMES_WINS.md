@@ -61,6 +61,34 @@ The earlier version of this page concluded that the missing sequence was count-1
 That was measured with the confounded flag and is wrong: with the corrector actually
 running, cutoff 1 changes NGA50 by nothing at all.
 
+## The complete 2x2, and where the gap actually is
+
+With the corrector's trusted set decoupled from `-c`, and the mask threshold exposed as
+`--mask-min-run`, the two gates can finally be varied independently. On GCF016591995v1:
+
+| configuration | NGA50 | contigs | genome fraction | misassemblies | mismatches/100kb |
+|---|---|---|---|---|---|
+| default (mask on, cutoff auto) | 35,068 | 214 | 98.561 | 0 | **0.46** |
+| mask off, cutoff auto | 35,068 | 212 | 98.584 | 0 | **0.46** |
+| mask off + cutoff 1 | **48,447** | 168 | 98.806 | 2 | **2.48** |
+| SPAdes | **51,105** | 139 | 98.286 | 1 | **0.60** |
+
+Neither gate alone changes anything. Opening both buys +38% contiguity and costs 5.4x the
+mismatch rate.
+
+**SPAdes reaches the same contiguity at 0.60 mismatches, and that is the whole gap.** It
+is not more permissive than TesserACT-with-both-gates-open; it is cleaner upstream.
+BayesHammer will not promote a read unless every base of it is covered by a solid k-mer
+(`hammer/expander.cpp`, `covered_by_solid`), so the reads reaching its graph are
+trustworthy and a permissive cutoff is safe on them. TesserACT masks the unvouchable tail
+and leaves the rest of the read in play, so opening the cutoff admits the errors still in
+those reads along with the real sequence.
+
+The rule that follows is read-level acceptance rather than tail masking: judge the whole
+read by whether it is fully supported, instead of trimming the part that is not. That is
+a change to correct.cpp, it is not made here, and the flags needed to measure it
+(`--mask-min-run`, `--trust-cutoff`, `-c`) are now independent so it can be.
+
 ## What would fix it, and why it is not done here
 
 Opening both gates recovers the contiguity and costs base accuracy: on the four isolates
