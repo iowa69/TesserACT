@@ -32,6 +32,14 @@ built from full record names and each build log reports the count actually exclu
 NG50 is contig NG50 — measured after splitting at runs of ≥10 N, against the true genome length.
 Scaffold NG50 would overstate these by 8.9× to 43.9×.
 
+**These are one held-out genome per organism, and the *S. aureus* row is not representative.**
+Repeated across 151 non-clonal *S. aureus* isolates ([SAUREUS_100_PANEL.md](SAUREUS_100_PANEL.md)),
+the model's gain over the base arm is a median contig NG50 of 258,942 against 234,414 —
+**+10.5%, not +86.1%** — though it is the more convincing result for being 86 wins to 0
+losses (p=8.1e-16) rather than one isolate. A single holdout says whether a model helps;
+it cannot say by how much. Read the +86.1% as the top of a distribution whose middle is
+around +10%, and treat the other five rows the same way until each has its own cohort.
+
 ## Plasmid performance, and the test that had to be redone
 
 Plasmid-contig tagging on a held-out *S. aureus* genome carrying a 54 kb plasmid:
@@ -49,6 +57,13 @@ at 300×, precision and recall go from 0.20/0.04 to 0.91/0.81.
 
 A denser build (`--marker-density 128`) gives slightly better precision (0.947) and worse recall
 (0.720). The default density wins on F1 (0.858 against 0.818) and is what ships.
+
+**Also one genome, and also optimistic.** Pooled over every contig ≥1500 bp in the 151-isolate
+*S. aureus* panel — 119 reference plasmids across 93 plasmid-bearing isolates — the model arm
+scores **precision 0.712, recall 0.794, F1 0.751**, against 0.396/0.573 with no model. The
+0.913/0.808 above is one 54 kb plasmid in one genome. The cohort figure is the one to quote,
+and the classification floor it depends on (contigs shorter than 1500 bp are left Unassigned
+rather than guessed) postdates this measurement.
 
 ## Clinical impact of the residual misassemblies
 

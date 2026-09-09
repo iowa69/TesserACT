@@ -102,6 +102,29 @@ correction, and it is a repeat-resolution decision, not a coverage-threshold one
 Note also GCF022832835v1: 61 misassemblies for TesserACT, 58 for SPAdes. When both
 assemblers fail on the same isolate the isolate is the problem, not the assembler.
 
+## How much the model is worth, and why one number cannot say
+
+The model arm never loses to the no-model arm on NG50 across 151 isolates — 86 wins, 0
+losses, p=8.1e-16 — but *how much* it is worth depends entirely on which summary is
+quoted, and the honest answer is a range:
+
+| summary of the same 151 paired NG50 values | model vs base |
+|---|---|
+| median per-isolate gain | **+2.8%** |
+| median of the two columns | +10.5% |
+| mean of the two columns | +17.6% |
+| mean per-isolate gain | **+20.2%** |
+
+A factor of seven, from summary choice alone. The reason is the shape: 86 isolates improve
+and 65 are unchanged to the base pair, because the model only has something to say where
+its marker adjacency covers the junction. The typical isolate gains a little, a minority
+gain a great deal, and none get worse.
+
+`docs/MODELS_INTEGRATED.md` reports +86.1% for *S. aureus* from a single held-out genome.
+That measurement is real; it is the far right tail of this distribution. The number to
+quote for the model's worth is the win/loss and the p-value, which are unambiguous, with
+whichever central estimate is stated as what it is.
+
 ## Replicon classification
 
 SPAdes does not classify contigs, so this column has no comparison arm. Recovery is
