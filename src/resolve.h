@@ -58,6 +58,21 @@ struct ResolveStats {
 
 class PairedResolver {
 public:
+    // Markers the organism model says occur only on panel plasmids (1) or only on panel
+    // chromosomes (2), keyed by canonical k-mer. Optional; when absent every decision
+    // below behaves exactly as before.
+    //
+    // isRepeat() below is depth-only, and cannot tell a two-copy repeat from a plasmid at
+    // two copies per cell -- the resolve.cpp comment on repeatThreshold says so, and puts
+    // the cost at 4.8% of one assembly. Measured on 119 reference plasmids across 93
+    // S. aureus isolates, the cost is concentrated exactly where that ambiguity bites:
+    // below 1.6x chromosome depth TesserACT recovers 37% of plasmids whole against
+    // SPAdes' 33%, and at or above 8x it recovers 7% against SPAdes' 60%. The model
+    // carries the signal depth does not.
+    void setExclusiveMarkers(const std::unordered_map<uint64_t, uint8_t>* m, uint32_t denom) {
+        exclusiveMarkers_ = m;
+        markerDenom_ = denom ? denom : 1;
+    }
     PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
                    int minLinkSupport, double tieRatio, double linkSupportPerX = 0.10,
                    int minScaffoldSupport = 0);
@@ -101,6 +116,9 @@ public:
     const std::vector<uint64_t>& insertHistogram() const { return insertHistogram_; }
 
 private:
+    const std::unordered_map<uint64_t, uint8_t>* exclusiveMarkers_ = nullptr;
+    uint32_t markerDenom_ = 1;
+
     // Oriented unitig identity, packed as (unitig << 1 | orientation).
     static uint64_t orientedId(uint32_t u, int d) {
         return (static_cast<uint64_t>(u) << 1) | static_cast<uint64_t>(d & 1);

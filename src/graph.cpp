@@ -514,11 +514,28 @@ size_t UnitigGraph::compact() {
 // Simplification
 // ---------------------------------------------------------------------------
 
-size_t UnitigGraph::removeTips(size_t maxLen, double covRatio) {
+size_t UnitigGraph::removeTips(size_t maxLen, double covRatio, size_t absLen,
+                              double absCovBound) {
     size_t removed = 0;
+    const size_t lenCap = std::max(maxLen, absLen);
+    const bool absBranch = absLen > 0 && absCovBound > 0;
+    std::vector<uint32_t> order;
+    order.reserve(nodes.size());
     for (uint32_t u = 0; u < nodes.size(); ++u) {
+        if (!nodes[u].deleted && nodes[u].seq.size() <= lenCap) order.push_back(u);
+    }
+    // Shortest first, so clipping a tip exposes the next one within the same pass instead
+    // of deferring it a round. SPAdes orders by LengthComparator and re-queues neighbours;
+    // this is the cheap approximation. Only applied with the absolute branch on, so the
+    // shipped path keeps its index order and stays reproducible.
+    if (absBranch) {
+        std::sort(order.begin(), order.end(),
+                  [this](uint32_t a, uint32_t b) { return nodes[a].seq.size() < nodes[b].seq.size(); });
+    }
+
+    for (uint32_t u : order) {
         Unitig& U = nodes[u];
-        if (U.deleted || U.seq.size() > maxLen) continue;
+        if (U.deleted || U.seq.size() > lenCap) continue;
 
         int dead;
         if (U.ends[0].empty() && !U.ends[1].empty()) dead = 0;
@@ -539,7 +556,18 @@ size_t UnitigGraph::removeTips(size_t maxLen, double covRatio) {
             bestAlt = std::max(bestAlt, nodes[sib.to].coverage);
         }
         if (alts == 0) continue;
-        if (U.coverage < covRatio * bestAlt) {
+
+        // Relative: the junction has a better alternative. The +1 matches SPAdes'
+        // RelativeCoverageTipCondition, which compares against (maxCompetitor + 1) so that
+        // a competitor at zero cannot make every tip look strong.
+        const double altRef = absBranch ? bestAlt + 1.0 : bestAlt;
+        bool clip = U.seq.size() <= maxLen && U.coverage < covRatio * altRef;
+
+        // Absolute: short enough and thin enough that no competitor need be consulted.
+        if (!clip && absBranch && U.seq.size() <= absLen && U.coverage <= absCovBound) {
+            clip = true;
+        }
+        if (clip) {
             deleteNode(u);
             ++removed;
         }
@@ -950,7 +978,7 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
 
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
-                           std::vector<SimplifyRoundStats>* rounds) {
+                           std::vector<SimplifyRoundStats>* rounds, double errorThreshold) {
     // Tip clipping is where TesserACT and SPAdes differ most. SPAdes clips tips up to
     //     max(min(k, read_length/2) * 3.5, read_length)
     // and removes any whose coverage is below 2.0x the best alternative (rctc 2.0).
@@ -994,7 +1022,30 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         st.round = round + 1;
 
         const double tipRatio = kTipRatio > 0 ? kTipRatio * ramp : 0.35 * ramp + 0.05;
-        st.tipsRemoved = removeTips(tipLen, tipRatio);
+        // The absolute branch. Length coefficient 10 against the relative branch's 3.5,
+        // and the coverage bound is the same error threshold the chimera cut uses, so the
+        // two agree on what "thin" means. Off unless a bound is supplied.
+        static const double kTipAbsMult = [] {
+            const char* e = std::getenv("TESSERACT_TIP_ABS_MULT");
+            return e ? std::atof(e) : 0.0;      // 0 = branch disabled, shipped behaviour
+        }();
+        size_t tipAbsLen = 0;
+        double tipAbsCov = 0.0;
+        if (kTipAbsMult > 0) {
+            const double ecK = std::min<double>(k_, readLength / 2.0);
+            tipAbsLen = static_cast<size_t>(
+                std::max(kTipAbsMult * ecK, static_cast<double>(readLength)));
+            // Same bound the erroneous-connection cut uses below, so the two agree on
+            // what counts as error-level coverage.
+            static const bool kFittedEcTip = [] {
+                const char* e = std::getenv("TESSERACT_FITTED_EC");
+                return e && std::atoi(e) != 0;
+            }();
+            tipAbsCov = (kFittedEcTip && errorThreshold > 0)
+                            ? errorThreshold * ramp
+                            : std::max(meanCoverage * 0.12, 3.0) * ramp;
+        }
+        st.tipsRemoved = removeTips(tipLen, tipRatio, tipAbsLen, tipAbsCov);
         st.merged += compact();
         // A true error bubble sits well below even the half-depth a two-copy
         // split would give, which is what separates it from real divergence.
@@ -1022,8 +1073,17 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
             const char* e = std::getenv("TESSERACT_CHIMERA_FLOOR");
             return e ? std::atof(e) : 3.0;
         }();
-        const double chimeraCut = std::max(meanCoverage * chimeraFactor * ramp,
-                                           chimeraFloor * ramp);
+        // Fitted per rung when available, otherwise the fixed multiple of the mean. A
+        // fixed multiple cannot track a threshold that moves across a ladder; the fitted
+        // one is read from this rung's own count histogram.
+        static const bool kFittedEc = [] {
+            const char* e = std::getenv("TESSERACT_FITTED_EC");
+            return e && std::atoi(e) != 0;
+        }();
+        const double chimeraCut =
+            (kFittedEc && errorThreshold > 0)
+                ? errorThreshold * ramp
+                : std::max(meanCoverage * chimeraFactor * ramp, chimeraFloor * ramp);
         // Length ceiling. SPAdes uses 2*max(5*min(k, RL/2), RL) - 1 -- at k=55/RL=150
         // that is 549 bp against TesserACT's 2k = 110, a 5x difference, and the largest
         // single numerical divergence between the two. Real chimeras and IS-boundary

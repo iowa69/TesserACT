@@ -87,6 +87,13 @@ struct AssemblyOptions {
     long long maxMemoryBytes = 0;   // 0 = 80% of physical RAM
     QualityTrim qtrim;              // 3' trimming applied as reads are loaded
 
+    // Emit sequence that a smaller rung resolved and the final graph then lost.
+    // Contigs come from the final graph alone, so the highest rung decides what survives;
+    // this appends only the difference, never a second copy of what is already there.
+    bool ladderUnion = false;   // off until the factorial says otherwise
+    double ladderUnionMaxPresent = 0.50;   // append only if under half its 31-mers are present
+    size_t ladderUnionMinLen = 1000;
+
     // The command line as invoked, recorded into the reports so a run can be
     // explained and reproduced from its own output.
     std::string commandLine;
@@ -152,6 +159,11 @@ private:
     // report veto rungs the library is too thin to support.
     std::vector<int> resolveKLadder() const;
     std::vector<int> baseKLadder() const;
+    // Bases that still yield at least one k-mer at this k, over the whole library.
+    uint64_t kmerMassAt(int k) const;
+    // Append reserve contigs from earlier rungs whose sequence the final graph dropped.
+    size_t rescueLadderContigs(const std::vector<std::string>& reserve,
+                               std::vector<std::string>& seqs, std::vector<double>& covs) const;
     std::vector<int> trimLadderToCoverage(std::vector<int> ladder) const;
 
     // One de Bruijn iteration: count, filter, build, simplify.

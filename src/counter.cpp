@@ -241,7 +241,8 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
     stats_.distinctKmers = distinct;
 }
 
-uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, double& peakOut) {
+uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, double& peakOut,
+                                   double* errorThresholdOut) {
     peakOut = 0;
     const size_t n = histogram.size();
     if (n <= 3) return 2;
@@ -304,6 +305,7 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
     }
 
     peakOut = static_cast<double>(peak);
+    if (errorThresholdOut) *errorThresholdOut = 0;
     if (peak < 5) return 2;
 
     size_t valley = 1;
@@ -344,11 +346,51 @@ uint32_t KmerCounter::chooseCutoff(const std::vector<uint64_t>& histogram, doubl
     // grows. The panel spans 41-89x, so anything above that is extrapolation
     // and is deliberately gentle; the valley still caps the result, so a
     // library whose error shoulder really does run long is still respected.
+    // The error threshold for SIMPLIFICATION, which is a different question from the
+    // abundance cutoff above. The cutoff is deliberately permissive because errors are
+    // meant to die by topology; but the topology rules then need to know where error-level
+    // coverage actually sits, and a fixed multiple of the mean cannot know that.
+    //
+    // SPAdes fits a mixture and clamps the result to the midpoint between the valley and
+    // the coverage mean (kmer_coverage_model.cpp:358-363). The clamp is the robust part --
+    // it is what keeps the number small at high k, where the distribution is thin -- so
+    // that is what is taken here, floored at the valley itself.
+    if (errorThresholdOut) {
+        double t = static_cast<double>(valley) +
+                   (static_cast<double>(peak) - static_cast<double>(valley)) * 0.5;
+        if (t < static_cast<double>(valley)) t = static_cast<double>(valley);
+        *errorThresholdOut = t;
+    }
+
     const uint32_t permissive =
         std::max<uint32_t>(2, static_cast<uint32_t>((peak + 25) / 50));
     uint32_t cutoff = std::min<uint32_t>(permissive, static_cast<uint32_t>(valley));
     if (cutoff < 2) cutoff = 2;
     return cutoff;
+}
+
+size_t KmerCounter::addTrusted(const std::vector<std::string>& seqs, KmerTable& out,
+                               uint32_t floorCount) const {
+    const int k = k_;
+    if (k <= 0 || floorCount == 0) return 0;
+    size_t added = 0;
+    for (const std::string& seq : seqs) {
+        Kmer fwd = 0, rc = 0;
+        int valid = 0;
+        for (size_t p = 0; p < seq.size(); ++p) {
+            const int c = baseCode(seq[p]);
+            if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+            fwd = pushBack(fwd, c, k);
+            rc = pushFrontRc(rc, c, k);
+            if (++valid < k) continue;
+            const Kmer key = fwd < rc ? fwd : rc;
+            // Never lower a measured count: a k-mer the reads saw keeps the depth they
+            // gave it, which is what the coverage model and every simplification rule
+            // downstream are entitled to read.
+            if (out.get(key) == 0) { out.put(key, floorCount); ++added; }
+        }
+    }
+    return added;
 }
 
 void KmerCounter::extractSolid(uint32_t forcedCutoff, KmerTable& out) {
@@ -383,7 +425,9 @@ void KmerCounter::extractSolid(uint32_t forcedCutoff, KmerTable& out) {
     }
 
     double peak = 0;
-    const uint32_t autoCutoff = chooseCutoff(hist, peak);
+    double fittedErr = 0;
+    const uint32_t autoCutoff = chooseCutoff(hist, peak, &fittedErr);
+    stats_.errorThreshold = fittedErr;
     const uint32_t cutoff = forcedCutoff ? forcedCutoff : autoCutoff;
 
     uint64_t solid = 0;

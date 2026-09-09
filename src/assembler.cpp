@@ -141,6 +141,103 @@ std::vector<int> Assembler::resolveKLadder() const {
     return trimLadderToCoverage(baseKLadder());
 }
 
+uint64_t Assembler::kmerMassAt(int k) const {
+    uint64_t mass = 0;
+    const size_t n = reads_.size();
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t len = reads_.length(i);
+        if (len >= static_cast<uint32_t>(k)) mass += len - static_cast<uint32_t>(k) + 1;
+    }
+    return mass;
+}
+
+size_t Assembler::rescueLadderContigs(const std::vector<std::string>& reserve,
+                                      std::vector<std::string>& seqs,
+                                      std::vector<double>& covs) const {
+    // Contigs are emitted from the final graph alone, so the highest rung decides what
+    // survives. Sequence a smaller k resolved and a larger k could not rebuild -- because
+    // fewer reads reach across k bases, or because simplification cut it -- simply leaves
+    // the assembly.
+    //
+    // A raw union of every rung is not the answer: measured on one panel isolate it gains
+    // 0.48 pp of genome fraction and takes the duplication ratio to 2.99, because almost
+    // everything is emitted three times. What is wanted is only the difference. So keep
+    // each rung's contigs, and at the end append just those the final assembly does not
+    // already contain.
+    //
+    // Containment is tested on 31-mers rather than by alignment: a reserve contig whose
+    // k-mers are mostly present is already represented, however it is broken up among the
+    // final contigs, and one whose k-mers are mostly absent is sequence that was lost.
+    if (reserve.empty() || seqs.empty()) return 0;
+    constexpr int kProbe = 31;
+
+    KmerTable present;
+    size_t bases = 0;
+    for (const std::string& s : seqs) bases += s.size();
+    present.reserve(bases * 2);
+    for (const std::string& s : seqs) {
+        Kmer fwd = 0, rc = 0;
+        int valid = 0;
+        for (size_t p = 0; p < s.size(); ++p) {
+            const int c = baseCode(s[p]);
+            if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+            fwd = pushBack(fwd, c, kProbe);
+            rc = pushFrontRc(rc, c, kProbe);
+            if (++valid >= kProbe) present.put(fwd < rc ? fwd : rc, 1);
+        }
+    }
+
+    // Longest first: a short contig that is contained in a longer one must be tested
+    // against the longer one, which means the longer one has to be emitted first.
+    std::vector<const std::string*> order;
+    order.reserve(reserve.size());
+    for (const std::string& s : reserve) order.push_back(&s);
+    std::sort(order.begin(), order.end(),
+              [](const std::string* a, const std::string* b) { return a->size() > b->size(); });
+
+    size_t added = 0;
+    for (const std::string* sp : order) {
+        const std::string& s = *sp;
+        if (s.size() < opt_.ladderUnionMinLen) continue;
+        size_t total = 0, hit = 0;
+        Kmer fwd = 0, rc = 0;
+        int valid = 0;
+        for (size_t p = 0; p < s.size(); ++p) {
+            const int c = baseCode(s[p]);
+            if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+            fwd = pushBack(fwd, c, kProbe);
+            rc = pushFrontRc(rc, c, kProbe);
+            if (++valid < kProbe) continue;
+            ++total;
+            if (present.contains(fwd < rc ? fwd : rc)) ++hit;
+        }
+        if (total == 0) continue;
+        const double frac = static_cast<double>(hit) / static_cast<double>(total);
+        if (frac >= opt_.ladderUnionMaxPresent) continue;   // already represented
+        seqs.push_back(s);
+        covs.push_back(0.0);
+        ++added;
+        // Register what was just added, or the next reserve contig is tested against an
+        // assembly that no longer reflects what has been emitted. Adjacent rungs resolve
+        // overlapping sequence, so without this two near-copies of the same locus both
+        // pass the containment test and both get written -- which is how a union earns the
+        // duplication ratios the literature reports for concatenated assemblies (7.3 on
+        // MetaHipMer's twelve-way coassembly, against 1.00 on this panel today).
+        {
+            Kmer f2 = 0, r2 = 0;
+            int v2 = 0;
+            for (size_t q = 0; q < s.size(); ++q) {
+                const int c2 = baseCode(s[q]);
+                if (c2 < 0) { v2 = 0; f2 = 0; r2 = 0; continue; }
+                f2 = pushBack(f2, c2, kProbe);
+                r2 = pushFrontRc(r2, c2, kProbe);
+                if (++v2 >= kProbe) present.put(f2 < r2 ? f2 : r2, 1);
+            }
+        }
+    }
+    return added;
+}
+
 std::vector<int> Assembler::baseKLadder() const {
 
     // Mean, not maximum. Many public runs arrive already trimmed by the
@@ -229,8 +326,63 @@ std::vector<int> Assembler::baseKLadder() const {
         if (kLadderLevel >= 1) return {21, 33, 55, 77, 99, 127};
         return {21, 33, 55, 77, 127};
     }
-    if (rl >= 140) return {21, 33, 55, 77, 95};
-    if (rl >= 100) return {21, 33, 45, 55};
+    // Below 165 the mean used to select a shorter ladder outright -- {21,33,55,77,95} at
+    // 140-164 and {21,33,45,55} at 100-139. That is the wrong statistic, and measurably so.
+    //
+    // A library whose reads have been trimmed by the submitter is bimodal: a mass of short
+    // reads and a long tail at the instrument's full cycle count. Its mean lands low while
+    // a tenth of its reads are still 300 bp. Measured on four panel libraries, as the
+    // fraction of the k=21 k-mer mass that survives to k=127:
+    //
+    //     isolate           mean  p50  p90   k=95  k=127   old top rung
+    //     GCF010364725v2    151   130  300    50%    35%    55
+    //     GCF046268025v1    164   146  301    55%    41%    95
+    //     GCF045347525v1    201   187  351    62%    49%    127
+    //     GCF026547035v1    141   151  151    40%    17%    95
+    //
+    // The binning is anti-correlated with what it is protecting. The library that keeps the
+    // MOST k-mer mass at k=127 (35%) was capped at k=55, while the fixed-length 151 bp
+    // library that keeps the LEAST (17%) was given a rung at 95. SPAdes runs 21,33,55,77,
+    // 99,127 on all four regardless, and beats us on the three that were truncated.
+    //
+    // So take the top rung from the read-length distribution rather than one moment of it:
+    // start from the full ladder and drop rungs that would not retain enough k-mer mass to
+    // build a graph from. The floor is set where the 151 bp control keeps exactly the top
+    // rung it had before, so a fixed-length library sees no change and only the bimodal
+    // ones gain.
+    // Restores the pre-fix mean-binned ladder, so a factorial experiment can hold this
+    // variable while changing others.
+    static const bool kLegacyLadder = [] {
+        const char* e = std::getenv("TESSERACT_LEGACY_LADDER");
+        return e && std::atoi(e) != 0;
+    }();
+    if (kLegacyLadder) {
+        if (rl >= 140) return {21, 33, 55, 77, 95};
+        if (rl >= 100) return {21, 33, 45, 55};
+        if (rl >= 70)  return {21, 33, 45};
+        if (rl >= 45)  return {17, 25, 31};
+        return {15, 21};
+    }
+    if (rl >= 100) {
+        static const double kMinMass = [] {
+            const char* e = std::getenv("TESSERACT_MIN_KMER_MASS");
+            return e ? std::atof(e) : 0.35;
+        }();
+        std::vector<int> ladder = {21, 33, 55, 77, 87, 99, 111, 119, 127};
+        if (kLadderLevel == 2) ladder = {21, 33, 55, 77, 99, 111, 119, 127};
+        else if (kLadderLevel == 1) ladder = {21, 33, 55, 77, 99, 127};
+        else if (kLadderLevel <= 0) ladder = {21, 33, 55, 77, 127};
+        const uint64_t base = kmerMassAt(ladder.front());
+        if (base == 0 || kMinMass <= 0) return ladder;
+        size_t keep = ladder.size();
+        while (keep > 3 &&
+               static_cast<double>(kmerMassAt(ladder[keep - 1])) / static_cast<double>(base) <
+                   kMinMass) {
+            --keep;
+        }
+        ladder.resize(keep);
+        return ladder;
+    }
     if (rl >= 70)  return {21, 33, 45};
     if (rl >= 45)  return {17, 25, 31};
     return {15, 21};
@@ -359,7 +511,20 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
                      "(projected peak at final k=%d is %.1f < %.1f)\n",
                      k, carryWeight, finalK_, projected, kCarryBoostBelow);
     }
-    counter.count(reads_, carryOver, carryWeight);
+    // Reads only. The carry-over is added after the cutoff is chosen, not before it --
+    // see addTrusted() in counter.h for why the two have to be kept apart. Set
+    // TESSERACT_CARRY_WEIGHTED=1 to restore the old behaviour, where carried contigs were
+    // counted alongside the reads at `carryWeight` and had to clear the cutoff they had
+    // just helped to move.
+    static const bool kCarryWeighted = [] {
+        const char* e = std::getenv("TESSERACT_CARRY_WEIGHTED");
+        return e && std::atoi(e) != 0;
+    }();
+    if (kCarryWeighted) {
+        counter.count(reads_, carryOver, carryWeight);
+    } else {
+        counter.count(reads_, {}, 0);
+    }
 
     if (counter.exceededMemory()) {
         char buf[512];
@@ -375,6 +540,20 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     KmerTable solid;
     counter.extractSolid(opt_.forcedCutoff, solid);
     const CountingStats& cs = counter.stats();
+    // Trusted carry-over, after the cutoff has been fixed by the reads alone. A k-mer the
+    // reads already vouched for keeps its measured depth; one they never produced enters at
+    // the cutoff, present but claiming no more depth than the bar it was excused from.
+    if (!kCarryWeighted && !carryOver.empty()) {
+        const uint32_t floorCount = std::max<uint32_t>(1, cs.cutoff);
+        it.carryOverRescued = counter.addTrusted(carryOver, solid, floorCount);
+        if (opt_.verbose && it.carryOverRescued) {
+            std::fprintf(stderr,
+                         "  k=%-3d carry  %s k-mers from %zu carried contigs entered below "
+                         "the cutoff of %u\n",
+                         k, util::commify(static_cast<long long>(it.carryOverRescued)).c_str(),
+                         carryOver.size(), cs.cutoff);
+        }
+    }
     it.countSeconds = t.elapsed();
     it.totalKmers = cs.totalKmers;
     it.distinctKmers = cs.distinctKmers;
@@ -422,7 +601,8 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     }
     t.reset();
     graph.simplify(meanCoverage, static_cast<int>(reads_.maxReadLength()), opt_.verbose,
-                   opt_.bubbleCoverageLimit, opt_.simplifyRounds, &it.rounds);
+                   opt_.bubbleCoverageLimit, opt_.simplifyRounds, &it.rounds,
+                   cs.errorThreshold);
     it.simplifySeconds = t.elapsed();
     it.unitigsFinal = graph.liveCount();
     it.lengthFinal = graph.totalLength();
@@ -627,6 +807,7 @@ bool Assembler::run(std::string& error) {
 
     UnitigGraph graph;
     std::vector<std::string> carryOver;
+    std::vector<std::string> ladderReserve;
     double meanCoverage = 0;
 
     // The last rung shorter than the reads is where the reported contigs come from,
@@ -654,6 +835,13 @@ bool Assembler::run(std::string& error) {
             carryOver.clear();
             std::vector<double> covs;
             graph.toContigs(static_cast<size_t>(ladder[i + 1]) + 1, carryOver, covs);
+            // Keep the substantial ones. Whatever the final graph fails to rebuild is
+            // recovered from here; see rescueLadderContigs().
+            if (opt_.ladderUnion) {
+                for (const std::string& c : carryOver) {
+                    if (c.size() >= opt_.ladderUnionMinLen) ladderReserve.push_back(c);
+                }
+            }
         }
     }
 
@@ -674,6 +862,29 @@ bool Assembler::run(std::string& error) {
         PairedResolver resolver(graph, reads_, opt_.threads, opt_.minLinkSupport, opt_.tieRatio,
                                 opt_.linkSupportPerX);
         resolver.setScaffolding(opt_.scaffold);
+
+        // The resolver's repeat test is depth-only and cannot tell a multi-copy plasmid
+        // from a repeat. Only the exclusive-marker section of the model is read here --
+        // not the adjacency tables or the layout tracks -- so the full model can still be
+        // loaded after the ladder, where its size does not land on the memory peak.
+        // Failure is not fatal: without it the resolver behaves exactly as before.
+        std::unordered_map<uint64_t, uint8_t> exclusiveMarkers;
+        uint32_t markerDenom = 0;
+        if (!opt_.organismModelPath.empty()) {
+            std::string mErr;
+            if (OrganismModel::loadExclusiveMarkers(opt_.organismModelPath, exclusiveMarkers,
+                                                    markerDenom, mErr)) {
+                resolver.setExclusiveMarkers(&exclusiveMarkers, markerDenom);
+                if (opt_.verbose) {
+                    std::fprintf(stderr, "      %zu replicon-exclusive markers for the repeat test\n",
+                                 exclusiveMarkers.size());
+                }
+            } else if (opt_.verbose) {
+                std::fprintf(stderr, "      note: %s (repeat test falls back to depth alone)\n",
+                             mErr.c_str());
+            }
+        }
+
         // OFF by default: measured, and it makes things worse.
         //
         // The reasoning that motivated it was sound as far as it went -- the fitted window
@@ -764,6 +975,20 @@ bool Assembler::run(std::string& error) {
     } else {
         if (opt_.verbose) std::fprintf(stderr, "[4/7] collecting contigs\n");
         graph.toContigs(minLen, seqs, covs);
+    }
+
+    if (opt_.ladderUnion && !ladderReserve.empty()) {
+        const size_t before = seqs.size();
+        const size_t rescued = rescueLadderContigs(ladderReserve, seqs, covs);
+        report_.ladderRescued = rescued;
+        for (size_t i = before; i < seqs.size(); ++i) report_.ladderRescuedBases += seqs[i].size();
+        if (opt_.verbose && rescued) {
+            std::fprintf(stderr,
+                         "      ladder union: %zu contigs (%s bp) resolved at a smaller k and "
+                         "absent from the final graph\n",
+                         rescued,
+                         util::commify(static_cast<long long>(report_.ladderRescuedBases)).c_str());
+        }
     }
 
     // What is left unjoined at this point is not weakly supported -- it is

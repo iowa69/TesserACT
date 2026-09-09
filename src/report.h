@@ -42,6 +42,7 @@ struct KIteration {
     double graphSeconds = 0;
     double simplifySeconds = 0;
     size_t carryOverContigs = 0;
+    size_t carryOverRescued = 0;   // k-mers admitted below the cutoff as trusted
 };
 
 struct ContigRecord {
@@ -66,6 +67,8 @@ struct AssemblyReport {
     uint64_t inputBases = 0;
     uint32_t maxReadLength = 0;
     uint64_t qualityTrimmedBases = 0;
+    size_t   ladderRescued = 0;        // contigs recovered from a smaller rung
+    uint64_t ladderRescuedBases = 0;
     bool paired = false;
     std::vector<std::string> inputFiles;
 

@@ -77,7 +77,17 @@ public:
     // ---- simplification ----
     // Removes short dead-end branches whose coverage is low relative to the
     // alternative at the branch point.
-    size_t removeTips(size_t maxLen, double covRatio);
+    // Two rules, as SPAdes has. The relative one asks whether the junction offers a
+    // better alternative; the absolute one asks only whether the tip is short and thin.
+    //
+    // TesserACT shipped only the relative rule, at a 3.5x length coefficient. SPAdes runs
+    // both, and its second branch reaches 10x with no competitor requirement at all
+    // (tip_clipper.hpp, condition "{ tc_lb 10., cb auto }"). A tip 250-850 bp long sitting
+    // at 2-7x beside a competitor at 3x fails the relative test and survives forever, and
+    // every survivor is a junction that blocks compaction -- which is to say, a contig
+    // break. Pass absLen = 0 to get the old single-rule behaviour.
+    size_t removeTips(size_t maxLen, double covRatio, size_t absLen = 0,
+                      double absCovBound = 0.0);
     // Collapses pairs of near-identical parallel paths, keeping the better
     // supported one. `maxLoserCoverage` bounds how well covered the discarded
     // side may be: an error bubble has a clearly weak side, whereas two
@@ -142,9 +152,12 @@ public:
     // `bubbleCoverageLimit` is the fraction of mean coverage below which a
     // bubble side may be discarded; raising it collapses diverged repeat
     // copies too, which buys contiguity at the risk of misassembly.
+    // errorThreshold: coverage below which an edge is error-level, fitted from the
+    // rung's own k-mer histogram. 0 falls back to the fixed multiple of meanCoverage.
     void simplify(double meanCoverage, int readLength, bool verbose,
                   double bubbleCoverageLimit = 0.35, int maxRounds = 12,
-                  std::vector<SimplifyRoundStats>* rounds = nullptr);
+                  std::vector<SimplifyRoundStats>* rounds = nullptr,
+                  double errorThreshold = 0.0);
 
     // ---- traversal helpers ----
     // Sequence of `u` in the given orientation (0 = forward, 1 = reverse).

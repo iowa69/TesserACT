@@ -1,5 +1,7 @@
 #include "resolve.h"
 
+#include "organism.h"   // forEachMarkerKmer, for the plasmid vouch below
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -30,6 +32,13 @@ constexpr double kDepthWindow = 20000.0;   // how much of the chain end to avera
 // Repeat resolution by paired matching: only for repeats short enough that no
 // pair can span them (which is why they are unresolved), and the intended
 // assignment must beat the crossed one by this factor.
+// A vouched group must total at least this much sequence. At a sampling of one k-mer in
+// 512 this is about three sampled k-mers, which is the least that can carry two marker
+// hits; it is also the length below which replicon.cpp declines to classify a contig.
+constexpr size_t kMinVouchLen = 1500;
+// How many plasmid-exclusive markers a group must carry before its depth is excused.
+constexpr uint32_t kMinPlasmidVouch = 2;
+
 constexpr size_t kMaxMatchedRepeat = 3000;
 constexpr double kMatchDominance = 3.0;
 
@@ -328,8 +337,90 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // error, and the contiguity it was meant to buy came from the scaffolding
     // and tie-break changes instead.
     const double repeatThreshold = medianCoverage_ * 1.6;
+    // Vouching is done over a CONNECTED GROUP of high-depth unitigs, not one unitig at a
+    // time, because the marker sampling will not support the per-unitig question. The
+    // model samples one canonical k-mer in `markerDenom_` -- 512 for the shipped S. aureus
+    // model -- so a 1,000 bp unitig contributes about two sampled k-mers in total, and
+    // asking it for two plasmid-exclusive markers asks for near enough all of them. The
+    // first version of this rule did exactly that and vouched nothing on either isolate
+    // tested.
+    //
+    // A multi-copy plasmid is anyway not one deep unitig: it is a group of them, joined to
+    // each other and cut off from the chromosome by the same depth test. Summing markers
+    // over the group both matches that structure and gives the sampling enough sequence to
+    // work with -- a 20 kb plasmid contributes about 40 sampled k-mers however many pieces
+    // it is in.
+    std::vector<char> plasmidVouched(n, 0);
+    size_t vouchedCount = 0, vouchedGroups = 0;
+    if (exclusiveMarkers_ && !exclusiveMarkers_->empty() && medianCoverage_ > 0) {
+        std::vector<char> deep(n, 0);
+        for (uint32_t u = 0; u < n; ++u) {
+            if (!g_.nodes[u].deleted && g_.nodes[u].coverage > repeatThreshold) deep[u] = 1;
+        }
+        // Connected groups among the deep unitigs only. Union-find would do; the graph is
+        // small enough here that a flood fill is clearer.
+        std::vector<uint32_t> group(n, UINT32_MAX);
+        std::vector<std::vector<uint32_t>> groups;
+        std::vector<uint32_t> stack;
+        for (uint32_t seed = 0; seed < n; ++seed) {
+            if (!deep[seed] || group[seed] != UINT32_MAX) continue;
+            const uint32_t gid = static_cast<uint32_t>(groups.size());
+            groups.emplace_back();
+            stack.assign(1, seed);
+            group[seed] = gid;
+            while (!stack.empty()) {
+                const uint32_t u = stack.back(); stack.pop_back();
+                groups[gid].push_back(u);
+                for (int o = 0; o < 2; ++o) {
+                    for (const Link& l : g_.exits(u, o)) {
+                        if (g_.nodes[l.to].deleted || !deep[l.to]) continue;
+                        if (group[l.to] != UINT32_MAX) continue;
+                        group[l.to] = gid;
+                        stack.push_back(l.to);
+                    }
+                }
+            }
+        }
+        for (const std::vector<uint32_t>& grp : groups) {
+            size_t len = 0;
+            uint32_t pls = 0, chr = 0;
+            for (uint32_t u : grp) {
+                len += g_.nodes[u].seq.size();
+                forEachMarkerKmer(g_.nodes[u].seq, [&](uint64_t km, uint32_t, int) {
+                    auto it = exclusiveMarkers_->find(km);
+                    if (it == exclusiveMarkers_->end()) return;
+                    if (it->second == 1) ++pls; else ++chr;
+                }, markerDenom_);
+            }
+            // One-sided on purpose. A wrong exemption lets a real repeat be traversed, so a
+            // single chromosome-exclusive marker anywhere in the group vetoes the whole
+            // group, and a repeat family shared between chromosome and plasmid -- which
+            // contributes no exclusive markers either way -- is never exempted.
+            if (chr != 0 || pls < kMinPlasmidVouch || len < kMinVouchLen) continue;
+            ++vouchedGroups;
+            for (uint32_t u : grp) { plasmidVouched[u] = 1; ++vouchedCount; }
+        }
+    }
+    if (getenv("TESSERACT_DEBUG_RESOLVE") && exclusiveMarkers_) {
+        size_t hi = 0, hiLen = 0, hiMax = 0;
+        for (uint32_t u = 0; u < n; ++u) {
+            if (g_.nodes[u].deleted || medianCoverage_ <= 0) continue;
+            if (g_.nodes[u].coverage <= repeatThreshold) continue;
+            ++hi; hiLen += g_.nodes[u].seq.size();
+            hiMax = std::max(hiMax, g_.nodes[u].seq.size());
+        }
+        std::fprintf(stderr,
+            "      [debug] high-depth unitigs=%zu (mean len %zu, max %zu); vouched %zu in "
+            "%zu group(s) (denom %u, exclusive markers %zu)\n",
+            hi, hi ? hiLen / hi : 0, hiMax, vouchedCount, vouchedGroups, markerDenom_,
+            exclusiveMarkers_->size());
+    }
+
     auto isRepeat = [&](uint32_t u) {
-        return medianCoverage_ > 0 && g_.nodes[u].coverage > repeatThreshold;
+        if (medianCoverage_ <= 0) return false;
+        if (g_.nodes[u].coverage <= repeatThreshold) return false;
+        if (plasmidVouched[u] && !getenv("TESSERACT_NO_PLASMID_VOUCH")) return false;
+        return true;
     };
 
     // Reads only anchor uniquely inside a unitig long enough to own k-mers its

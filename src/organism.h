@@ -125,6 +125,22 @@ public:
     // spent, so the file is checked for what it is up front and read in full later.
     static bool checkHeader(const std::string& path, std::string& error);
 
+    // Markers exclusive to one replicon class, read straight off the file's marker
+    // section without allocating the adjacency tables or the layout tracks behind it.
+    //
+    // The full model is deliberately loaded after the k-mer ladder, so that its size is
+    // not added to the memory peak (see load()). The repeat resolver runs before that
+    // point and needs one thing the depth test cannot give it: whether a unitig is
+    // deep because it is a repeat, or deep because it is a multi-copy plasmid. This
+    // reads only what answers that -- for a 67 MB S. aureus model the marker section is
+    // a small fraction of the file, and only exclusive markers are kept.
+    //
+    // Values are 1 for plasmid-exclusive, 2 for chromosome-exclusive. A marker seen on
+    // both classes says nothing and is not stored.
+    static bool loadExclusiveMarkers(const std::string& path,
+                                     std::unordered_map<uint64_t, uint8_t>& out,
+                                     uint32_t& denom, std::string& error);
+
     bool loaded() const { return loaded_; }
     uint32_t genomes(Replicon r) const {
         return r == Replicon::Chromosome ? genomesChr_ : genomesPls_;

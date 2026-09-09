@@ -131,6 +131,7 @@ void usage() {
         "      --no-resolve        skip paired-end repeat resolution\n"
         "      --no-scaffold       skip scaffolding\n"
         "      --no-gapfill        skip scaffold gap closing\n"
+        "      --ladder-union      also emit what a smaller k resolved and the final graph lost\n"
         "      --no-polish         skip consensus polishing\n"
         "\n"
         "GENERAL\n"
@@ -309,6 +310,8 @@ int main(int argc, char** argv) {
         else if (a == "--no-resolve") opt.resolveRepeats = false;
         else if (a == "--no-scaffold") opt.scaffold = false;
         else if (a == "--no-gapfill") opt.gapFill = false;
+        else if (a == "--no-ladder-union") opt.ladderUnion = false;
+        else if (a == "--ladder-union") opt.ladderUnion = true;
         else if (a == "--no-polish") opt.polish = false;
         else if (a == "-t" || a == "--threads") opt.threads = static_cast<int>(intInRange(needValue(i, "-t"), "-t/--threads", 1, 4096));
         else if (a == "-q" || a == "--quiet") opt.verbose = false;

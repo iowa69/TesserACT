@@ -75,6 +75,11 @@ struct CountingStats {
     double peakCoverage = 0;        // coverage mode of solid k-mers
     double estimatedGenomeSize = 0;
     std::vector<uint64_t> histogram;   // count -> distinct k-mers with it
+    // Coverage below which an edge is error-level, fitted from this rung's own histogram
+    // rather than assumed as a fixed multiple of the mean. SPAdes fits one per rung and
+    // its values move a long way across a ladder (7, 10, 4, 12, 2 on one library), which a
+    // fixed multiple cannot track. 0 when the histogram is too poor to fit.
+    double errorThreshold = 0;
 };
 
 class KmerCounter {
@@ -98,10 +103,29 @@ public:
     // compact table of solid k-mers. Pass 0 for `forcedCutoff` to auto-detect.
     void extractSolid(uint32_t forcedCutoff, KmerTable& out);
 
+    // Insert every k-mer of `seqs` into an already-extracted solid table, regardless of
+    // how often -- or whether -- the reads observed it.
+    //
+    // This is the carry-over path, and it is deliberately NOT part of count(). Counting
+    // the previous rung's contigs alongside the reads puts their k-mers into the same
+    // abundance histogram that the cutoff is chosen from, so the carry-over both has to
+    // clear a threshold and moves the threshold it has to clear. SPAdes keeps the two
+    // apart -- previous-K contigs arrive as a TrustedContigs library on a separate stream,
+    // with the comment "Has to be separate stream for not counting it in coverage", and
+    // their k-mers enter the graph unconditionally. Since each rung's contigs are trusted
+    // into the next, the effect is transitive: the final graph accumulates every rung's
+    // resolved sequence.
+    //
+    // A k-mer already present keeps its measured count, so real coverage is never
+    // overwritten. One the reads never produced enters at `floorCount` -- present, but
+    // claiming no more depth than the threshold it was exempted from.
+    size_t addTrusted(const std::vector<std::string>& seqs, KmerTable& out, uint32_t floorCount) const;
+
     const CountingStats& stats() const { return stats_; }
 
     // Cutoff chosen by locating the error/signal valley in the histogram.
-    static uint32_t chooseCutoff(const std::vector<uint64_t>& histogram, double& peakOut);
+    static uint32_t chooseCutoff(const std::vector<uint64_t>& histogram, double& peakOut,
+                                 double* errorThresholdOut = nullptr);
 
 private:
     struct Shard;

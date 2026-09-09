@@ -204,6 +204,70 @@ bool OrganismModel::checkHeader(const std::string& path, std::string& error) {
     return true;
 }
 
+bool OrganismModel::loadExclusiveMarkers(const std::string& path,
+                                         std::unordered_map<uint64_t, uint8_t>& out,
+                                         uint32_t& denom, std::string& error) {
+    out.clear();
+    denom = kMarkerSampleDenom;
+    std::FILE* raw = std::fopen(path.c_str(), "rb");
+    if (!raw) { error = "cannot open model file: " + path; return false; }
+    const std::unique_ptr<std::FILE, int (*)(std::FILE*)> guard(raw, std::fclose);
+    std::FILE* f = raw;
+
+    char magic[8];
+    if (std::fread(magic, 1, 8, f) != 8) { error = "not a TesserACT model file: " + path; return false; }
+    const bool hasDensity  = std::memcmp(magic, kMagic, 8) == 0;
+    const bool hasPlasmids = hasDensity || std::memcmp(magic, kMagicV4, 8) == 0;
+    const bool hasTracks   = hasPlasmids || std::memcmp(magic, kMagicV3, 8) == 0;
+    if (!hasTracks && std::memcmp(magic, kMagicV2, 8) != 0) {
+        error = "not a TesserACT model file (or one from an older version): " + path;
+        return false;
+    }
+    long fileSize = 0;
+    if (std::fseek(f, 0, SEEK_END) == 0) {
+        fileSize = std::ftell(f);
+        if (std::fseek(f, 8, SEEK_SET) != 0) fileSize = 0;
+    }
+    const auto plausible = [&](uint64_t count, uint64_t bytesEach) {
+        if (fileSize <= 0) return true;
+        return bytesEach == 0 || count <= static_cast<uint64_t>(fileSize) / bytesEach;
+    };
+
+    // Header, in the same order load() reads it. Everything here is skipped past;
+    // only the marker section that follows is kept.
+    uint32_t kk = 0;
+    bool ok = readPod(f, kk);
+    if (ok && hasDensity) {
+        ok = readPod(f, denom);
+        if (ok && denom == 0) { error = "model declares a marker sampling denominator of zero: " + path; return false; }
+    }
+    uint32_t gChr = 0, gPls = 0;
+    ok = ok && readPod(f, gChr) && readPod(f, gPls);
+    uint32_t nameLen = 0;
+    ok = ok && readPod(f, nameLen) && plausible(nameLen, 1);
+    if (ok && nameLen) ok = std::fseek(f, static_cast<long>(nameLen), SEEK_CUR) == 0;
+    uint32_t nExcluded = 0;
+    ok = ok && readPod(f, nExcluded) && plausible(nExcluded, 4);
+    for (uint32_t i = 0; i < nExcluded && ok; ++i) {
+        uint32_t n = 0;
+        ok = readPod(f, n) && plausible(n, 1);
+        if (ok && n) ok = std::fseek(f, static_cast<long>(n), SEEK_CUR) == 0;
+    }
+
+    uint64_t nMarkers = 0;
+    ok = ok && readPod(f, nMarkers) && plausible(nMarkers, 16);
+    for (uint64_t i = 0; i < nMarkers && ok; ++i) {
+        uint64_t km = 0;
+        uint32_t gc = 0, gp = 0;
+        ok = readPod(f, km) && readPod(f, gc) && readPod(f, gp);
+        if (!ok) break;
+        if (gp > 0 && gc == 0) out.emplace(km, static_cast<uint8_t>(1));
+        else if (gc > 0 && gp == 0) out.emplace(km, static_cast<uint8_t>(2));
+    }
+    if (!ok) { error = "model file is truncated in its marker section: " + path; out.clear(); return false; }
+    return true;
+}
+
 bool OrganismModel::load(const std::string& path, std::string& error) {
     std::FILE* raw = std::fopen(path.c_str(), "rb");
     if (!raw) { error = "cannot open model file: " + path; return false; }
