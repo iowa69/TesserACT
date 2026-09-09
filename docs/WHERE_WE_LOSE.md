@@ -74,77 +74,100 @@ contiguity, and a residual survives contiguity-matching at p=0.022.
 
 ## Where the advantage actually goes: paired reach
 
-Define **paired reach** = fitted insert size − read length. It is how far past its own read a
-pair can vouch for. When the fragment is shorter than the read, the mates overlap completely
-and reach goes to zero or below — the pair says nothing the read did not already say.
+**This section was wrong in its first version and is corrected here. The correction is
+recorded rather than quietly edited, because the mistake is instructive.**
 
-TesserACT resolves repeats from paired evidence. SPAdes' `SimpleExtensionChooser` does too,
-but refuses at an ambiguous branch instead of continuing. So the two should converge exactly
-where paired evidence vanishes, and they do:
+Define **paired reach** = fitted insert size − read length. It is how far past its own read
+a pair can vouch for; when the fragment is no longer than the read, the mate says nothing the
+read did not already say.
 
-| library | n | our NGA50 | SPAdes | ratio | win/loss | p |
-|---|---|---|---|---|---|---|
-| **mates overlap (reach <= 0)** | **23** | **162,059** | **158,959** | **1.02x** | **15/8** | **0.354 (ns)** |
-| reach 0–60 bp | 28 | 228,496 | 176,652 | 1.29x | 20/8 | 0.023 |
-| reach 60–120 bp | 53 | 272,584 | 231,262 | 1.18x | 39/14 | 0.001 |
-| reach > 120 bp | 76 | 288,882 | 189,584 | **1.52x** | 59/17 | 7.7e-07 |
+The first version took "read length" from the assembly log's `max length`. These libraries
+are not fixed-length — median mean read length across the panel is **202 bp against a median
+max of 251**, and 36 of 180 isolates have a max more than 20% above their mean. That inflated
+the read length and invented a 23-isolate band of "overlapping mates" which, measured against
+the mean, is **one isolate**. (`baseKLadder()` in `assembler.cpp` already uses the mean for
+exactly this reason, and its comment describes the trap precisely. The assembler was right;
+the analysis was not.)
 
-Spearman across all 180 isolates, reach against our NGA50 ratio: **+0.193, p=0.0085.**
-The trend is continuous, not an artefact of the binning.
+Recomputed against mean read length:
 
-**On 23 of 180 isolates — 13% — our entire margin over SPAdes disappears.** Not a loss; a
-parity we should not be at, given we are 1.5x ahead when the library has reach. Losing
-isolates and winning isolates have the same coverage (94.6x vs 96.8x median) and the same
-read length. Reach separates them; depth does not.
+| library | n | med insert | med read | our NGA50 | SPAdes | ratio | win/loss | p |
+|---|---|---|---|---|---|---|---|---|
+| mates overlap (reach <= 0) | 1 | 126 | 145 | — | — | 4.20x | 1/0 | — |
+| **reach 0–60 bp** | **38** | 248 | 201 | — | — | **1.00x** | 25/13 | **0.131 (ns)** |
+| reach 60–120 bp | 58 | 328 | 237 | — | — | 1.11x | 43/15 | 6.2e-04 |
+| reach > 120 bp | 83 | 368 | 149 | — | — | 1.29x | 64/19 | 3.0e-07 |
 
-### These libraries are also physically damaged, and we do not repair them
+Spearman across all 180 isolates, reach against our NGA50 ratio: **+0.193, p=0.0085** —
+identical whether reach is computed from mean or max read length, so the *trend* was never in
+doubt; only the band boundaries were.
 
-In that band the median fitted insert is **225 bp against a 301 bp read**. Every read runs
-about 76 bp past the end of its own fragment, into adapter. That shows up in our own logs:
+**On 38 of 180 isolates our entire margin over SPAdes disappears.** Not a loss — a parity we
+should not be at, given we are 1.29x ahead when the pairs have reach. Losing and winning
+isolates have the same coverage (94.6x against 96.8x median) and the same read length.
 
-| band | n | median insert | median read length | 3' quality-trimmed | masked unvouchable |
-|---|---|---|---|---|---|
-| mates overlap | 23 | 225 | 301 | 0.90% | **3.15%** |
-| reach 0–60 | 28 | 266 | 251 | 0.20% | 1.74% |
-| reach 60–120 | 53 | 333 | 251 | 0.00% | **0.23%** |
-| reach > 120 | 76 | 368 | 151 | 0.10% | 1.10% |
+### It is not adapter read-through
 
-Three to fourteen times more sequence masked as unvouchable than the clean bands. The worst
-cases:
+The first version attributed this to adapter read-through and proposed trimming it. Measured
+on the raw FASTQ, stride-sampled across the whole file rather than its head:
 
-| isolate | insert | read length | overhang | masked | NGA50 vs SPAdes |
-|---|---|---|---|---|---|
-| GCF010364725v2 | 154 | 301 | 147 bp | 4.68% | **0.40x** |
-| GCF046268025v1 | 175 | 301 | 126 bp | 1.85% | **0.34x** |
-| GCF038024725v1 | 227 | 351 | 124 bp | **22.31%** | 1.06x |
-| GCF045347525v1 | 214 | 351 | 137 bp | 4.98% | 0.73x |
+| | GCF010364725v2 |
+|---|---|
+| pairs with a **perfect, zero-mismatch** overlap | **69.2%** |
+| median overlap length | 127 bp of a 131 bp read |
+| pairs whose fragment is shorter than R1 (true read-through) | **3.3%** |
 
-The corrector is doing its job — it correctly finds that those trailing bases have no k-mer
-support and masks them. But masking a 130 bp tail leaves a fragment, not a read, and the
-information that the tail was *adapter* is never used.
+The overlap is real and near-universal; read-through is rare. The fragments are barely longer
+than the reads, so **a pair is two near-duplicate copies of the same ~120 bp of genome**.
+Paired reach is zero by construction. That is a property of the library, not a defect in the
+resolver, and no amount of adapter trimming addresses it.
 
-**TesserACT does no adapter detection at all.** There is no occurrence of `AGATCGGAAGAGC`
-or any adapter logic anywhere in `src/`. What exists is only 3' quality trimming, which
-removes 0.9% where 25–40% of the read is adapter.
+`scepter` (fastplus) agrees independently and fails all three of the worst libraries outright:
+insert peaks of **78, 35 and 35 bp** against 301- and 351-cycle reads, and on the worst one
+reported quality is 8.5 Q units optimistic against its empirical error rate.
 
-And the detection is free: `LibraryQC` already carries `insertPeak` and `meanReadLength`,
-and the QC stage **already overlaps the mates** to build the insert histogram and to measure
-the substitution rate. Everything needed to notice `insertPeak < meanReadLength` is computed
-and then not acted on.
+## Four fixes tested on the three worst isolates, four negatives
+
+The three: GCF010364725v2 (56x, mean read 136), GCF046268025v1 (140x, 163), GCF045347525v1
+(53x, 187). NGA50 for every arm:
+
+| arm | GCF010364725v2 | GCF046268025v1 | GCF045347525v1 |
+|---|---|---|---|
+| vanilla | 5,653 | 48,982 | 77,166 |
+| `--organism` | 5,781 | 53,876 | 77,166 |
+| careful | 5,834 | 51,574 | 77,166 |
+| aggressive | 5,781 | 51,574 | 77,166 |
+| mates merged (scepter) | **1,726** | 56,613 | 78,519 |
+| ladder capped at k=77 | 5,910 | 51,632 | **69,186** |
+| **SPAdes** | **14,366** | **158,959** | **106,210** |
+
+1. **Adapter trimming.** Implemented (overlap detection, `--no-overlap-trim`, activates on a
+   stride sample). Correct, and inert: the condition is 3.3% of pairs, below any sane
+   threshold. Not committed — a fix for a problem this rare does not earn a place in the
+   loader.
+2. **Mate merging.** Two isolates gain 2–5%; the third loses genome fraction **94.94% ->
+   81.07%** and doubles its contig count. Not shippable as a default.
+3. **Shorter k ladder.** Helps the worst isolate by 2%, costs the other two 4% and 10%. Our
+   tall ladder is earning its keep; effective coverage falling from 28.8x to 20.9x across the
+   top rungs is a price worth paying.
+4. **Library depth** — does not separate winners from losers at all.
+
+Note the third column: **all four TesserACT arms return exactly 77,166**, to the base pair.
+Model, presets, resolution settings — none of them move it. Whatever caps us on that isolate
+is upstream of repeat resolution, in the graph itself.
 
 ## What to fix, in order of expected value
 
-1. **Adapter read-through / mate merging.** Detect `insertPeak < meanReadLength` and either
-   hard-trim each read to the fragment or merge the overlapping mates into one consensus
-   read. Merging is strictly better: it removes the adapter *and* corrects the overlap by
-   consensus, which is the same comparison `libqc` already performs. Target: 23 of 180
-   isolates (13%) currently at parity with SPAdes where the rest of the cohort is 1.2–1.5x
-   ahead.
+1. **The read corrector.** Every cheaper hypothesis above is excluded, and the arms-return-
+   identical-numbers result puts the limit upstream of resolution.
+   [WHY_SPADES_SOMETIMES_WINS.md](WHY_SPADES_SOMETIMES_WINS.md) reached the same conclusion
+   from the opposite direction — that the gap is corrector strength rather than any
+   threshold. The decisive experiment is to run BayesHammer alone and assemble its corrected
+   reads with TesserACT; if the gap closes, the corrector is the whole of it.
 2. **Plasmid copy number in the repeat test.** Separately measured and implemented; whole-
-   plasmid recovery 33% -> 44% on a 39-isolate subset. See
-   [PLASMID_COPY_NUMBER.md](PLASMID_COPY_NUMBER.md).
-3. **The residual misassembly gap at matched contiguity** (p=0.022). No mechanism identified
-   yet; `pickByCoverage` and gap filling were both tested and neither explains it.
+   plasmid recovery 33% -> 44% on a 39-isolate subset with the low-copy control band
+   unmoved. See [PLASMID_COPY_NUMBER.md](PLASMID_COPY_NUMBER.md).
+3. **The residual misassembly gap at matched contiguity** (p=0.022), mechanism still unknown.
 
 ## What was tested and did *not* explain a loss
 
