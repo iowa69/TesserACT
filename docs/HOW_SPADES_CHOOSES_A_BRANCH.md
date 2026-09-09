@@ -14,52 +14,41 @@ anything from it.
 
 ## How big the gap really is, once contiguity is controlled
 
-The raw counts are 177 misassemblies to SPAdes' 118 over 151 isolates, a 1.50x ratio.
-Two things cut that down, and both were found after the first version of this document
-claimed the multiplier was uniform. It is not.
+**Updated at the full cohort (n=180). The earlier version of this section, written at
+n=151, concluded that at matched contiguity there was no significant difference. Twenty-nine
+more isolates reversed that, and the conclusion below is the one that stands.**
 
-**Most of it is bought contiguity.** Splitting the cohort by how much more contiguous our
-assembly is than SPAdes' on the same isolate:
+Raw counts over the complete cohort: 223 misassemblies to SPAdes' 150, an excess of 73.
+Splitting by how much more contiguous our assembly is than SPAdes' on the same isolate:
 
 | NGA50, model vs SPAdes | n | model | SPAdes | excess | win/loss | p |
 |---|---|---|---|---|---|---|
-| SPAdes ahead (< −10%) | 30 | 27 | 22 | +5 | 7/7 | 0.754 |
-| **matched (−10%..+10%)** | **43** | **82** | **70** | **+12** | **5/14** | **0.067** |
-| we lead 10–50% | 40 | 25 | 13 | +12 | 7/12 | 0.184 |
-| we lead >50% | 38 | 43 | 13 | +30 | 7/9 | 0.587 |
+| SPAdes ahead (< −10%) | 35 | 33 | 27 | +6 | 9/10 | 0.702 |
+| **matched (−10%..+10%)** | **48** | **86** | **70** | **+16** | **5/17** | **0.022** |
+| we lead 10–50% | 50 | 44 | 25 | +19 | 7/15 | 0.072 |
+| we lead >50% | 47 | 60 | 28 | +32 | 8/11 | 0.445 |
 
-Half the excess (+30 of +59) sits in the band where we are more than 50% more contiguous
-than SPAdes. In the contiguity-matched band the difference is **not significant**. A
-longer contig crosses more junctions and therefore has more chances to cross one wrongly;
-that part of the gap is the price of the contiguity, not a defect.
+Two things are true at once, and the n=151 reading got the second one wrong.
 
-**And the significance is fragile.** One isolate carries half the excess:
+**Part of the gap is bought contiguity.** The excess grows monotonically with how far ahead
+we are — +6, +16, +19, +32 — and the largest single block sits in the band where we are more
+than 50% more contiguous. A longer contig crosses more junctions and has more chances to
+cross one wrongly.
 
-| isolate | model | SPAdes | NGA50, model vs SPAdes |
-|---|---|---|---|
-| GCF046742145v1 | 30 | 1 | 248,358 vs 67,253 (**+269%**) |
-| GCF022693245v1 | 5 | 0 | 58,027 vs 112,053 (−48%) |
-| GCF013836745v1 | 4 | 0 | 76,446 vs 65,471 (+17%) |
+**But a residual gap survives matching.** In the contiguity-matched band the excess is +16
+over 48 isolates at 5 wins to 17, **p=0.022**. That is a real difference in decision quality
+at equal contiguity, and it agrees with the 666-isolate *K. pneumoniae* benchmark
+(151/218, p=0.002) rather than contradicting it. At n=151 the same band read 5/14, p=0.067,
+and was reported here as "not significant"; that was a sample-size statement, not a result.
 
-| cohort | excess | p |
-|---|---|---|
-| all 151 | +59 | **0.048** |
-| minus GCF046742145v1 | +30 | 0.071 (ns) |
-| minus that and GCF022693245v1 | +25 | 0.102 (ns) |
+The heavy tail is still worth naming, because it inflates the headline: GCF046742145v1 alone
+contributes 29 of the 73 (30 against SPAdes' 1) while leading NGA50 by 269% — there SPAdes
+reached 67 kb against our 248 kb and collected one misassembly by producing fragments too
+short to be wrong. GCF003184985v1 adds 5 more (13 v 8). But removing them no longer removes
+the effect, because the matched band does not depend on them.
 
-Drop one isolate and the result stops being significant. On GCF046742145v1 SPAdes did not
-really assemble the genome — NGA50 67 kb against our 248 kb — and collected one
-misassembly by producing fragments too short to be wrong. That is not SPAdes making a
-better decision; it is SPAdes making fewer decisions.
-
-So the honest statement for *S. aureus* is: **at matched contiguity there is no
-significant difference**, and the headline p=0.048 rests on a single isolate. The
-666-isolate *K. pneumoniae* benchmark (151/218, p=0.002) is the more robust evidence that
-a real residual effect exists; this 151-isolate panel is too small to resolve it, and the
-first version of this document overstated what it showed.
-
-Relocation sizes are still worth recording, because they show we do not have a distinctive
-blind spot — the two distributions are the same shape:
+Relocation sizes show we have no distinctive blind spot — the two distributions are the same
+shape, so this is one decision made too readily rather than a specific structure we mishandle:
 
 | relocation size | TesserACT | SPAdes |
 |---|---|---|
@@ -67,7 +56,25 @@ blind spot — the two distributions are the same shape:
 | 5–20 kb | 13 (7.8%) | 13 (11.5%) |
 | 20–100 kb | 15 (9.0%) | 11 (9.7%) |
 | >=100 kb | 58 (34.9%) | 37 (32.7%) |
-| **total** | **166** | **113** |
+
+(measured at n=151; the shape does not change at 180.)
+
+## What the model costs here
+
+The model is not innocent in this. Against the no-model arm over the same 180 isolates it
+buys a great deal of contiguity and pays for it in exactly this coin:
+
+| model vs base | median | win/loss | p |
+|---|---|---|---|
+| NGA50 | 247,188 vs 216,080 (**+14.4%**) | **101/0** | 2.7e-18 |
+| NG50 | 253,984 vs 223,999 (+13.4%) | 103/0 | 1.3e-18 |
+| genome fraction | 98.83 vs 98.80 | 97/28 | 6.1e-07 |
+| # misassemblies | 0 vs 0 | **2/18** | **0.0011** |
+
+101 wins and no losses on NGA50 is as clean as a result gets. It comes with 18 isolates
+made worse on misassemblies against 2 made better. The model's adjacency table is telling
+the resolver to make joins the paired reads would not have made on their own, and most of
+those joins are right.
 
 ## Where SPAdes refuses and we do not
 
