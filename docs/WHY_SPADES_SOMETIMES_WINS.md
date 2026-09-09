@@ -1,5 +1,13 @@
 # Where SPAdes still beats TesserACT, and what it is not
 
+> **Superseded in part.** This document concludes below that the gap is the read corrector.
+> That has since been tested directly -- assembling SPAdes' own BayesHammer-corrected reads
+> with TesserACT -- and it is **false**: doing so closes 13% of the gap on one isolate and
+> 0.5% on another, and our corrector adds nothing on top of theirs. The reasoning about
+> thresholds and about what the corrector does still stands; the conclusion drawn from it does
+> not. See [WHERE_WE_LOSE.md](WHERE_WE_LOSE.md) for the test and for where the difference
+> actually lives (graph simplification).
+
 > **Scope.** Model-free and model-guided TesserACT against vanilla SPAdes 4.3.0 on the
 > same reads, 47 non-clonal *S. aureus* isolates each with its own closed reference,
 > QUAST 5.3.0, contig level, zero-N output on both sides. SPAdes wins contig NGA50 on

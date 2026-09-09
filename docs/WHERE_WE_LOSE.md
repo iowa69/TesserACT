@@ -156,18 +156,65 @@ Note the third column: **all four TesserACT arms return exactly 77,166**, to the
 Model, presets, resolution settings — none of them move it. Whatever caps us on that isolate
 is upstream of repeat resolution, in the graph itself.
 
+## The corrector hypothesis, tested and falsified
+
+`WHY_SPADES_SOMETIMES_WINS.md` concluded, from the threshold side, that the gap is the read
+corrector rather than any cutoff. That was the last standing explanation, and it is wrong.
+
+The test: run SPAdes' BayesHammer alone (`--only-error-correction`) and assemble **its own
+corrected reads** with TesserACT, once with our corrector off (`--no-correct`, a clean
+head-to-head of the two correctors over identical downstream code) and once with it on.
+
+| | ours | BH reads, ours OFF | BH reads, ours ON | SPAdes |
+|---|---|---|---|---|
+| GCF010364725v2 NGA50 | 5,781 | **6,868** | 6,868 | **14,366** |
+| — genome fraction | 94.94 | 95.55 | 95.41 | 97.18 |
+| — contigs | 704 | 677 | 674 | **329** |
+| GCF045347525v1 NGA50 | 77,166 | **77,302** | 77,302 | **106,210** |
+| — contigs | 71 | 68 | 69 | 66 |
+
+BayesHammer's reads close **13% of the gap on one isolate and 0.5% on the other**. And the
+two BH columns are the same to within noise: our corrector adds nothing on top of theirs, and
+removing ours costs nothing. The reads are not the difference.
+
+## Where the difference actually is
+
+Given identical corrected reads, the contig length profiles diverge:
+
+| | contigs | total | N50 | largest | >10 kb | >1 kb |
+|---|---|---|---|---|---|---|
+| TesserACT | 865 | 2,709,511 | 7,015 | 41,743 | 57 | 536 |
+| SPAdes | 353 | 2,725,898 | **14,494** | **79,543** | **79** | **295** |
+
+Same reads, same genome recovered, and we emit 241 more contigs over 1 kb while producing 22
+fewer over 10 kb. Our own unitig graph saturates: N50 by rung is 3,197 -> 5,719 -> 5,929 ->
+5,956 at k=21/33/45/55 and stops improving after k=45.
+
+Both assemblers do multi-k with graph carry-over (`carryOver` in `Assembler::iterate`), so
+that architectural difference is not it either. What is left is graph **simplification** --
+tip clipping, bulge removal, erroneous-connection removal, relative-coverage removal -- where
+SPAdes has a long-tuned pipeline and we have tips, bubbles and chimeras. On a 40x library with
+a 155 +/- 93 bp insert, that is where the remaining 2x lives.
+
+That is not a lever to flip. It is a body of work, and naming it honestly is more useful than
+proposing a fix that has not been measured.
+
 ## What to fix, in order of expected value
 
-1. **The read corrector.** Every cheaper hypothesis above is excluded, and the arms-return-
-   identical-numbers result puts the limit upstream of resolution.
-   [WHY_SPADES_SOMETIMES_WINS.md](WHY_SPADES_SOMETIMES_WINS.md) reached the same conclusion
-   from the opposite direction — that the gap is corrector strength rather than any
-   threshold. The decisive experiment is to run BayesHammer alone and assemble its corrected
-   reads with TesserACT; if the gap closes, the corrector is the whole of it.
-2. **Plasmid copy number in the repeat test.** Separately measured and implemented; whole-
-   plasmid recovery 33% -> 44% on a 39-isolate subset with the low-copy control band
-   unmoved. See [PLASMID_COPY_NUMBER.md](PLASMID_COPY_NUMBER.md).
+1. **Plasmid copy number in the repeat test.** The one improvement here that is measured and
+   works: whole-plasmid recovery 33% -> 44% on a 39-isolate subset, with the low-copy control
+   band unmoved and one extra misassembly across 39 isolates. See
+   [PLASMID_COPY_NUMBER.md](PLASMID_COPY_NUMBER.md).
+2. **Graph simplification on low-coverage, short-insert libraries.** Localised above but not
+   attempted. The measurable target is the 38 isolates at reach 0-60 bp sitting at 1.00x
+   against SPAdes where the rest of the cohort is 1.29x ahead.
 3. **The residual misassembly gap at matched contiguity** (p=0.022), mechanism still unknown.
+
+### Keeping this in proportion
+
+The three isolates above were chosen as the worst in the panel. Over all 180, TesserACT wins
+NGA50 by 31.0% (133/47, p=2e-10) and eight of nine metrics. What this section describes is the
+tail, not the centre.
 
 ## What was tested and did *not* explain a loss
 
@@ -180,6 +227,9 @@ Recorded so the same ground is not covered twice:
   and costs NGA50 6/0 (p=0.036) and contigs 10/0 (p=0.006). A real contributor at 14%, and
   a bad trade.
 * **Library depth** — does not separate winning from losing isolates (94.6x vs 96.8x).
+* **The read corrector** — BayesHammer's own corrected reads close 13% and 0.5% of the gap on
+  the two isolates tested. Falsifies the standing conclusion in
+  [WHY_SPADES_SOMETIMES_WINS.md](WHY_SPADES_SOMETIMES_WINS.md).
 * **Preset switching by library type** — `aggressive` looked better than `--organism` in the
   overlapping-mate band by medians (178,905 vs 162,059) but the paired test is 7/8, p=0.589.
   There is no support for an automatic preset rule, and the median difference was a
