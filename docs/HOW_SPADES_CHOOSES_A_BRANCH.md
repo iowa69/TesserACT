@@ -184,7 +184,24 @@ Gap filling accounts for 14% of the misassemblies on the worst isolates and pays
 with contiguity on every isolate tested. A real but minor contributor, and the trade is
 not clearly worth taking. **Not the cause.**
 
-`TESSERACT_NO_DEPTH_PICK` is running on the same 14 and will be recorded here.
+**`TESSERACT_NO_DEPTH_PICK`** — removing `pickByCoverage` entirely.
+
+| isolate set | n | NGA50 identical | genome fraction identical | misassemblies |
+|---|---|---|---|---|
+| the 14 worst-misassembly isolates | 14 | 14/14 | — | 73 -> 75 |
+| unselected isolates | 9 | 9/9 | 9/9 | identical 9/9 |
+
+On 23 isolates the fallback changes **nothing measurable**, to the base pair, and where it
+does move anything it moves it the wrong way. It is not idle: it fires 5, 5 and 38 times
+on the three isolates instrumented above, and the contigs it produces genuinely differ
+(md5 differs on GCF054392195v1 and GCF046742145v1). It simply arrives at the same
+assembly.
+
+That makes it neither a cause of misassemblies nor a source of contiguity: roughly forty
+lines of heuristic that the code's own comment justified on reasoning ("a chain running at
+45x continues into sequence at 45x") that measurement does not support. Removing it is a
+simplification, not an optimisation, and it lands TesserACT where SPAdes already is --
+they wrote the same heuristic and disabled it.
 
 ## Status
 
