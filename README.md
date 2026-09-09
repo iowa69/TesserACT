@@ -47,6 +47,48 @@ Two rows need care, because the columns disagree:
 Per-strain numbers, not just summaries, are what these were computed from — ask if you
 want them for a comparison of your own.
 
+### With a genus model: 180 non-clonal *S. aureus*
+
+The panel above is vanilla against vanilla. This one is `--organism saureus`, on a cohort
+dereplicated with `mash` at `d <= 0.0005` so that no two isolates are clonal redeposits —
+which is what makes a paired test meaningful. 185 isolates assembled; 180 survive the
+quality gates, and the five discards are listed with their reasons in
+[docs/SAUREUS_100_PANEL.md](docs/SAUREUS_100_PANEL.md). None was dropped for a poor score.
+
+| Metric | TesserACT | SPAdes | W / L | |
+|---|---|---|---|---|
+| NGA50 | **247,188** | 188,658 | 133 / 47 | **win** (+31.0%, p=2e-10) |
+| NG50 | **253,984** | 196,578 | 131 / 49 | **win** (+29.2%, p=3e-10) |
+| Genome fraction | **98.83 %** | 98.37 % | 170 / 10 | **win** (p=1e-27) |
+| Largest alignment | **538,873** | 427,134 | 126 / 52 | **win** (+26.2%, p=3e-08) |
+| Mismatches /100 kb | **0.66** | 1.22 | 111 / 65 | **win** (−46.3%, p=0.002) |
+| Indels /100 kb | 0.25 | 0.29 | 89 / 77 | tie (p=0.13) |
+| Contigs | 38 | 40 | 88 / 86 | tie (p=0.60) |
+| Duplication ratio | 1.000 | 1.000 | 5 / 151 | loss (p=8e-25) |
+| Misassemblies | 0 | 0 | 29 / 53 | loss (p=0.011) |
+
+Same shape as the Klebsiella panel: more of the genome, more of the bases right, in longer
+contigs, paid for with a little redundancy and a few more misassemblies. Stratified by how
+much more contiguous we are on each isolate, part of that misassembly excess is the price of
+the contiguity — but a residual survives contiguity matching (p=0.022), so it is not only
+that. The analysis is in
+[docs/HOW_SPADES_CHOOSES_A_BRANCH.md](docs/HOW_SPADES_CHOOSES_A_BRANCH.md), which traces it
+into SPAdes' source: SPAdes ships two coverage-based branch choosers and has both **disabled**
+for isolate assembly, so at an ambiguous branch it refuses rather than guessing.
+
+**What the model is worth.** Against the same binary with no model, over the same 180
+isolates: NGA50 **101 wins, 0 losses** (p=3e-18), NG50 103/0 (p=1e-18). It costs
+misassemblies — 18 isolates worse against 2 better (p=0.001).
+
+**Replicons.** 117 of the 185 isolates carry plasmids, 146 in total. Every arm and SPAdes
+recover ~93% of them at >=50% coverage. SPAdes assembles 39.7% of them into a single contig
+against our 28.8%; that gap is a copy-number effect with an identified cause and a measured
+fix ([docs/PLASMID_COPY_NUMBER.md](docs/PLASMID_COPY_NUMBER.md)). Contig classification has
+no SPAdes arm, since SPAdes does not classify: pooled over every contig >=1500 bp, the model
+arm reaches precision 0.700 / recall 0.803 (F1 0.748) against 0.406 / 0.549 with no model.
+
+The remaining six ESKAPEE cohorts are in progress and will be added here as each completes.
+
 ---
 
 ## Install

@@ -115,37 +115,36 @@ That measurement is real; it is the far right tail of this distribution. The num
 quote for the model's worth is the win/loss and the p-value, which are unambiguous, with
 whichever central estimate is stated as what it is.
 
-## Replicon classification
+## Replicon classification and plasmid recovery
 
-SPAdes does not classify contigs, so this column has no comparison arm. Recovery is
-measured against each reference's own plasmid records; classification is pooled over
-every contig >= 1500 bp in all 151 isolates (micro-averaged, not a mean of per-isolate
-rates — 93 of 150 isolates carry at least one plasmid, 119 plasmids in total).
+SPAdes does not classify contigs, so that column has no comparison arm. Recovery is scored
+against each reference's own plasmid records; classification is pooled over every contig
+>= 1500 bp in all 185 isolates (micro-averaged, not a mean of per-isolate rates). **117 of
+the 185 isolates carry at least one plasmid, 146 plasmids in total.**
 
-| arm | plasmids recovered | recovered whole | precision | recall | F1 |
+| arm | recovered (>=50%) | **recovered whole** | precision | recall | F1 |
 |---|---|---|---|---|---|
-| base (no model) | 111/119 (93.3%) | 35 (29.4%) | 0.396 | 0.573 | 0.468 |
-| **model** | 111/119 (93.3%) | 38 (31.9%) | **0.712** | **0.794** | **0.751** |
-| careful | 110/119 (92.4%) | 40 (33.6%) | 0.707 | 0.812 | 0.756 |
-| aggressive | 111/119 (93.3%) | 37 (31.1%) | 0.547 | 0.773 | 0.640 |
-| SPAdes | 106/115 (92.2%) | 46 (40.0%) | — | — | — |
+| base (no model) | 137/146 (93.8%) | 38 (26.0%) | 0.406 | 0.549 | 0.467 |
+| **model** | 137/146 (93.8%) | 42 (28.8%) | **0.700** | **0.803** | **0.748** |
+| careful | 136/146 (93.2%) | 45 (30.8%) | 0.713 | 0.825 | **0.765** |
+| aggressive | 137/146 (93.8%) | 42 (28.8%) | 0.534 | 0.784 | 0.635 |
+| **SPAdes** | 136/146 (93.2%) | **58 (39.7%)** | — | — | — |
 
-Two honest observations:
+Two things to read here, and only one of them is good.
 
-* SPAdes assembles more plasmids into a single contig than we do (40.0% vs 31.9%).
-  Recovery at the sequence level is a tie; contiguity within the plasmid is not.
-* The model arm's precision rests on three fixes made during this campaign — a
-  1,500 bp classification floor, a corroboration requirement before a lone contig may
-  be called a plasmid, and a guard on label propagation. Pooled precision before
-  those fixes was 0.225 at recall 1.000: the classifier called nearly everything a
-  plasmid and was right a quarter of the time.
+**Classification works, and it needs the model.** Pooled precision goes 0.406 to 0.700 and
+F1 0.467 to 0.748 when the model is supplied. The `careful` preset is slightly better again
+(F1 0.765) and `aggressive` is clearly worse (precision 0.534) — it calls more and is right
+less often. These figures rest on three fixes made during this campaign: a 1,500 bp
+classification floor, a corroboration requirement before a lone contig may be called a
+plasmid, and a guard on label propagation. Pooled precision before them was 0.225 at recall
+1.000 — the classifier called nearly everything a plasmid and was right a quarter of the time.
 
-**Caveat on that before/after.** These 151 assemblies span both the pre-fix and
-post-fix binary, because the fixes landed partway through the campaign. The offline
-scorer re-applies the 1,500 bp floor uniformly, but it cannot retroactively apply the
-corroboration or propagation fixes. So the table above is the current state of the
-cohort, not a clean controlled comparison. A controlled one requires the post-fix
-binary across all isolates.
+**Recovery ties; contiguity within the plasmid does not.** At >=50% coverage every arm and
+SPAdes agree at ~93%: we find the sequence. SPAdes puts 39.7% of plasmids in a single contig
+against our 28.8%. That deficit is a mechanism, not noise, and it is fully explained by copy
+number — see [PLASMID_COPY_NUMBER.md](PLASMID_COPY_NUMBER.md), which also reports a fix that
+takes 33% to 44% on a 39-isolate subset without moving the low-copy control band at all.
 
 ## Reproducing
 
