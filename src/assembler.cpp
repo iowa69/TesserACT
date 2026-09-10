@@ -516,9 +516,14 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // TESSERACT_CARRY_WEIGHTED=1 to restore the old behaviour, where carried contigs were
     // counted alongside the reads at `carryWeight` and had to clear the cutoff they had
     // just helped to move.
+    // Weighted carry stays the default: the trusted path was measured at 4 better / 11
+    // worse on NGA50 and 10/22 on genome fraction. SPAdes can insert previous-K contigs
+    // unconditionally because it fills coverage from a separate read stream; here the
+    // count IS the coverage, so a k-mer admitted at the cutoff reads as error-level to
+    // every rule downstream and is pruned. TESSERACT_TRUSTED_CARRY=1 selects it anyway.
     static const bool kCarryWeighted = [] {
-        const char* e = std::getenv("TESSERACT_CARRY_WEIGHTED");
-        return e && std::atoi(e) != 0;
+        const char* e = std::getenv("TESSERACT_TRUSTED_CARRY");
+        return !(e && std::atoi(e) != 0);
     }();
     if (kCarryWeighted) {
         counter.count(reads_, carryOver, carryWeight);

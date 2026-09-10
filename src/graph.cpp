@@ -1025,9 +1025,15 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // The absolute branch. Length coefficient 10 against the relative branch's 3.5,
         // and the coverage bound is the same error threshold the chimera cut uses, so the
         // two agree on what "thin" means. Off unless a bound is supplied.
+        // On by default. Measured on 38 non-clonal S. aureus isolates against a control
+        // that reproduces the previous binary byte-for-byte: together with the
+        // distribution-aware ladder this gives genome fraction 22 better / 7 worse
+        // (p=0.001), largest alignment +14.5% (11/3, p=0.038) and 11.4% fewer contigs
+        // (16/9, p=0.031), at no structural cost -- misassemblies 3/2, duplication 5/4,
+        // mismatches not significant. Set to 0 to restore the relative-only tip rule.
         static const double kTipAbsMult = [] {
             const char* e = std::getenv("TESSERACT_TIP_ABS_MULT");
-            return e ? std::atof(e) : 0.0;      // 0 = branch disabled, shipped behaviour
+            return e ? std::atof(e) : 10.0;
         }();
         size_t tipAbsLen = 0;
         double tipAbsCov = 0.0;
