@@ -117,6 +117,54 @@ The nomination is expected to remove that cost.
 
 ---
 
+## 7. Round 2: three divergent agents, four hypotheses, four negatives
+
+Agents were sent to read Shovill/Unicycler/bactopia, SKESA/Velvet, and the
+alignment-based gap closers (minimap2, Sealer, GapFiller, Pilon/Racon). Each produced a
+candidate mechanism for the contig-count gap (166 vs SPAdes' 110 on `GCF018093065v1`).
+**All four were tested and none survived.** Recorded so they are not re-proposed.
+
+| hypothesis | source | verdict |
+|---|---|---|
+| **Our own cleaning creates the dead ends.** SKESA never deletes anything — all its conservatism is query-time filtering. Our `deleteNode` destroys links, and `removeLocallyWeak`/`removeErroneousConnections` delete *interior* unitigs with no dead-end guard; deleting an interior unitig creates two dead ends. | SKESA/Velvet agent, ranked its own #1 | **FALSIFIED.** Instrumented `totalDeadEnds()` on the raw graph before any cleaning: **51,788 at k=21, falling to 1,338 after twelve rounds.** Simplification removes 97% of dead ends. The survivors are residue, not damage. |
+| **Dead ends are single-base bubbles at repeat-copy variant sites**, branches of length `2(k-1)+1` = 253 bp differing at one centre base, declined by the bubble popper because loser depth (26–387) exceeds `meanCoverage × 0.35` = 20.9. | alignment agent, from tracing 7 junctions | **DOES NOT REPRODUCE.** 9 segments of length 253 in the whole graph; **2** two-branch converging bubbles total. The proposed targeted 1-base bubble pop would act on a population of 2. |
+| **Short repeat-copy fragments inflate our contig count**; SPAdes deletes every isolated edge up to `max(RL,150)+k` unconditionally while ours is coverage-gated. | SPAdes source review, follow-up | **NO.** SPAdes has fewer contigs at **every** length threshold *and* more total sequence: ≥500 bp 110/2.81 Mb vs our 166/2.75 Mb; ≥5 kb **62/2.74 Mb vs our 98/2.63 Mb**. The 500–2000 bp populations are comparable (37 vs 44). No size filter touches this. |
+| **`gfa_connector`-style reconnection** — rebuild at lower k (41) with `min_count 2`, walk 2 kb out of each contig end, keep only paths landing on another contig. | SKESA/Velvet **and** wrapper agents, independently | **Not built.** Ceiling measured first: median isolate **1** closable pair, 7 of 36 with ≥10. Two agents converging made it the most attractive candidate; the ceiling says it would transform ~3 isolates and leave 29 untouched. |
+
+**What did hold**, and is the most useful thing from the round: **45% of dead-end segments
+are sequence that already appears verbatim elsewhere in the assembly** (18 of 40 sampled),
+median length 170 bp, 71% shorter than 2k. They are not missing sequence — they are
+unplaceable repeat copies. That explains why the scaffolder finds nothing (a repeat copy
+links everywhere) and why the gap closer found only 32 joins (these are not gaps).
+
+**The residual gap is therefore genuine contiguity in long contigs**, not emission, not
+filtering, not dead-end rescue. SPAdes assembles this genome into materially longer pieces
+from identical reads.
+
+### Other findings worth keeping
+
+* **Our abundance cutoff implements SKESA's `max(2, depth/50)` but feeds it the k-mer peak
+  where SKESA feeds read depth** (`counter.cpp:365`). Ours therefore scales *inversely with
+  k*: on a 196x library the first rung showed `cutoff=4 peak=189`, while at k=127 the peak
+  falls to ~31 and the scaling never engages. Untested — and note our own measured table
+  says a *stricter* top-rung cutoff is worse (cutoff 5 → NGA50 39,855; cutoff 2 → 132,059),
+  so the two pieces of evidence disagree and only measurement settles it.
+* **Subsampling to ~150x is folklore.** Shovill's default moved 50 → 100 → 150 with no
+  stated rationale, and the literature contradicts it for de Bruijn assemblers: GAGE-B chose
+  250x *because* 100x was worse; GABenchToB found MiSeq "not susceptible to oversampling";
+  Radai et al. (39,000 SPAdes assemblies) found depth positively associated with contiguity.
+  SPAdes' own author: *"deep sequencing does not present any problem for assembly algorithms
+  relying on the de Bruijn graph per se."*
+* **Short-read polishing of short-read assemblies is contraindicated** — Wick 2023 found
+  stock Pilon never reduced errors and often added them. Shovill only survives it by
+  crippling Pilon (`--fix bases --minmq 60 --mindepth 0.25` plus `samclip`).
+* **SKESA clips k bases off both ends of every seed** so contig ends are verified from both
+  directions. Our chain ends sit exactly where assembly failed — the least-verified base.
+* **Velvet's second-order link derivation** (if A↔B and B↔C, place C relative to A with
+  summed variance) reaches ends with **zero** direct links — 85 of our 279. Untested.
+
+---
+
 ## 5. Campaign state
 
 | organism | cohort | TesserACT arms | SPAdes benchmark |
