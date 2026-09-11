@@ -163,6 +163,30 @@ from identical reads.
 * **Velvet's second-order link derivation** (if A↔B and B↔C, place C relative to A with
   summed variance) reaches ends with **zero** direct links — 85 of our 279. Untested.
 
+### A binary swap mid-campaign silently mixes a cohort
+
+Recorded because it nearly produced a meaningless table and nothing in the output would
+have shown it.
+
+AD was made the campaign default at 2026-09-10 18:32, while *A. baumannii* was already
+assembling. The monitor then reported `abaumannii COHORT READY: 143/150 scored` — correctly,
+by its own definition. But those 143 were **78 isolates assembled by the pre-AD binary and
+66 by AD**: two different assemblers averaged into one significance table.
+
+| organism | pre-AD arms | AD arms |
+|---|---|---|
+| *S. aureus* | 76 | 109 |
+| *E. faecium* | 124 | 0 |
+| *A. baumannii* | **78** | **66** |
+
+The fix is mtime-gated: rebuild only arms older than the swap. A blanket rebuild wastes half
+the work; a blanket skip leaves the cohort mixed. Both are wrong, in opposite directions.
+
+**The general rule this implies:** any binary change during the campaign invalidates every
+cohort *currently in flight*, not merely the ones not yet started, and "cohort ready" must
+mean "assembled by one binary" rather than "n isolates scored". This will apply again if the
+gap-closer work ships.
+
 ---
 
 ## 5. Campaign state
