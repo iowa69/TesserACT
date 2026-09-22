@@ -42,6 +42,8 @@ if [ -z "$guided" ]; then
     if [ "$nargs" -eq 0 ] && [ -t 0 ] && [ -t 1 ]; then guided=1; else guided=0; fi
 fi
 
+cxx="${CXX:-g++}"
+
 say() { printf '\033[36m==>\033[0m %s\n' "$*"; }
 die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
 ok()  { printf '  \033[32m[ok]\033[0m   %s\n' "$*"; }
@@ -67,6 +69,36 @@ yesno() {
     # would kill the script outright, guided or not.
     reply="$(printf '%s' "$reply" | tr '[:upper:]' '[:lower:]')"
     case "$reply" in y|yes) return 0 ;; *) return 1 ;; esac
+}
+
+# zlib is the only dependency beyond a compiler, and the way it goes missing is not "not
+# installed" -- it is installed under a conda prefix that the system compiler does not search.
+# That is the default state of a machine with miniconda on it. The README documented the CPATH
+# workaround and left the installer to fail mid-build with a bare
+# `zlib.h: No such file or directory`, which is the least actionable error a first-time user
+# can be handed. Probe it, apply the conda fix here, and only give up if that does not work.
+zlib_ready() {
+    printf '#include <zlib.h>\nint main(){ return zlibVersion() == 0; }\n' \
+        | "$cxx" -std=c++17 -x c++ - -lz -o /dev/null 2>/dev/null
+}
+
+ensure_zlib() {
+    zlib_ready && return 0
+    if [ -n "${CONDA_PREFIX:-}" ] && [ -r "$CONDA_PREFIX/include/zlib.h" ]; then
+        export CPATH="$CONDA_PREFIX/include${CPATH:+:$CPATH}"
+        export LIBRARY_PATH="$CONDA_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+        zlib_ready && return 0
+    fi
+    return 1
+}
+
+zlib_advice() {
+    printf '\n'
+    say "TesserACT needs the zlib development headers. Copy the line for your system:"
+    printf '\n      Ubuntu / Debian   sudo apt install zlib1g-dev\n'
+    printf '      Fedora / RHEL     sudo dnf install zlib-devel\n'
+    printf '      conda             conda install -c conda-forge zlib\n'
+    printf '      macOS             xcode-select --install\n\n'
 }
 
 # Plain ASCII on purpose. This is the first thing a new user sees, and it is seen over ssh,
@@ -99,7 +131,7 @@ BANNER
 if [ "$guided" = 1 ]; then
     step "Step 1 of 5: checking what this computer already has"
     missing=()
-    for tool in g++ make curl sha256sum; do
+    for tool in "$cxx" make curl sha256sum; do
         if command -v "$tool" >/dev/null 2>&1; then ok "$tool"; else bad "$tool -- missing"; missing+=("$tool"); fi
     done
     if [ "${#missing[@]}" -gt 0 ]; then
@@ -108,6 +140,15 @@ if [ "$guided" = 1 ]; then
         printf '\n      sudo apt install build-essential curl coreutils\n\n'
         say "On a Mac: xcode-select --install"
         die "install those first, then run ./install.sh again"
+    fi
+    # Checked here rather than at the build, so every missing piece is reported while the user
+    # is still being asked questions instead of three minutes into a compile.
+    if ensure_zlib; then
+        ok "zlib${CPATH:+ (found in your conda environment)}"
+    else
+        bad "zlib headers -- missing"
+        zlib_advice
+        die "install zlib, then run ./install.sh again"
     fi
 fi
 
@@ -162,10 +203,15 @@ if [ -z "$prefix" ]; then
 fi
 
 # ---- check the compiler ----------------------------------------------------
-cxx="${CXX:-g++}"
 command -v "$cxx" >/dev/null 2>&1 || die "no C++ compiler found (set CXX, or install g++)"
 if ! echo 'int main(){return 0;}' | "$cxx" -std=c++17 -x c++ - -o /dev/null 2>/dev/null; then
     die "$cxx does not accept -std=c++17"
+fi
+# Also in the silent path, where nothing ran the preflight check. ensure_zlib is idempotent and
+# exports the conda paths as a side effect, so make below inherits them either way.
+if ! ensure_zlib; then
+    zlib_advice
+    die "cannot compile against zlib.h"
 fi
 
 # ---- build -----------------------------------------------------------------

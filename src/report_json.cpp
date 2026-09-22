@@ -251,6 +251,14 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.num("gc_percent", rep.gcPercent);
     w.num("mean_coverage", rep.meanCoverage);
     w.uint("gap_bases", rep.gapBases);
+    // The contig-level figures, so a script reading this never has to re-derive them by
+    // splitting the FASTA itself -- and never quotes the scaffold n50 by accident because it
+    // was the only one here. The keys above describe scaffolds whenever scaffold_gaps > 0.
+    w.uint("scaffold_gaps", rep.scaffoldGaps);
+    w.uint("contig_count", rep.contigPieces);
+    w.uint("contig_total_length", rep.contigTotal);
+    w.uint("contig_largest", rep.contigLargest);
+    w.uint("contig_n50", rep.contigN50);
     w.uint("gfa_segments", rep.gfaSegments);
     w.uint("gfa_links", rep.gfaLinks);
     w.openArr("contig_table");
