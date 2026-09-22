@@ -28,13 +28,17 @@ double selected(const ts::UnitigGraph& graph,const char* all,const char* eligibl
 int main(){
     ts::UnitigGraph stress;stress.setK(99);add(stress,3000,18);
     for(int i=0;i<500;++i)add(stress,10,2);
-    check(selected(stress,nullptr,nullptr)==18,"no flag preserves legacy");
+    // 1.3.0: the all-node length-weighted median is the DEFAULT (validated on 146 isolates).
+    // This fixture is its known weakness -- 500 short (k..2k) pieces at 2x outweigh one long
+    // unitig at 18x by mass. The eligible-population estimator below is robust to it.
+    check(selected(stress,nullptr,nullptr)==2,"default is the all-node weighted median");
+    check(selected(stress,"0",nullptr)==18,"=0 restores the legacy unweighted median");
     check(selected(stress,"1",nullptr)==2,"all-node experiment retained");
     check(selected(stress,nullptr,"1")==18,"eligible experiment excludes short mass");
     check(selected(stress,"1","1")==18,"eligible experiment has explicit precedence");
     check(selected(stress,"1","0")==2,"zero eligible flag leaves all-node selection");
     check(selected(stress,"1","true")==2,"only literal 1 enables eligible flag");
-    check(selected(stress,"true",nullptr)==18,"only literal 1 enables all-node flag");
+    check(selected(stress,"true",nullptr)==2,"only literal 0 disables the all-node default");
     ts::UnitigGraph empty;empty.setK(99);add(empty,10,2);
     check(selected(empty,nullptr,"1")==0,"no eligible population retains legacy zero");
     check(selected(empty,"1","1")==0,"eligible empty fallback does not switch to all-node estimator");
@@ -44,7 +48,8 @@ int main(){
     check(std::isnan(selected(nan,nullptr,"1")),"no valid mass retains legacy NaN");
     ts::UnitigGraph biased;biased.setK(31);add(biased,5000,30);add(biased,500,90);
     for(int i=0;i<50;++i)add(biased,32,4);
-    check(selected(biased,nullptr,nullptr)==4,"legacy one-vote-per-unitig behavior preserved");
+    check(selected(biased,"0",nullptr)==4,"legacy one-vote-per-unitig behavior available with =0");
+    check(selected(biased,nullptr,nullptr)==30,"default weighted median resists the one-vote cloud");
     check(selected(biased,nullptr,"1")==30,"eligible mode changes weights within original length population");
     unsetenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");unsetenv("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE");
     std::printf("resolver coverage modes: %d checks passed\n",checks);

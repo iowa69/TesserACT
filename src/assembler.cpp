@@ -413,10 +413,12 @@ std::vector<Dovetail> findTerminalDovetails(const std::vector<std::string>& seqs
     // The index holds both orientations of every contig's PREFIX window, but the query
     // below probed only the forward 3' end, so a head-to-head overlap (a's 5' end meeting
     // b's 5' end) was structurally invisible. Probing rc(a)'s 3' end as well closes that
-    // class. Default OFF: with the flag unset this loop is byte-identical to the original.
+    // class.
+    // ON by default since 1.3.0 (duplication LOSS -> tie on 146 isolates).
+    // TESSERACT_RC_DOVETAIL=0 restores the forward-only probe.
     static const bool rcQuery = [] {
         const char* e = std::getenv("TESSERACT_RC_DOVETAIL");
-        return e && std::atoi(e) != 0;
+        return !e || std::atoi(e) != 0;
     }();
     for (size_t i = 0; i < seqs.size(); ++i) {
         if (seqs[i].size() < minOverlap) continue;

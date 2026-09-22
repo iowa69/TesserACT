@@ -32,7 +32,7 @@ PROBESRC  := devtools/join_probe.cpp
 PROBEBIN  := $(BUILDDIR)/join_probe
 PROBEOBJS := $(filter-out $(BUILDDIR)/main.o $(BUILDDIR)/model_main.o,$(ALLOBJS))
 
-.PHONY: all native debug asan clean install uninstall test unittest check model flagcheck probe
+.PHONY: componenttest all native debug asan clean install uninstall test unittest check model flagcheck probe
 
 # The model builder is deliberately NOT part of `all` or `install`. A model's value
 # is in how its panel was assembled and what was withheld from it; a file of the
@@ -95,11 +95,23 @@ $(PROBEBIN): $(PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
 unittest: $(UNITBIN)
 	@$(UNITBIN)
 
+# Standalone component tests. Each owns main() and links against the library objects.
+# Until 1.3.0 none of these had a build target, so none of them ever ran in `make check`.
+# test_dev_fork_batch is a helper driven by tests/test_dev_fork_batch.py, not a test.
+COMPSRC   := $(filter-out tests/test_units.cpp tests/test_dev_fork_batch.cpp,$(wildcard tests/test_*.cpp))
+COMPBINS  := $(patsubst tests/%.cpp,$(BUILDDIR)/%,$(COMPSRC))
+
+$(BUILDDIR)/test_%: tests/test_%.cpp $(UNITOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $< $(UNITOBJS) $(LDFLAGS) $(LDLIBS) -o $@
+
+componenttest: $(COMPBINS)
+	@set -e; for t in $(COMPBINS); do $$t; done
+
 $(UNITBIN): $(UNITSRC) $(UNITOBJS) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(UNITSRC) $(UNITOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 # Everything: unit tests then the end-to-end suite.
-check: unittest test flagcheck
+check: unittest componenttest test flagcheck
 
 install: $(BIN)
 	@install -d $(DESTDIR)$(PREFIX)/bin

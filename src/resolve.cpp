@@ -74,7 +74,14 @@ PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& re
     const bool useEligibleCoverage = eligibleCoverage && std::string(eligibleCoverage) == "1";
     // Explicit precedence: eligible-only calibration wins if both experiments
     // are enabled. They are alternative estimators, never cumulative weights.
-    if (useEligibleCoverage || (weightedCoverage && std::string(weightedCoverage) == "1")) {
+    // Length-weighted by default since 1.3.0. The unweighted node median lets a cloud of
+    // short carry-floor fragments set the single-copy baseline: on senterica GCA006365335v1
+    // 327/980 eligible unitigs sit at ~4x and carry 2% of the length, the median reads 5.73x
+    // for a genome sequenced at 35x, every unitig above 9.2x becomes a "repeat" and the
+    // resolver joins almost nothing. 146 isolates: NGA50 tie -> WIN, genome-fraction losses
+    // 21 -> 15. TESSERACT_WEIGHTED_RESOLVER_COVERAGE=0 restores the unweighted median.
+    const bool useWeightedCoverage = !weightedCoverage || std::string(weightedCoverage) != "0";
+    if (useEligibleCoverage || useWeightedCoverage) {
         const double calibrated = useEligibleCoverage
             ? graphEligibleLengthWeightedMedianCoverage(graph)
             : graphLengthWeightedMedianCoverage(graph);
