@@ -382,6 +382,7 @@ struct Dovetail {
     size_t a = 0, b = 0;        // a's suffix meets b's prefix, in orientation `bRc`
     size_t len = 0;
     bool bRc = false;
+    bool aRc = false;           // the match used rc(a)'s suffix, i.e. a's 5' end
 };
 
 std::vector<Dovetail> findTerminalDovetails(const std::vector<std::string>& seqs,
@@ -409,25 +410,38 @@ std::vector<Dovetail> findTerminalDovetails(const std::vector<std::string>& seqs
                                                      static_cast<uint32_t>(p), o != 0});
         }
     }
+    // The index holds both orientations of every contig's PREFIX window, but the query
+    // below probed only the forward 3' end, so a head-to-head overlap (a's 5' end meeting
+    // b's 5' end) was structurally invisible. Probing rc(a)'s 3' end as well closes that
+    // class. Default OFF: with the flag unset this loop is byte-identical to the original.
+    static const bool rcQuery = [] {
+        const char* e = std::getenv("TESSERACT_RC_DOVETAIL");
+        return e && std::atoi(e) != 0;
+    }();
     for (size_t i = 0; i < seqs.size(); ++i) {
-        const std::string& a = seqs[i];
-        if (a.size() < minOverlap) continue;
-        auto it = index.find(hash(a.data() + a.size() - kProbe));
-        if (it == index.end()) continue;
-        for (const Ent& e : it->second) {
-            if (e.idx == i) continue;
-            const size_t L = static_cast<size_t>(e.pos) + kProbe;
-            if (L <= minOverlap) continue;
-            const std::string& b = e.rc ? rcs[e.idx] : seqs[e.idx];
-            if (L > a.size() || L > b.size()) continue;
-            if (std::memcmp(a.data() + a.size() - L, b.data(), L) != 0) continue;
-            out.push_back({i, e.idx, L, e.rc});
+        if (seqs[i].size() < minOverlap) continue;
+        for (int qo = 0; qo < (rcQuery ? 2 : 1); ++qo) {
+            const std::string& a = qo ? rcs[i] : seqs[i];
+            if (a.size() < minOverlap) continue;
+            auto it = index.find(hash(a.data() + a.size() - kProbe));
+            if (it == index.end()) continue;
+            for (const Ent& e : it->second) {
+                if (e.idx == i) continue;
+                const size_t L = static_cast<size_t>(e.pos) + kProbe;
+                if (L <= minOverlap) continue;
+                const std::string& b = e.rc ? rcs[e.idx] : seqs[e.idx];
+                if (L > a.size() || L > b.size()) continue;
+                if (std::memcmp(a.data() + a.size() - L, b.data(), L) != 0) continue;
+                out.push_back({i, e.idx, L, e.rc, qo != 0});
+            }
         }
     }
     std::sort(out.begin(), out.end(), [](const Dovetail& x, const Dovetail& y) {
         if (x.len != y.len) return x.len > y.len;      // longest first: it decides the end
         if (x.a != y.a) return x.a < y.a;
-        return x.b < y.b;                               // total order, so runs reproduce
+        if (x.b != y.b) return x.b < y.b;
+        if (x.aRc != y.aRc) return !x.aRc;
+        return !x.bRc && y.bRc;                         // total order, so runs reproduce
     });
     return out;
 }
@@ -1875,7 +1889,7 @@ bool Assembler::run(std::string& error) {
             const size_t victim = aLonger ? d.b : d.a;
             // a's SUFFIX meets b's PREFIX in b's own orientation; if b was matched
             // reverse-complemented, its prefix there is its suffix here.
-            const bool cutAtFront = aLonger ? !d.bRc : false;
+            const bool cutAtFront = aLonger ? !d.bRc : d.aRc;
             std::vector<char>& set = cutAtFront ? frontSet : backSet;
             std::vector<size_t>& cut = cutAtFront ? cutFront : cutBack;
             if (set[victim]) continue;

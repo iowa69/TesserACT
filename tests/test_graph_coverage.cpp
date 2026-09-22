@@ -82,5 +82,29 @@ int main(){
         check(ts::graphEligibleLengthWeightedMedianCoverage(split)==30,"conditional estimator is node-order invariant");
     }
     check(ts::graphEligibleLengthWeightedMedianCoverage(equal)==10,"eligible weighted half-mass tie uses lower median");
+    // ANTI-PATTERN GUARD (directive S25): this estimator must be a weighted
+    // MEDIAN, never a weighted MEAN. A single very deep node must not drag the
+    // estimate the way an average would.
+    {
+        ts::UnitigGraph mm;mm.setK(127);
+        add(mm,1000,10);add(mm,1000,10);add(mm,1000,1000);
+        const double got=ts::graphLengthWeightedMedianCoverage(mm);
+        // weighted mean would be (10+10+1000)/3 = 340 at equal mass
+        check(got==10,"weighted median ignores a lone deep node");
+        check(std::fabs(got-340.0)>1.0,"estimator is a median, NOT a weighted mean");
+    }
+    // Reproduces the measured pathology on senterica/GCA006365335v1: a cloud of
+    // short unitigs sitting at the carry floor outvotes the chromosome by COUNT
+    // while carrying almost none of it by LENGTH. Unweighted node median = 8;
+    // length-weighted median must recover the true ~35x depth.
+    {
+        ts::UnitigGraph path;path.setK(99);
+        for(int i=0;i<327;++i) add(path,50,4.0);      // carry-floor cloud, 2% of mass
+        for(int i=0;i<435;++i) add(path,60,8.0);      // low-depth fragments, 3% of mass
+        for(int i=0;i<192;++i) add(path,20000,35.0);  // the actual chromosome, 94%
+        const double got=ts::graphLengthWeightedMedianCoverage(path);
+        check(got==35.0,"carry-floor cloud does not set the baseline (senterica shape)");
+        check(got>1.6*8.0,"recovered depth clears the repeat threshold the old median produced");
+    }
     std::printf("graph coverage: %d checks passed\n",checks);
 }
