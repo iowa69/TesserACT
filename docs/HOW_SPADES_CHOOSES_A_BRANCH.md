@@ -41,6 +41,19 @@ at equal contiguity, and it agrees with the 666-isolate *K. pneumoniae* benchmar
 (151/218, p=0.002) rather than contradicting it. At n=151 the same band read 5/14, p=0.067,
 and was reported here as "not significant"; that was a sample-size statement, not a result.
 
+> **WITHDRAWN (2026-09-12).** The paragraph above no longer stands, on two counts. Re-run on
+> the current binary over 176 mtime-gated isolates the matched band gives **p=0.074** raw and
+> 0.089 excluding the four isolates where both assemblers fail — it **does not reproduce**.
+> More importantly the control was the wrong one: the defect is concentrated in breakpoints
+> whose shorter flanking block is **under 2 kb**, and a sub-2 kb wrong tail costs essentially
+> no contiguity, so it hides *inside* the matched band rather than appearing outside it.
+> NGA50-matching cannot see it. The split that does work is by flanking-block length —
+> `<2 kb`: ours 218 vs SPAdes 123; `2-20 kb`: 165 vs 163; `>=20 kb`: 83 vs 49 — and the
+> `<2 kb` class is identical in the no-model arm and significant even where SPAdes is the
+> more contiguous assembler. See `EXPERIMENT_LEDGER.md`, which also records the five
+> candidate mechanisms tested against it and why all five fail.
+
+
 The heavy tail is still worth naming, because it inflates the headline: GCF046742145v1 alone
 contributes 29 of the 73 (30 against SPAdes' 1) while leading NGA50 by 269% — there SPAdes
 reached 67 kb against our 248 kb and collected one misassembly by producing fragments too
@@ -220,6 +233,14 @@ At matched contiguity the difference is not significant, and the headline p=0.04
 survive dropping one isolate. Two candidate causes have been tested and neither explains
 the gap: gap filling accounts for 14%, and `pickByCoverage` was wrongly written off from a
 single isolate and is still under test.
+
+**Superseded in part (2026-09-12).** The reading below was written before the flanking-block
+decomposition existed. It is right that most of the difference is displacement along the
+contiguity/correctness trade, and right that `--no-gapfill` and `pickByCoverage` do not
+explain the rest. It is wrong that the residual has no identified location: stage ablation
+puts our raw graph at 100 `<2 kb` events against SPAdes' 88 and our paired resolver at +54
+more, on its **main supported path** — not its fallbacks, which have now been withdrawn by
+two independent tests with no effect on the metric.
 
 The defensible conclusion today is narrower than the one this document originally reached:
 TesserACT and SPAdes sit at different points on the same contiguity/correctness trade,

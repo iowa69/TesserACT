@@ -94,6 +94,24 @@ struct AssemblyOptions {
     double ladderUnionMaxPresent = 0.50;   // append only if under half its 31-mers are present
     size_t ladderUnionMinLen = 1000;
 
+    // Drop a contig that is an exact substring of a longer contig of the same assembly.
+    // Measured over 185 S. aureus isolates: 6.2% of our contigs are exact substrings of a
+    // longer one and they carry 47% of our QUAST duplication excess; SPAdes emits 0 of
+    // 1554. Off until the panel says otherwise.
+    // ON by default. Measured against each isolate's own closed genome on two independent
+    // cohorts: it takes QUAST duplication vs SPAdes from 4/152 (p=3e-25) to a dead heat on
+    // S. aureus, and Cliff's delta +0.97 -> +0.05 on E. faecium, while every other win is
+    // unchanged to the decimal. `--no-dedup-contained` restores the old emission.
+    bool dedupContained = true;
+
+    // Trim an exact dovetail longer than this between two contig ends, from the shorter
+    // partner. 0 disables. Raised to the final k if set lower: a k-length overhang is the
+    // unavoidable de Bruijn artefact and SPAdes carries it too.
+    // ON by default, raised to the final k internally. dedup alone is much weaker on
+    // E. faecium (1.0110 -> 1.0070) than on S. aureus, so both halves are needed; together
+    // they reach 1.0010 against SPAdes' 1.0010. `--trim-overlap 0` disables.
+    size_t trimTerminalOverlap = 1;
+
     // The command line as invoked, recorded into the reports so a run can be
     // explained and reproduced from its own output.
     std::string commandLine;
@@ -153,6 +171,8 @@ public:
     bool run(std::string& error);
     const AssemblyStats& stats() const { return stats_; }
     const AssemblyReport& report() const { return report_; }
+    bool diagnosticBatchComplete() const { return diagnosticBatchComplete_; }
+    bool diagnosticForkChild() const { return diagnosticForkChild_; }
 
 private:
     // Picks the k ladder from the mode and the observed read length, then lets the QC
@@ -177,6 +197,8 @@ private:
     int baseK_ = 0;
     int finalK_ = 0;   // largest k in the ladder, set before the loop
 
+    bool diagnosticBatchComplete_ = false;
+    bool diagnosticForkChild_ = false;
     AssemblyOptions opt_;
     LibraryQC qc_;
     SequenceStore reads_;

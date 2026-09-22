@@ -132,6 +132,8 @@ void usage() {
         "      --no-scaffold       skip scaffolding\n"
         "      --no-gapfill        skip scaffold gap closing\n"
         "      --ladder-union      also emit what a smaller k resolved and the final graph lost\n"
+        "      --dedup-contained   drop contigs that are exact substrings of a longer contig\n"
+        "      --trim-overlap N    trim exact contig-end dovetails longer than N (0: off)\n"
         "      --no-polish         skip consensus polishing\n"
         "\n"
         "GENERAL\n"
@@ -312,6 +314,9 @@ int main(int argc, char** argv) {
         else if (a == "--no-gapfill") opt.gapFill = false;
         else if (a == "--no-ladder-union") opt.ladderUnion = false;
         else if (a == "--ladder-union") opt.ladderUnion = true;
+        else if (a == "--no-dedup-contained") opt.dedupContained = false;
+        else if (a == "--dedup-contained") opt.dedupContained = true;
+        else if (a == "--trim-overlap") opt.trimTerminalOverlap = static_cast<size_t>(intInRange(needValue(i, "--trim-overlap"), "--trim-overlap", 0, 100000));
         else if (a == "--no-polish") opt.polish = false;
         else if (a == "-t" || a == "--threads") opt.threads = static_cast<int>(intInRange(needValue(i, "-t"), "-t/--threads", 1, 4096));
         else if (a == "-q" || a == "--quiet") opt.verbose = false;
@@ -376,6 +381,8 @@ int main(int argc, char** argv) {
         return 1;
     }
 
+    if (asmb.diagnosticBatchComplete()) return 0;
+
     const AssemblyStats& st = asmb.stats();
     const AssemblyReport& rep = asmb.report();
     const int finalK = rep.iterations.empty() ? 0 : rep.iterations.back().k;
@@ -407,8 +414,9 @@ int main(int argc, char** argv) {
                      util::commify(static_cast<long long>(rep.resolve.scaffoldJoins)).c_str(),
                      util::commify(static_cast<long long>(rep.gapBases)).c_str());
     }
-    std::fprintf(stderr, "  elapsed      %.1fs   peak memory %s\n",
-                 st.seconds,
+    std::fprintf(stderr, "  %s %.1fs   %s %s\n",
+                 asmb.diagnosticForkChild() ? "post-graph elapsed" : "elapsed     ", st.seconds,
+                 asmb.diagnosticForkChild() ? "child peak memory" : "peak memory",
                  util::humanBytes(static_cast<double>(util::peakMemoryBytes())).c_str());
     return 0;
 }

@@ -9,6 +9,7 @@
 #pragma once
 
 #include <cstdint>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -148,6 +149,31 @@ public:
     //
     // Returns the number of edges added.
     size_t joinDeadEnds(size_t minOverlap);
+
+    // SPAdes-style gap closing: bridge two dead ends that share an exact overlap of
+    // [minIntersection, k-2] bases, inserting a new unitig carrying the bases between them.
+    //
+    // joinDeadEnds above can only take an overlap of exactly k-1 -- a zero-length gap --
+    // because a Link has no length of its own. Measured over 36 panel graphs and roughly
+    // ten thousand dead ends that condition is satisfied exactly ZERO times, so it never
+    // fires. SPAdes refuses the zero gap outright and closes the range this cannot express:
+    // gaps of 1..k-1-minIntersection bases, where the missing sequence is already carried
+    // in both flanks' terminal overhangs. Over the same 36 graphs that range holds 1,096
+    // closable pairs.
+    //
+    // The Link limitation is sidestepped rather than lifted: instead of shortening a link,
+    // a bridge unitig is inserted whose sequence is (tail's last k-1) + (the missing bases),
+    // so every link still splices exactly k-1 and mergeInto is untouched.
+    //
+    // `nominated` optionally restricts joins to oriented end-pairs some external evidence
+    // has vouched for -- SPAdes requires two read pairs. nullptr means sequence alone, which
+    // is how SPAdes behaves when no paired library is present.
+    // requireUniqueCompatible enables experimental two-phase selection: nominate
+    // all eligible partners first, then join only mutually unique compatible ends.
+    size_t closeGapsByOverlap(size_t minIntersection,
+                              const std::set<std::pair<uint64_t, uint64_t>>* nominated,
+                              size_t* pairsTested = nullptr,
+                              bool requireUniqueCompatible = false);
     // Runs the full simplification schedule until it converges.
     // `bubbleCoverageLimit` is the fraction of mean coverage below which a
     // bubble side may be discarded; raising it collapses diverged repeat

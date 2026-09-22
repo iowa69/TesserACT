@@ -14,6 +14,7 @@
 
 #include "graph.h"
 #include "seqio.h"
+#include "resolve_route_density.h"
 
 namespace ts {
 
@@ -157,6 +158,9 @@ private:
     InsertModel insert_;
     std::vector<ResolvedPath> paths_;
     std::vector<uint64_t> insertHistogram_;
+    // Default-off: conditional route lengths only; endpoint count scores stay intact.
+    bool routeDistance_ = false;
+    detail::RouteInsertDensity routeDensity_;
     ResolveStats stats_;
     double medianCoverage_ = 0;
     int minLinkSupport_;

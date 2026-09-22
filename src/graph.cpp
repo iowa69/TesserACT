@@ -6,6 +6,7 @@
 #include <thread>
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -976,6 +977,155 @@ size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
     return added;
 }
 
+size_t UnitigGraph::closeGapsByOverlap(size_t minIntersection,
+                                       const std::set<std::pair<uint64_t, uint64_t>>* nominated,
+                                       size_t* pairsTested, bool requireUniqueCompatible) {
+    const size_t K1 = static_cast<size_t>(k_ - 1);
+    if (minIntersection < 8) minIntersection = 8;
+    if (K1 <= minIntersection + 1) return 0;
+
+    // Every oriented dead end, with the sequence running OUT of it and the sequence
+    // running INTO it, so a tail and a head compare directly.
+    struct End { uint32_t u; int end; std::string tail, head; };
+    std::vector<End> ends;
+    for (uint32_t u = 0; u < nodes.size(); ++u) {
+        if (nodes[u].deleted) continue;
+        if (nodes[u].seq.size() < K1) continue;
+        for (int e = 0; e < 2; ++e) {
+            if (!nodes[u].ends[e].empty()) continue;
+            const std::string out = e == 1 ? nodes[u].seq : reverseComplement(nodes[u].seq);
+            ends.push_back({u, e, out.substr(out.size() - K1), std::string()});
+            // What arrives at this end, read in the direction a joiner would traverse.
+            const std::string in = e == 0 ? nodes[u].seq : reverseComplement(nodes[u].seq);
+            ends.back().head = in.substr(0, K1);
+        }
+    }
+    if (ends.size() < 2) return 0;
+
+    // Index heads by their first `minIntersection` bases so a tail only compares against
+    // ends that could match at the shortest overlap considered.
+    std::unordered_map<std::string, std::vector<size_t>> byPrefix;
+    for (size_t i = 0; i < ends.size(); ++i) {
+        byPrefix[ends[i].head.substr(0, minIntersection)].push_back(i);
+    }
+
+    // Eligibility is shared with the legacy greedy path, so the experimental
+    // arbitration changes neither overlap nor low-complexity thresholds.
+    auto eligible = [&](size_t i, size_t j, size_t ov, const std::string& suffix) {
+        if (ends[j].head.compare(0, ov, suffix) != 0) return false;   // exact only
+        const size_t gap = K1 - ov;
+        // Low complexity, graded by gap as SPAdes grades it: a long overlap may be
+        // 80% one base, a minimal one may not be repetitive at all.
+        if (lowComplexity(suffix)) return false;
+        {
+            size_t best = 0;
+            for (char c : std::string("ACGT")) {
+                best = std::max(best, static_cast<size_t>(
+                    std::count(suffix.begin(), suffix.end(), c)));
+            }
+            const double denom = static_cast<double>(K1 - minIntersection - 1);
+            const double ratio = 0.8 + 0.2 * (denom > 0 ? (gap - 1) / denom : 0.0);
+            if (static_cast<double>(best) > ratio * static_cast<double>(ov)) return false;
+        }
+        // External nomination, when supplied.
+        if (nominated) {
+            const uint64_t a = (static_cast<uint64_t>(ends[i].u) << 1) | ends[i].end;
+            const uint64_t b = (static_cast<uint64_t>(ends[j].u) << 1) | ends[j].end;
+            if (!nominated->count({std::min(a, b), std::max(a, b)})) return false;
+        }
+        return true;
+    };
+    auto insertBridge = [&](size_t i, size_t j, size_t ov) {
+        // The bridge: the tail's last k-1 bases, then the bases the head carries
+        // beyond the overlap. Walking u -> bridge -> v splices to tail + head[ov:].
+        std::string bridge = ends[i].tail;                 // exactly K1 bases
+        bridge += ends[j].head.substr(ov, K1 - ov);        // the missing `gap` bases
+        if (bridge.size() <= K1) return false;                 // must be a legal unitig
+        Unitig nb;
+        nb.seq = std::move(bridge);
+        nb.coverage = std::min(nodes[ends[i].u].coverage, nodes[ends[j].u].coverage);
+        const uint32_t b = static_cast<uint32_t>(nodes.size());
+        nodes.push_back(std::move(nb));
+        addLink(ends[i].u, ends[i].end, b, 0);
+        addLink(b, 1, ends[j].u, ends[j].end);
+        return true;
+    };
+
+    if (requireUniqueCompatible) {
+        // First enumerate all sequence-compatible physical endpoint pairs. A
+        // partner found in the reverse traversal or at several overlap lengths
+        // is one competitor; retain that pair's longest eligible overlap.
+        struct Candidate { size_t i, j, overlap; };
+        std::map<std::pair<size_t, size_t>, Candidate> candidates;
+        size_t tested = 0;
+        for (size_t i = 0; i < ends.size(); ++i) {
+            for (size_t ov = K1 - 1; ov >= minIntersection; --ov) {
+                const std::string suffix = ends[i].tail.substr(K1 - ov);
+                auto found = byPrefix.find(suffix.substr(0, minIntersection));
+                if (found != byPrefix.end()) {
+                    for (size_t j : found->second) {
+                        if (i == j || ends[i].u == ends[j].u) continue;
+                        ++tested;
+                        if (!eligible(i, j, ov, suffix)) continue;
+                        const std::pair<size_t, size_t> key{std::min(i, j), std::max(i, j)};
+                        auto prior = candidates.find(key);
+                        if (prior == candidates.end() || ov > prior->second.overlap)
+                            candidates[key] = {i, j, ov};
+                    }
+                }
+                if (ov == minIntersection) break;
+            }
+        }
+        std::vector<size_t> partners(ends.size(), 0);
+        for (const auto& candidate : candidates) {
+            ++partners[candidate.first.first];
+            ++partners[candidate.first.second];
+        }
+        size_t added = 0;
+        for (const auto& entry : candidates) {
+            const Candidate& candidate = entry.second;
+            const size_t i = candidate.i, j = candidate.j;
+            if (partners[i] != 1 || partners[j] != 1) continue;
+            if (nodes[ends[i].u].deleted || nodes[ends[j].u].deleted) continue;
+            if (!nodes[ends[i].u].ends[ends[i].end].empty() ||
+                !nodes[ends[j].u].ends[ends[j].end].empty()) continue;
+            if (insertBridge(i, j, candidate.overlap)) ++added;
+        }
+        if (pairsTested) *pairsTested = tested;
+        return added;
+    }
+
+    size_t added = 0, tested = 0;
+    std::vector<char> used(ends.size(), 0);
+    for (size_t i = 0; i < ends.size(); ++i) {
+        if (used[i] || nodes[ends[i].u].deleted) continue;
+        bool joined = false;
+        // Largest overlap first -- the smallest gap that matches exactly, as SPAdes does.
+        // Stop one short of K1: an overlap of exactly k-1 is the zero gap, which is
+        // joinDeadEnds' territory and which SPAdes refuses outright.
+        for (size_t ov = K1 - 1; ov >= minIntersection && !joined; --ov) {
+            const std::string suffix = ends[i].tail.substr(K1 - ov);
+            auto it = byPrefix.find(suffix.substr(0, minIntersection));
+            if (it == byPrefix.end()) continue;
+            for (size_t j : it->second) {
+                if (j == i || used[j]) continue;
+                if (ends[j].u == ends[i].u) continue;           // never join a unitig to itself
+                if (nodes[ends[j].u].deleted) continue;
+                ++tested;
+                if (!eligible(i, j, ov, suffix)) continue;
+                if (!insertBridge(i, j, ov)) continue;
+                used[i] = used[j] = 1;
+                ++added;
+                joined = true;
+                break;
+            }
+            if (ov == minIntersection) break;
+        }
+    }
+    if (pairsTested) *pairsTested = tested;
+    return added;
+}
+
 void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                            double bubbleCoverageLimit, int maxRounds,
                            std::vector<SimplifyRoundStats>* rounds, double errorThreshold) {
@@ -1170,6 +1320,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         }
         if (changes == 0) break;
     }
+
 }
 
 // ---------------------------------------------------------------------------

@@ -1,4 +1,5 @@
 #include "seqio.h"
+#include "polish_quality.h"
 
 #include <zlib.h>
 
@@ -361,6 +362,11 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     paired_ = false;
     pairedReads_ = 0;
     trimmedBases_ = 0;
+    std::vector<uint64_t>().swap(originalData_);
+    std::vector<uint64_t>().swap(originalAmbiguous_);
+    std::vector<uint8_t>().swap(originalQualities_);
+    originalQualitiesRetained_ = false;
+    const bool retainOriginalQuality = quality_consensus::enabled();
 
     std::vector<FileSlot> slots;
     std::vector<LibPlan> plans;
@@ -533,6 +539,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
 
     data_.assign(static_cast<size_t>((totalBases_ + 31) / 32), 0);
     ambiguous_.assign(static_cast<size_t>((totalBases_ + 63) / 64), 0);
+    if (retainOriginalQuality) originalQualities_.assign(static_cast<size_t>(totalBases_), 255);
 
     // Pass 2: file-parallel packing into offsets that are already known.
     uint64_t* data = data_.data();
@@ -557,6 +564,13 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
                               return false;
                           }
                           packSequence(data, amb, start, seq, static_cast<uint32_t>(len));
+                          if (retainOriginalQuality && qual) {
+                              // Files own disjoint complete bytes here.
+                              for (size_t p = 0; p < len; ++p) {
+                                  const int q = static_cast<unsigned char>(qual[p]) - qtrim_.phredOffset;
+                                  if (q >= 0 && q <= 93) originalQualities_[start + p] = static_cast<uint8_t>(q);
+                              }
+                          }
                           ++j;
                           return true;
                       });
@@ -574,8 +588,16 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
             maxLen_ = 0;
             paired_ = false;
             pairedReads_ = 0;
+            std::vector<uint8_t>().swap(originalQualities_);
             return false;
         }
+    }
+    if (retainOriginalQuality) {
+        originalData_ = data_;
+        originalAmbiguous_ = ambiguous_;
+        originalQualitiesRetained_ = true;
+        std::fprintf(stderr, "[qualitypolish] retained_original=1 reads=%zu bases=%zu bytes=%zu phred_offset=%d missing_quality=255\n",
+                     size(), totalBases(), originalQualityBytes(), qtrim_.phredOffset);
     }
     return true;
 }
@@ -619,6 +641,124 @@ void SequenceStore::maskRange(size_t read, uint32_t from, uint32_t to) {
         const uint64_t bit = base + p;
         ambiguous_[bit >> 6] |= 1ULL << (bit & 63);
     }
+}
+
+namespace {
+
+// Use nonrepeating seeds from both unmasked read portions. A seed repeated
+// within either read cannot establish the fragment's offset.
+using MateSeed = std::pair<uint64_t, int>;
+std::vector<MateSeed> uniqueMateSeeds(const std::vector<int>& codes) {
+    constexpr int seedLength = 19;
+    constexpr uint64_t seedMask = (1ULL << (2 * seedLength)) - 1;
+    std::vector<MateSeed> seeds;
+    uint64_t word = 0;
+    int valid = 0;
+    for (int i = 0; i < static_cast<int>(codes.size()); ++i) {
+        if (codes[i] < 0) { valid = 0; word = 0; continue; }
+        word = ((word << 2) | static_cast<uint64_t>(codes[i])) & seedMask;
+        if (++valid >= seedLength) seeds.emplace_back(word, i + 1 - seedLength);
+    }
+    std::sort(seeds.begin(), seeds.end());
+    size_t kept = 0;
+    for (size_t i = 0; i < seeds.size();) {
+        size_t j = i + 1;
+        while (j < seeds.size() && seeds[j].first == seeds[i].first) ++j;
+        if (j == i + 1) seeds[kept++] = seeds[i];
+        i = j;
+    }
+    seeds.resize(kept);
+    return seeds;
+}
+
+}  // namespace
+
+MateRescueStats rescueMateOverlaps(SequenceStore& reads,
+                                  const std::vector<uint32_t>& maskedReadIds) {
+    MateRescueStats stats;
+    if (!reads.paired() || maskedReadIds.empty()) return stats;
+    std::vector<uint32_t> eligible = maskedReadIds;
+    std::sort(eligible.begin(), eligible.end());
+    eligible.erase(std::unique(eligible.begin(), eligible.end()), eligible.end());
+    std::vector<int> a, b;
+    size_t previousPair = SIZE_MAX;
+    for (uint32_t rid : eligible) {
+        if (!reads.hasMate(rid)) continue;
+        const size_t r1 = static_cast<size_t>(rid) & ~size_t(1), r2 = r1 + 1;
+        if (r1 == previousPair) continue;
+        previousPair = r1;
+        ++stats.pairsExamined;
+        const uint32_t n1 = reads.length(r1), n2 = reads.length(r2);
+        // Bounded short-read experiment: neither tiny overlaps nor unexpectedly
+        // long inputs may create an unbounded alignment search.
+        if (n1 < 60 || n2 < 60 || n1 > 4096 || n2 > 4096) continue;
+        a.resize(n1);
+        b.resize(n2);
+        for (uint32_t p = 0; p < n1; ++p) a[p] = reads.baseAt(r1, p);
+        for (uint32_t p = 0; p < n2; ++p) {
+            const int c = reads.baseAt(r2, n2 - 1 - p);
+            b[p] = c < 0 ? -1 : 3 - c;
+        }
+        const auto sa = uniqueMateSeeds(a), sb = uniqueMateSeeds(b);
+        std::vector<int> offsets;
+        size_t ia = 0, ib = 0;
+        while (ia < sa.size() && ib < sb.size()) {
+            if (sa[ia].first < sb[ib].first) { ++ia; continue; }
+            if (sb[ib].first < sa[ia].first) { ++ib; continue; }
+            const int offset = sa[ia].second - sb[ib].second;
+            // Normal inward-facing mates: R2's reverse complement starts
+            // within R1 and reaches its right boundary. Adapter read-through
+            // and containments are deliberately outside this experiment.
+            if (offset >= 0 && offset + static_cast<int>(n2) >= static_cast<int>(n1) &&
+                offset <= static_cast<int>(n1) - 60) offsets.push_back(offset);
+            ++ia;
+            ++ib;
+        }
+        std::sort(offsets.begin(), offsets.end());
+        offsets.erase(std::unique(offsets.begin(), offsets.end()), offsets.end());
+        if (offsets.size() > 32) { ++stats.ambiguousOverlaps; continue; }
+        int chosen = -1, plausible = 0;
+        for (int offset : offsets) {
+            int compared = 0, mismatches = 0;
+            for (int p = offset; p < static_cast<int>(n1); ++p) {
+                if (a[p] < 0 || b[p - offset] < 0) continue;
+                ++compared;
+                mismatches += a[p] != b[p - offset];
+            }
+            // At least 40 jointly unmasked bases, with 99% identity for the
+            // accepted offset. A competing 98% offset makes it ambiguous.
+            if (compared < 40 || mismatches * 100 > compared * 2) continue;
+            ++plausible;
+            if (mismatches * 100 <= compared) chosen = offset;
+        }
+        if (plausible > 1) { ++stats.ambiguousOverlaps; continue; }
+        if (chosen < 0 || plausible != 1) continue;
+        ++stats.overlapsAccepted;
+        const bool rescue1 = std::binary_search(eligible.begin(), eligible.end(),
+                                               static_cast<uint32_t>(r1));
+        const bool rescue2 = std::binary_search(eligible.begin(), eligible.end(),
+                                               static_cast<uint32_t>(r2));
+        bool changed1 = false, changed2 = false;
+        for (int p = chosen; p < static_cast<int>(n1); ++p) {
+            const uint32_t p2 = n2 - 1 - static_cast<uint32_t>(p - chosen);
+            // a and b are immutable snapshots: a newly rescued base cannot
+            // recursively vouch for another masked base in its mate.
+            if (rescue1 && a[p] < 0 && b[p - chosen] >= 0 &&
+                reads.rawBaseAt(r1, static_cast<uint32_t>(p)) == b[p - chosen]) {
+                reads.setBase(r1, static_cast<uint32_t>(p), b[p - chosen]);
+                ++stats.basesRescued;
+                changed1 = true;
+            }
+            if (rescue2 && b[p - chosen] < 0 && a[p] >= 0 &&
+                reads.rawBaseAt(r2, p2) == 3 - a[p]) {
+                reads.setBase(r2, p2, 3 - a[p]);
+                ++stats.basesRescued;
+                changed2 = true;
+            }
+        }
+        stats.readsRescued += changed1 + changed2;
+    }
+    return stats;
 }
 
 bool writeFasta(const std::string& path, const std::vector<std::string>& seqs,

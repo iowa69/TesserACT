@@ -1,4 +1,7 @@
 #include "resolve.h"
+#include "graph_coverage.h"
+#include "resolve_evidence.h"
+#include "read_thread_evidence.h"
 
 #include "organism.h"   // forEachMarkerKmer, for the plasmid vouch below
 
@@ -66,6 +69,17 @@ PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& re
       linkSupportPerX_(linkSupportPerX >= 0 ? linkSupportPerX : 0.10),
       minScaffoldSupport_(minScaffoldSupport) {
     medianCoverage_ = graph.medianCoverage();
+    const char* weightedCoverage = std::getenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");
+    const char* eligibleCoverage = std::getenv("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE");
+    const bool useEligibleCoverage = eligibleCoverage && std::string(eligibleCoverage) == "1";
+    // Explicit precedence: eligible-only calibration wins if both experiments
+    // are enabled. They are alternative estimators, never cumulative weights.
+    if (useEligibleCoverage || (weightedCoverage && std::string(weightedCoverage) == "1")) {
+        const double calibrated = useEligibleCoverage
+            ? graphEligibleLengthWeightedMedianCoverage(graph)
+            : graphLengthWeightedMedianCoverage(graph);
+        if (calibrated > 0.0) medianCoverage_ = calibrated;
+    }
 }
 
 void PairedResolver::buildIndex() {
@@ -169,7 +183,37 @@ void PairedResolver::buildSupport() {
     buildIndex();
     if (!reads_.paired()) return;
 
+    const char* routeFlag = std::getenv("TESSERACT_ROUTE_DISTANCE");
+    routeDistance_ = routeFlag && std::string(routeFlag) == "1";
+    routeDensity_ = {};
     const size_t pairs = reads_.pairCount();
+    std::vector<std::vector<detail::RouteTrainingInterval>> routeIntervals(routeDistance_ ? g_.nodes.size() : 0);
+    std::vector<detail::RouteTrainingSequence> routePopulation;
+    size_t routeTrainingNodes = 0;
+    if (routeDistance_) {
+        std::vector<std::vector<uint8_t>> uniqueStarts(g_.nodes.size());
+        for (size_t u = 0; u < g_.nodes.size(); ++u) {
+            const auto& node = g_.nodes[u];
+            if (!node.deleted && node.seq.size() >= size_t(2 * k_) &&
+                std::isfinite(node.coverage) && node.coverage > 0 &&
+                node.coverage <= 1.6 * medianCoverage_)
+                uniqueStarts[u].resize(node.seq.size() - size_t(kMap_) + 1, 0);
+        }
+        // Reuse the actual ambiguity-aware anchoring index. Nominal low depth
+        // alone does not imply a mappable training opportunity.
+        for (const auto& entry : index_) {
+            if (entry.second == kAmbiguous) continue;
+            const uint32_t u = idxUnitig(entry.second), pos = idxPos(entry.second);
+            if (pos < uniqueStarts[u].size()) uniqueStarts[u][pos] = 1;
+        }
+        for (size_t u = 0; u < g_.nodes.size(); ++u) {
+            routeIntervals[u] = detail::uniqueSeedIntervals(uniqueStarts[u], size_t(kMap_));
+            if (!routeIntervals[u].empty()) ++routeTrainingNodes;
+            for (const auto& interval : routeIntervals[u])
+                routePopulation.push_back({interval.end - interval.begin, g_.nodes[u].coverage});
+        }
+    }
+    std::vector<std::vector<int>> routeSamples(static_cast<size_t>(threads_));
     std::vector<std::vector<int>> insertSamples(static_cast<size_t>(threads_));
     std::vector<std::unordered_map<uint64_t, std::unordered_map<uint64_t, std::vector<int32_t>>>>
         localSupport(static_cast<size_t>(threads_));
@@ -198,6 +242,23 @@ void PairedResolver::buildSupport() {
                     samples.push_back(a2.pos + len2 - a1.pos);
                 } else if (a2.orient == 0 && a1.orient == 1 && a1.pos + len1 > a2.pos) {
                     samples.push_back(a1.pos + len1 - a2.pos);
+                }
+                if (routeDistance_ && !routeIntervals[a1.unitig].empty()) {
+                    const int nodeLength = int(g_.nodes[a1.unitig].seq.size());
+                    // Both entire read footprints must belong to this unitig;
+                    // overhanging anchors cannot measure contained opportunity.
+                    if (a1.pos >= 0 && a2.pos >= 0 && a1.pos + len1 <= nodeLength &&
+                        a2.pos + len2 <= nodeLength) {
+                        int begin = -1, end = -1;
+                        if (a1.orient == 0 && a2.orient == 1 && a2.pos >= a1.pos && a1.pos + len1 <= a2.pos + len2) {
+                            begin = a1.pos; end = a2.pos + len2;
+                        } else if (a2.orient == 0 && a1.orient == 1 && a1.pos >= a2.pos && a2.pos + len2 <= a1.pos + len1) {
+                            begin = a2.pos; end = a1.pos + len1;
+                        }
+                        if (begin >= 0 && end - begin >= kMap_ + 1 &&
+                            detail::containedTrainingFragment(routeIntervals[a1.unitig], size_t(begin), size_t(end)))
+                            routeSamples[size_t(tid)].push_back(end - begin);
+                    }
                 }
                 continue;
             }
@@ -279,6 +340,23 @@ void PairedResolver::buildSupport() {
         insert_.minPlausible = forcedMin_;
         insert_.maxPlausible = forcedMax_;
         insert_.usable = true;
+    }
+
+    if (routeDistance_ && insert_.usable) {
+        std::vector<uint64_t> histogram;
+        for (const auto& samples : routeSamples) for (int length : samples) {
+            if (length < insert_.minPlausible || length > insert_.maxPlausible) continue;
+            if (size_t(length) >= histogram.size()) histogram.resize(size_t(length) + 1, 0);
+            ++histogram[size_t(length)];
+        }
+        const size_t trainingIntervals = routePopulation.size();
+        routeDensity_ = detail::fitRouteInsertDensity(histogram, std::move(routePopulation),
+                                                      std::max(insert_.minPlausible, kMap_ + 1), insert_.maxPlausible);
+        std::fprintf(stderr,
+            "[routedensity] nodes=%zu intervals=%zu pairs=%llu effective=%.1f bandwidth=%d usable=%d bounds=%d:%d\n",
+            routeTrainingNodes, trainingIntervals, static_cast<unsigned long long>(routeDensity_.observations),
+            routeDensity_.effectiveObservations, routeDensity_.bandwidth, routeDensity_.usable ? 1 : 0,
+            std::max(insert_.minPlausible, kMap_ + 1), insert_.maxPlausible);
     }
 
     size_t distinct = 0;
@@ -465,6 +543,53 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // never asked for less than it was before.
     const double linkBar = std::max(static_cast<double>(minLinkSupport_),
                                     std::min(6.0, medianCoverage_ * linkSupportPerX_));
+
+    const bool exactReadThreads = reads_.paired() && [] {
+        const char* flag = std::getenv("TESSERACT_EXACT_READ_THREADS");
+        return flag && std::string(flag) == "1";
+    }();
+    ReadThreadEvidence threadEvidence;
+    // Preserve observed routes even if all their molecules already supplied
+    // paired evidence: contrary exact observations must remain visible vetoes.
+    std::vector<size_t> freshThreadSupport;
+    std::unordered_map<uint64_t, std::vector<std::pair<size_t, bool>>> threadPorts;
+    size_t threadPairedExcluded = 0, threadFreshFragments = 0;
+    size_t threadNominations = 0, threadConflictingPorts = 0, threadJoins = 0;
+    if (exactReadThreads) {
+        std::vector<uint8_t> eligible(n, 0);
+        for (uint32_t u = 0; u < n; ++u) eligible[u] = anchorable(u);
+        threadEvidence = collectReadThreadEvidence(g_, reads_, eligible);
+        freshThreadSupport.resize(threadEvidence.routes.size(), 0);
+        for (size_t i = 0; i < threadEvidence.routes.size(); ++i) {
+            const auto& route = threadEvidence.routes[i];
+            for (size_t fragment : route.fragments) {
+                bool alreadyPaired = false;
+                if (fragment < reads_.pairCount()) {
+                    const Anchor first = anchorRead(fragment * 2);
+                    const Anchor second = anchorRead(fragment * 2 + 1);
+                    if (first.mapped() && second.mapped() && first.unitig != second.unitig) {
+                        const uint64_t from = orientedId(first.unitig, first.orient);
+                        const uint64_t to = orientedId(second.unitig, 1 - second.orient);
+                        alreadyPaired = (from == route.oriented.front() && to == route.oriented.back()) ||
+                            ((from ^ 1) == route.oriented.back() && (to ^ 1) == route.oriented.front());
+                    }
+                }
+                if (alreadyPaired) ++threadPairedExcluded;
+                else { ++freshThreadSupport[i]; ++threadFreshFragments; }
+            }
+            threadPorts[route.oriented.front()].push_back({i, false});
+            threadPorts[route.oriented.back() ^ 1].push_back({i, true});
+        }
+        const auto& stats = threadEvidence.stats;
+        std::fprintf(stderr,
+            "[readthread] reads=%zu acceptedReads=%zu molecules=%zu fresh=%zu pairedExcluded=%zu "
+            "routes=%zu unknown=%zu noFlanks=%zu noExact=%zu ambiguous=%zu searchLimited=%zu "
+            "mateDuplicates=%zu conflictingMates=%zu\n",
+            stats.readsExamined, stats.readsAccepted, stats.fragmentsAccepted, threadFreshFragments,
+            threadPairedExcluded, threadEvidence.routes.size(), stats.readsUnknown, stats.readsNoFlanks,
+            stats.readsNoExactPath, stats.readsAmbiguous, stats.readsSearchLimited,
+            stats.matesDeduplicated, stats.fragmentsConflicting);
+    }
 
     auto flip = [](uint64_t oid) { return orientedId(unitigOf(oid), 1 - orientOf(oid)); };
     auto addedLen = [&](uint64_t oid) { return g_.nodes[unitigOf(oid)].seq.size() - ov; };
@@ -663,6 +788,14 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         return matched >= 1.0 && matched >= dom * crossed;
     };
 
+    // Complete terminal repeats across a single-substitution bubble only when
+    // explicitly requested. This extends sequence; it does not relax the anchor
+    // join chooser or make a choice between distinct flanking destinations.
+    const bool completePrefixBubbles = [] {
+        const char* e = std::getenv("TESSERACT_PREFIX_SNP_BUBBLES");
+        return e && std::atoi(e) != 0;
+    }();
+
     // Start with every anchorable unitig as a chain of one, then repeatedly
     // join chains whose paired evidence mutually prefers each other. Growing
     // chains lets support accumulate over a whole contig tail rather than just
@@ -689,6 +822,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         uint32_t chainB = UINT32_MAX;
         int endB = 0;
         std::vector<uint64_t> connector;
+        std::vector<uint64_t> legacyConnector;
+        bool distanceChanged = false;
+        bool exactThread = false;
         double score = 0;
         bool ok = false;
     };
@@ -696,8 +832,37 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // Best continuation off one end of a chain, scored with every member of
     // that chain that still lies within fragment reach of the boundary.
     long long dbgNoCand = 0, dbgLowSupport = 0, dbgTie = 0, dbgMidChain = 0, dbgOk = 0;
-    long long dbgCoverage = 0, dbgMatched = 0;
+    long long dbgCoverage = 0, dbgMatched = 0, dbgShortDest = 0, dbgUnspanned = 0;
+    long long dbgLoneRepeat = 0;
+    static const bool requireSupportSingle_ = [] {
+        const char* e = std::getenv("TESSERACT_REQUIRE_SUPPORT_SINGLE");
+        return e && std::atoi(e) != 0;
+    }();
+    static const bool joinTrace_ = [] {
+        const char* e = std::getenv("TESSERACT_JOIN_TRACE");
+        return e && std::atoi(e) != 0;
+    }();
+    static const bool noUnspannedFallback_ = [] {
+        const char* e = std::getenv("TESSERACT_NO_UNSPANNED_FALLBACK");
+        return e && std::atoi(e) != 0;
+    }();
     long long dbgTieBest = 0, dbgTieSecond = 0;
+
+    // Withdraw the fallbacks when the continuation they would take lands on a unitig
+    // shorter than this. 0 disables, which is the shipped behaviour until measured.
+    static const size_t minFallbackDest_ = [] {
+        const char* e = std::getenv("TESSERACT_MIN_FALLBACK_DEST");
+        return e ? static_cast<size_t>(std::atoi(e)) : 0u;
+    }();
+
+    const bool excludeSharedRepeatSupport = [] {
+        const char* e = std::getenv("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT");
+        return e && std::atoi(e) != 0;
+    }();
+    const bool auditSharedRepeatSupport = [] {
+        const char* e = std::getenv("TESSERACT_SHARED_SUPPORT_AUDIT");
+        return e && std::atoi(e) != 0;
+    }();
 
     auto bestContinuation = [&](uint32_t c, int end) {
         Cont result;
@@ -744,6 +909,53 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             else if (sc > second) second = sc;
         }
 
+        if (excludeSharedRepeatSupport || auditSharedRepeatSupport) {
+            // Compare a source's support across distinct destinations before
+            // summing it into a branch score. This follows SPAdes' exclusion
+            // of common history evidence, restricted here to collapsed repeats
+            // so distinctive low-depth anchor support remains unchanged.
+            std::vector<uint64_t> destinations;
+            for (const auto& candidate : cands) destinations.push_back(candidate.back());
+            std::vector<detail::BranchEvidence> evidence;
+            for (size_t m = tailFirst.size(); m-- > 0;) {
+                if (static_cast<double>(distToEnd[m]) > reach) break;
+                detail::BranchEvidence row;
+                row.source = tailFirst[m];
+                row.repeat = isRepeat(unitigOf(tailFirst[m]));
+                for (size_t i = 0; i < cands.size(); ++i) {
+                    row.scores.push_back(scoreCandidate(tailFirst[m], destinations[i],
+                        interLenOf(cands[i]) + static_cast<int>(distToEnd[m])));
+                }
+                evidence.push_back(std::move(row));
+            }
+            const auto adjusted = detail::distinctiveBranchScores(destinations, evidence);
+            if (auditSharedRepeatSupport || joinTrace_) {
+                const auto shared = detail::sharedRepeatSources(destinations, evidence);
+                for (size_t m = 0; m < evidence.size(); ++m) {
+                    if (!shared[m]) continue;
+                    std::fprintf(stderr,
+                        "[sharedsupport] chain=%u end=%d source=%llu active=%d destinations=",
+                        c, end, static_cast<unsigned long long>(evidence[m].source),
+                        excludeSharedRepeatSupport ? 1 : 0);
+                    for (size_t i = 0; i < cands.size(); ++i)
+                        std::fprintf(stderr, "%s%llu:%.1f:%.1f", i ? "," : "",
+                            static_cast<unsigned long long>(destinations[i]),
+                            evidence[m].scores[i], adjusted[i]);
+                    std::fprintf(stderr, "\n");
+                }
+            }
+            if (excludeSharedRepeatSupport) {
+                scores = adjusted;
+                best = second = -1.0;
+                pick = 0;
+                for (size_t i = 0; i < scores.size(); ++i) {
+                    const double sc = scores[i];
+                    if (sc > best) { second = best; best = sc; pick = i; }
+                    else if (sc > second) second = sc;
+                }
+            }
+        }
+
         // Gating this bar on whether the route passes through a repeat was
         // tried and does not work. The reasoning was sound -- every misassembly
         // the bar was introduced to stop was a relocation through a repeat, and
@@ -759,6 +971,30 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         // repeat's unitig coverage is diluted, and a two-copy repeat with one
         // copy in a thin region never reaches the threshold. Identifying the
         // risky joins needs a structural signal rather than a depth one.
+
+        // Retained, default-off negative experiment: require paired support
+        // for a lone candidate routed through a repeat. The historical trace
+        // counted 381 PROPOSALS, not accepted joins: its print preceded tie,
+        // terminal, and mutual-choice checks. The claim that 25 unsupported
+        // proposals caused accepted misjoins was therefore unwarranted; this
+        // guard's measured output was unchanged. Actual arbitration now emits
+        // [acceptedjoin], and terminal-repeat additions emit [prefixtrace].
+        if (requireSupportSingle_ && cands.size() == 1 && best <= 0.0) {
+            bool throughRepeat = false;
+            for (size_t j = 0; j + 1 < cands[0].size(); ++j) {
+                if (isRepeat(unitigOf(cands[0][j]))) { throughRepeat = true; break; }
+            }
+            if (throughRepeat) {
+                ++dbgLoneRepeat;
+                if (joinTrace_)
+                    std::fprintf(stderr, "[refused] from=%u dest=%u interLen=%d\n",
+                                 unitigOf(tailFirst.back()), unitigOf(cands[0].back()),
+                                 [&]{ int L=0; for (size_t j=0;j+1<cands[0].size();++j)
+                                      L+=static_cast<int>(g_.nodes[unitigOf(cands[0][j])].seq.size())-(k_-1);
+                                      return L; }());
+                return result;
+            }
+        }
 
         // Whether the paired reads decided this, or coverage had to.
         bool byCoverage = false;
@@ -794,9 +1030,96 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 chosen = pickByCoverage(tailFirst, cands);
             }
             if (chosen < 0) { ++dbgLowSupport; return result; }
+            // A short destination reached on fallback evidence is where our
+            // misassemblies actually come from. Measured over 177 *S. aureus*
+            // isolates, splitting every extensive misassembly by the length of
+            // the SHORTER alignment block flanking its breakpoint:
+            //
+            //   shorter flank    model   base   SPAdes   excess     p
+            //   < 2 kb             192    185      100      +92   1.9e-04
+            //   2 - 20 kb          137    120      140       -3   0.74
+            //   >= 20 kb            71     59       40      +31   3.3e-04
+            //
+            // The short class is identical in `base` and `model` (192 v 185,
+            // 5/7, p=0.50), so it is not the organism model, and it is
+            // significant even in the 29 isolates where SPAdes is the MORE
+            // contiguous assembler (+11, 2/10, p=0.031), so it is not bought
+            // contiguity either. 81% of those short blocks sit at a contig
+            // terminus, their lengths cluster at IS-element scale, and the
+            // sequence they belong to is a median 209 kb away -- a short
+            // dispersed repeat appended from the wrong copy.
+            //
+            // Paired support that clears `linkBar` is not affected: this only
+            // withdraws the three fallbacks when what they would append is both
+            // short and unvouched. The cost in contiguity should be near zero,
+            // because a sub-2 kb tail is not contiguity.
+            if (minFallbackDest_ > 0) {
+                const uint32_t destU = unitigOf(cands[static_cast<size_t>(chosen)].back());
+                if (g_.nodes[destU].seq.size() < minFallbackDest_) {
+                    ++dbgShortDest;
+                    return result;
+                }
+            }
+            // Refuse a fallback whose route no read pair could have spanned.
+            //
+            // Measured: the <2 kb blocks flanking our excess misassemblies are dispersed
+            // repeats with 5-7 copies in the reference, sitting at 6-10x median depth --
+            // far ABOVE the 1.6x repeat guard, so they are not escaping it by dilution.
+            // They sit in the INTERIOR of the route, between two unique flanks. On
+            // GCF003184985v1 the interior is 1,063 bp against an insert window of 204+/-140,
+            // so maxPlausible is 764: no pair can reach across it. Every candidate therefore
+            // scores zero, `best < linkBar` holds, and the decision falls to the fallbacks --
+            // which choose by coverage, with nothing to check themselves against.
+            //
+            // This is why the three threshold sweeps all came back empty. Raising `linkBar`
+            // pushes MORE joins into the fallback path rather than fewer; `tieRatio` never
+            // applies there at all; and the first version of this guard tested the
+            // DESTINATION unitig's length, which is long unique sequence -- the repeat is
+            // interior -- so it withdrew 2 joins out of 166.
+            //
+            // The test is structural, not depth-based, so the dilution that defeats
+            // `isRepeat` does not defeat it: if the sequence between here and the
+            // destination is longer than the library's longest plausible fragment, then no
+            // paired evidence about this junction exists, and picking anyway is a guess.
+            if (noUnspannedFallback_ && insert_.usable) {
+                int interLenChosen = 0;
+                const std::vector<uint64_t>& route = cands[static_cast<size_t>(chosen)];
+                for (size_t j = 0; j + 1 < route.size(); ++j) {
+                    interLenChosen += static_cast<int>(g_.nodes[unitigOf(route[j])].seq.size())
+                                    - (k_ - 1);
+                }
+                if (interLenChosen > insert_.maxPlausible) {
+                    ++dbgUnspanned;
+                    return result;
+                }
+            }
             pick = static_cast<size_t>(chosen);
             byCoverage = true;
             ++dbgCoverage;
+        }
+
+        // Candidate diagnostic only: the tie, terminal-end, and mutual-choice
+        // checks below can still reject this proposal. Actual accepted joins are
+        // recorded separately as [acceptedjoin] after arbitration.
+        if (joinTrace_) {
+            const uint32_t fromU = unitigOf(tailFirst.back());
+            const uint32_t destU = unitigOf(cands[pick].back());
+            int interLen = 0;
+            for (size_t j = 0; j + 1 < cands[pick].size(); ++j)
+                interLen += static_cast<int>(g_.nodes[unitigOf(cands[pick][j])].seq.size()) - (k_ - 1);
+            double interDepth = 0; size_t interN = 0;
+            for (size_t j = 0; j + 1 < cands[pick].size(); ++j) {
+                interDepth += g_.nodes[unitigOf(cands[pick][j])].coverage; ++interN;
+            }
+            std::fprintf(stderr,
+                "[jointrace] from=%u fromLen=%zu fromCov=%.1f dest=%u destLen=%zu destCov=%.1f "
+                "cands=%zu best=%.1f second=%.1f interLen=%d interN=%zu interCov=%.1f "
+                "byCov=%d med=%.1f maxPl=%d\n",
+                fromU, g_.nodes[fromU].seq.size(), g_.nodes[fromU].coverage,
+                destU, g_.nodes[destU].seq.size(), g_.nodes[destU].coverage,
+                cands.size(), best, second, interLen, interN,
+                interN ? interDepth / interN : 0.0, byCoverage ? 1 : 0,
+                medianCoverage_, insert_.usable ? insert_.maxPlausible : -1);
         }
 
         if (cands.size() > 1 && !byCoverage) {
@@ -805,11 +1128,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             if (second > 0 && best < tieRatio_ * second) {
                 // Unless every near-tied path ends on the same unitig in the
                 // same orientation. Then the destination is not in doubt at
-                // all -- the paired evidence cannot separate them precisely
-                // because it supports the identical join -- and only the route
-                // between is ambiguous. Refusing here throws away a join that
-                // is certain; take it, and settle the interior by coverage,
-                // which is the evidence that does distinguish the arms.
+                // all. The broad-window pair COUNTS can tie even when insert
+                // lengths distinguish the interiors. Preserve the established
+                // endpoint join; legacy behavior settles the route by coverage.
+                // The default-off distance model below can use that otherwise
+                // discarded information without changing endpoint support.
                 const uint64_t bestTerm = cands[pick].back();
                 bool sameDestination = true;
                 for (size_t i = 0; i < cands.size(); ++i) {
@@ -832,6 +1155,71 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     // A path with no interior is the most direct route.
                     if (cands[i].size() < 2) minCov = std::numeric_limits<double>::max();
                     if (minCov > bestInterior) { bestInterior = minCov; pick = i; }
+                }
+                if (routeDistance_ && routeDensity_.usable) {
+                    // Endpoint nomination and its count score are settled above.
+                    // Only distinguish near-tied routes to that SAME endpoint.
+                    // Same-length routes remain one hypothesis, so duplicating
+                    // an enumerated path cannot manufacture paired evidence.
+                    std::vector<int> lengths;
+                    for (size_t i = 0; i < cands.size(); ++i) {
+                        if (scores[i] * tieRatio_ >= best) lengths.push_back(interLenOf(cands[i]));
+                    }
+                    std::sort(lengths.begin(), lengths.end());
+                    lengths.erase(std::unique(lengths.begin(), lengths.end()), lengths.end());
+                    if (lengths.size() > 1) {
+                        std::vector<int> spans;
+                        std::vector<uint64_t> seenSources;
+                        for (size_t m = tailFirst.size(); m-- > 0;) {
+                            if (double(distToEnd[m]) > reach) break;
+                            if (isRepeat(unitigOf(tailFirst[m])) ||
+                                std::find(seenSources.begin(), seenSources.end(), tailFirst[m]) != seenSources.end())
+                                continue;
+                            seenSources.push_back(tailFirst[m]);
+                            const auto source = support_.find(tailFirst[m]);
+                            if (source == support_.end()) continue;
+                            const auto target = source->second.find(bestTerm);
+                            if (target == source->second.end()) continue;
+                            for (int span : target->second) {
+                                const int64_t adjusted = int64_t(span) + int64_t(distToEnd[m]);
+                                if (adjusted >= std::numeric_limits<int>::min() &&
+                                    adjusted <= std::numeric_limits<int>::max()) spans.push_back(int(adjusted));
+                            }
+                        }
+                        std::vector<double> contrast;
+                        const auto allocated = detail::routeDistanceAllocation(routeDensity_, spans, lengths, &contrast, linkBar);
+                        // The existing bar applies to distinguishing route mass,
+                        // not common/flat pairs. Fractions are never rounded up:
+                        // two near-certain pairs may need a third to clear bar2.
+                        const int winner = detail::supportedRouteLength(allocated, contrast, tieRatio_, linkBar);
+                        if (winner >= 0) {
+                            const size_t legacy = pick;
+                            double interior = -1;
+                            for (size_t i = 0; i < cands.size(); ++i) {
+                                if (scores[i] * tieRatio_ < best || interLenOf(cands[i]) != lengths[size_t(winner)]) continue;
+                                double minCov = std::numeric_limits<double>::max();
+                                for (size_t j = 0; j + 1 < cands[i].size(); ++j)
+                                    minCov = std::min(minCov, g_.nodes[unitigOf(cands[i][j])].coverage);
+                                if (minCov > interior) { interior = minCov; pick = i; }
+                            }
+                            if (pick != legacy) {
+                                result.legacyConnector.assign(cands[legacy].begin(), cands[legacy].end() - 1);
+                                result.distanceChanged = true;
+                            }
+                            if (joinTrace_) {
+                                std::fprintf(stderr,
+                                    "[routedistance] chain=%u end=%d target=%llu pairs=%zu oldLen=%d newLen=%d changed=%d allocations=",
+                                    c, end, static_cast<unsigned long long>(bestTerm), spans.size(),
+                                    interLenOf(cands[legacy]), interLenOf(cands[pick]), legacy != pick ? 1 : 0);
+                                for (size_t i = 0; i < lengths.size(); ++i)
+                                    std::fprintf(stderr, "%s%d:%.6f", i ? "," : "", lengths[i], allocated[i]);
+                                std::fprintf(stderr, " contrasts=");
+                                for (size_t i = 0; i < lengths.size(); ++i)
+                                    std::fprintf(stderr, "%s%d:%.6f", i ? "," : "", lengths[i], contrast[i]);
+                                std::fprintf(stderr, "\n");
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -858,6 +1246,43 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         return result;
     };
 
+    // A separate fallback preserves every accepted legacy nomination. This
+    // first experiment uses routes beginning at the actual chain port, without
+    // inferring upstream history or skipping other anchorable chain members.
+    auto exactThreadContinuation = [&](uint32_t c, int end) {
+        Cont result;
+        if (chains[c].empty()) return result;
+        const uint64_t source = end == 1 ? chains[c].back() : flip(chains[c].front());
+        const auto found = threadPorts.find(source);
+        if (found == threadPorts.end()) return result;
+        // No count dominance rule: even a single contrary observed full route
+        // means the short reads do not give a mutually consistent continuation.
+        if (found->second.size() != 1) { ++threadConflictingPorts; return result; }
+        const auto entry = found->second.front();
+        if (static_cast<double>(freshThreadSupport[entry.first]) < linkBar) return result;
+        auto route = threadEvidence.routes[entry.first].oriented;
+        if (entry.second) route = reverseReadThreadPath(route);
+        for (size_t j = 1; j + 1 < route.size(); ++j)
+            if (anchorable(unitigOf(route[j]))) return result;
+        const uint64_t target = route.back();
+        const uint32_t targetNode = unitigOf(target);
+        const uint32_t otherChain = ownerChain[targetNode];
+        if (otherChain == UINT32_MAX || otherChain == c) return result;
+        const auto& other = chains[otherChain];
+        const size_t pos = ownerPos[targetNode];
+        if (pos >= other.size()) return result;
+        if (other[pos] == target && pos == 0) result.endB = 0;
+        else if (other[pos] == flip(target) && pos + 1 == other.size()) result.endB = 1;
+        else return result;
+        result.chainB = otherChain;
+        result.connector.assign(route.begin() + 1, route.end() - 1);
+        result.score = static_cast<double>(freshThreadSupport[entry.first]);
+        result.exactThread = true;
+        result.ok = true;
+        ++threadNominations;
+        return result;
+    };
+
     for (int round = 0; round < 24; ++round) {
         reindex();
         const size_t nc = chains.size();
@@ -868,51 +1293,125 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             cont[c * 2 + 1] = bestContinuation(c, 1);
         }
 
+        if (routeDistance_) {
+            // Both nominations retain their original endpoint. Unequal chain
+            // histories can prefer different interiors; in that case restore
+            // their legacy routes before arbitration rather than making the
+            // chosen route depend on which chain happens to be visited first.
+            // This does not reject a join or alter any endpoint/support score.
+            for (uint32_t c = 0; c < nc; ++c) for (int e = 0; e < 2; ++e) {
+                Cont& f = cont[c * 2 + e];
+                if (!f.ok) continue;
+                Cont& back = cont[f.chainB * 2 + f.endB];
+                if (!back.ok || back.chainB != c || back.endB != e ||
+                    (!f.distanceChanged && !back.distanceChanged)) continue;
+                bool same = f.connector.size() == back.connector.size();
+                for (size_t j = 0; same && j < f.connector.size(); ++j)
+                    same = f.connector[j] == flip(back.connector[back.connector.size() - 1 - j]);
+                if (same) continue;
+                if (f.distanceChanged) f.connector = f.legacyConnector;
+                if (back.distanceChanged) back.connector = back.legacyConnector;
+                f.distanceChanged = back.distanceChanged = false;
+                if (joinTrace_) std::fprintf(stderr,
+                    "[routedistance-fallback] round=%d chainA=%u endA=%d chainB=%u endB=%d reason=mirror-route-disagreement\n",
+                    round, c, e, f.chainB, f.endB);
+            }
+        }
+
+        if (exactReadThreads) {
+            for (uint32_t c = 0; c < nc; ++c) for (int e = 0; e < 2; ++e) {
+                if (!cont[c * 2 + e].ok) cont[c * 2 + e] = exactThreadContinuation(c, e);
+            }
+        }
+
         std::vector<char> merged(nc, 0);
         size_t joins = 0;
-        for (uint32_t c = 0; c < nc; ++c) {
-            if (merged[c] || chains[c].empty()) continue;
-            for (int e = 0; e < 2; ++e) {
-                const Cont& f = cont[c * 2 + e];
-                if (!f.ok || merged[f.chainB] || merged[c]) continue;
-                // Only join when both ends independently chose each other.
-                const Cont& back = cont[f.chainB * 2 + f.endB];
-                if (!back.ok || back.chainB != c || back.endB != e) continue;
-
-                std::vector<uint64_t> a;
-                if (e == 1) a = chains[c];
-                else {
-                    a.reserve(chains[c].size());
-                    for (size_t i = chains[c].size(); i-- > 0;) a.push_back(flip(chains[c][i]));
-                }
-                std::vector<uint64_t> b;
-                if (f.endB == 0) b = chains[f.chainB];
-                else {
-                    b.reserve(chains[f.chainB].size());
-                    for (size_t i = chains[f.chainB].size(); i-- > 0;) {
-                        b.push_back(flip(chains[f.chainB][i]));
+        // Existing reciprocal choices have first claim on chains each round.
+        // New fallback joins cannot consume a chain before such a legacy join.
+        for (int pass = 0; pass < (exactReadThreads ? 2 : 1); ++pass) {
+            for (uint32_t c = 0; c < nc; ++c) {
+                if (merged[c] || chains[c].empty()) continue;
+                for (int e = 0; e < 2; ++e) {
+                    const Cont& f = cont[c * 2 + e];
+                    if (!f.ok || merged[f.chainB] || merged[c]) continue;
+                    // Only join when both ends independently chose each other.
+                    const Cont& back = cont[f.chainB * 2 + f.endB];
+                    if (!back.ok || back.chainB != c || back.endB != e) continue;
+                    const bool threadJoin = f.exactThread || back.exactThread;
+                    if (exactReadThreads && threadJoin != (pass == 1)) continue;
+                    if (threadJoin) {
+                        bool same = f.connector.size() == back.connector.size();
+                        for (size_t j = 0; same && j < f.connector.size(); ++j)
+                            same = f.connector[j] == flip(back.connector[back.connector.size() - 1 - j]);
+                        if (!same) continue;
                     }
-                }
 
-                a.insert(a.end(), f.connector.begin(), f.connector.end());
-                a.insert(a.end(), b.begin(), b.end());
-                chains[c].swap(a);
-                chains[f.chainB].clear();
-                merged[c] = 1;
-                merged[f.chainB] = 1;
-                ++joins;
-                break;
+                    std::vector<uint64_t> a;
+                    if (e == 1) a = chains[c];
+                    else {
+                        a.reserve(chains[c].size());
+                        for (size_t i = chains[c].size(); i-- > 0;) a.push_back(flip(chains[c][i]));
+                    }
+                    std::vector<uint64_t> b;
+                    if (f.endB == 0) b = chains[f.chainB];
+                    else {
+                        b.reserve(chains[f.chainB].size());
+                        for (size_t i = chains[f.chainB].size(); i-- > 0;) {
+                            b.push_back(flip(chains[f.chainB][i]));
+                        }
+                    }
+
+                    if (joinTrace_) {
+                        bool sameRoute = f.connector.size() == back.connector.size();
+                        if (sameRoute) {
+                            for (size_t j = 0; j < f.connector.size(); ++j) {
+                                if (f.connector[j] != flip(back.connector[back.connector.size() - 1 - j])) {
+                                    sameRoute = false;
+                                    break;
+                                }
+                            }
+                        }
+                        std::fprintf(stderr,
+                            "[acceptedjoin] round=%d chainA=%u endA=%d chainB=%u endB=%d "
+                            "score=%.1f backScore=%.1f sameRoute=%d route=%llu",
+                            round, c, e, f.chainB, f.endB, f.score, back.score,
+                            sameRoute ? 1 : 0, static_cast<unsigned long long>(a.back()));
+                        for (uint64_t oid : f.connector)
+                            std::fprintf(stderr, ",%llu", static_cast<unsigned long long>(oid));
+                        std::fprintf(stderr, ",%llu\n", static_cast<unsigned long long>(b.front()));
+                    }
+
+                    a.insert(a.end(), f.connector.begin(), f.connector.end());
+                    a.insert(a.end(), b.begin(), b.end());
+                    chains[c].swap(a);
+                    chains[f.chainB].clear();
+                    merged[c] = 1;
+                    merged[f.chainB] = 1;
+                    ++joins;
+                    if (threadJoin) {
+                        ++threadJoins;
+                        if (joinTrace_) std::fprintf(stderr,
+                            "[readthread-join] round=%d chainA=%u endA=%d chainB=%u endB=%d "
+                            "molecules=%.0f backMolecules=%.0f\n",
+                            round, c, e, f.chainB, f.endB, f.score, back.score);
+                    }
+                    break;
+                }
             }
         }
         if (joins == 0) break;
     }
+    if (exactReadThreads) std::fprintf(stderr,
+        "[readthread-result] nominations=%zu conflictingPorts=%zu joins=%zu\n",
+        threadNominations, threadConflictingPorts, threadJoins);
 
     if (getenv("TESSERACT_DEBUG_RESOLVE")) {
         std::fprintf(stderr,
                      "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
-                     "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld matched=%lld  "
-                     "(tie mean best=%.1f second=%.1f)\n",
+                     "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld matched=%lld "
+                     "short-dest=%lld unspanned=%lld lone-repeat=%lld  (tie mean best=%.1f second=%.1f)\n",
                      dbgOk, dbgNoCand, dbgLowSupport, dbgTie, dbgMidChain, dbgCoverage, dbgMatched,
+                     dbgShortDest, dbgUnspanned, dbgLoneRepeat,
                      dbgTie ? static_cast<double>(dbgTieBest) / static_cast<double>(dbgTie) : 0.0,
                      dbgTie ? static_cast<double>(dbgTieSecond) / static_cast<double>(dbgTie) : 0.0);
     }
@@ -1071,32 +1570,104 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         const char* e = std::getenv("TESSERACT_COMMON_PREFIX");
         return e ? std::atof(e) : 3000.0;
     }();
+    // A chain owns each eligible anchor exactly once. Terminal context must
+    // not make another copy of that anchor after chain arbitration declined
+    // to join it. The owner is computed before any sequence is rendered, so
+    // this decision does not depend on output order. Default-off experiment.
+    const bool ownedAnchorPrefix = [] {
+        const char* flag = std::getenv("TESSERACT_OWNED_ANCHOR_PREFIX");
+        return flag && std::string(flag) == "1";
+    }();
     auto extendByCommonPrefix = [&](uint64_t tail, std::string& seq,
-                                    double& covWeighted, size_t& covLen) {
+                                    double& covWeighted, size_t& covLen, bool head) {
         if (kPrefixBudget <= 0) return;
         size_t added = 0;
         uint64_t cur = tail;
+        std::vector<uint64_t> visited{tail};
         for (int step = 0; step < 8; ++step) {
             const auto& exits = g_.exits(unitigOf(cur), orientOf(cur));
-            if (exits.size() != 1) break;                 // the choice is real
-            const Link& l = exits[0];
-            if (g_.nodes[l.to].deleted) break;
-            const uint64_t nxt = orientedId(l.to, UnitigGraph::enterOrient(l));
-            if (unitigOf(nxt) == unitigOf(cur)) break;    // self loop
-            const std::string piece = g_.oriented(unitigOf(nxt), orientOf(nxt));
-            if (piece.size() <= ov) break;
-            if (added + piece.size() - ov > static_cast<size_t>(kPrefixBudget)) break;
-            seq += piece.substr(ov);
-            covWeighted += g_.nodes[unitigOf(nxt)].coverage *
-                           static_cast<double>(piece.size() - ov);
-            covLen += piece.size() - ov;
-            added += piece.size() - ov;
-            curPath.oriented.push_back(nxt);
-            curPath.gaps.push_back(0);
-            cur = nxt;
-            // Stop once the sequence ahead forks: past that point the
-            // continuations no longer agree.
-            if (g_.exits(unitigOf(cur), orientOf(cur)).size() != 1) break;
+            std::vector<uint64_t> next;
+            bool bubble = false;
+            if (exits.size() == 1) {
+                const Link& l = exits[0];
+                if (g_.nodes[l.to].deleted) break;
+                next.push_back(orientedId(l.to, UnitigGraph::enterOrient(l)));
+            } else if (completePrefixBubbles && exits.size() == 2 && isRepeat(unitigOf(cur))) {
+                // A substitution inside a collapsed repeat creates two arms of
+                // length 2k-1 differing at one base, with the same destination.
+                // Stopping here emits an arbitrary half-repeat. Completing the
+                // allele bubble retains the repeat context without picking its
+                // unique exit. The higher k-mer-depth allele is a consensus
+                // choice, not a phased claim; evaluate mismatches separately.
+                uint64_t arm[2], dest[2];
+                std::string allele[2];
+                bool valid = true;
+                for (size_t i = 0; i < 2; ++i) {
+                    const Link& l = exits[i];
+                    if (g_.nodes[l.to].deleted || !isRepeat(l.to)) { valid = false; break; }
+                    arm[i] = orientedId(l.to, UnitigGraph::enterOrient(l));
+                    const auto& out = g_.exits(l.to, orientOf(arm[i]));
+                    if (out.size() != 1 || g_.nodes[out[0].to].deleted ||
+                        !isRepeat(out[0].to)) { valid = false; break; }
+                    dest[i] = orientedId(out[0].to, UnitigGraph::enterOrient(out[0]));
+                    allele[i] = g_.oriented(l.to, orientOf(arm[i]));
+                    if (allele[i].size() != static_cast<size_t>(2 * k_ - 1)) {
+                        valid = false;
+                        break;
+                    }
+                }
+                if (!valid || dest[0] != dest[1] || arm[0] == arm[1]) break;
+                size_t differences = 0;
+                for (size_t i = 0; i < allele[0].size(); ++i)
+                    differences += allele[0][i] != allele[1][i];
+                if (differences != 1) break;
+                const double c0 = g_.nodes[unitigOf(arm[0])].coverage;
+                const double c1 = g_.nodes[unitigOf(arm[1])].coverage;
+                const size_t pick = c1 > c0 || (c1 == c0 && arm[1] < arm[0]) ? 1 : 0;
+                next = {arm[pick], dest[pick]};
+                bubble = true;
+            } else break;
+
+            size_t extra = 0;
+            bool valid = true;
+            for (uint64_t nxt : next) {
+                const size_t length = g_.nodes[unitigOf(nxt)].seq.size();
+                if (length <= ov || unitigOf(nxt) == unitigOf(cur)) { valid = false; break; }
+                if (ownedAnchorPrefix && anchorable(unitigOf(nxt)) &&
+                    ownerChain[unitigOf(nxt)] != UINT32_MAX) {
+                    valid = false;
+                    break;
+                }
+                // Keep the baseline path unchanged when the experiment is off.
+                if (completePrefixBubbles &&
+                    std::find(visited.begin(), visited.end(), nxt) != visited.end()) {
+                    valid = false;
+                    break;
+                }
+                extra += length - ov;
+            }
+            if (!valid || added + extra > static_cast<size_t>(kPrefixBudget)) break;
+            if (joinTrace_) {
+                std::fprintf(stderr, "[prefixtrace] head=%d from=%llu addedBefore=%zu bubble=%d route=",
+                    head ? 1 : 0, static_cast<unsigned long long>(cur), added, bubble ? 1 : 0);
+                for (size_t i = 0; i < next.size(); ++i)
+                    std::fprintf(stderr, "%s%llu", i ? "," : "",
+                                 static_cast<unsigned long long>(next[i]));
+                std::fprintf(stderr, " added=%zu\n", extra);
+            }
+            for (uint64_t nxt : next) {
+                const std::string piece = g_.oriented(unitigOf(nxt), orientOf(nxt));
+                seq += piece.substr(ov);
+                covWeighted += g_.nodes[unitigOf(nxt)].coverage *
+                               static_cast<double>(piece.size() - ov);
+                covLen += piece.size() - ov;
+                added += piece.size() - ov;
+                curPath.oriented.push_back(nxt);
+                curPath.gaps.push_back(0);
+                visited.push_back(nxt);
+                cur = nxt;
+            }
+            if (!completePrefixBubbles && g_.exits(unitigOf(cur), orientOf(cur)).size() != 1) break;
         }
     };
 
@@ -1126,7 +1697,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             const uint32_t partner = joinTo[outPort];
             if (partner == UINT32_MAX || ++steps > nc) {
                 if (!curPath.oriented.empty())
-                    extendByCommonPrefix(curPath.oriented.back(), seq, covWeighted, covLen);
+                    extendByCommonPrefix(curPath.oriented.back(), seq, covWeighted, covLen, false);
                 break;
             }
             const uint32_t nextC = partner / 2;
@@ -1150,7 +1721,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             double hCov = 0;
             size_t hLen = 0;
             const size_t beforeHead = curPath.oriented.size();
-            extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen);
+            extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen, true);
             if (!headExt.empty()) {
                 // extendByCommonPrefix already drops each piece's overlap as it
                 // appends, so headExt is novel sequence only and is prepended

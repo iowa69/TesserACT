@@ -47,38 +47,61 @@ Two rows need care, because the columns disagree:
 Per-strain numbers, not just summaries, are what these were computed from — ask if you
 want them for a comparison of your own.
 
-### With a genus model: 180 non-clonal *S. aureus*
+### With a genus model: 185 non-clonal *S. aureus*
 
 The panel above is vanilla against vanilla. This one is `--organism saureus`, on a cohort
 dereplicated with `mash` at `d <= 0.0005` so that no two isolates are clonal redeposits —
-which is what makes a paired test meaningful. 185 isolates assembled; 180 survive the
-quality gates, and the five discards are listed with their reasons in
-[docs/SAUREUS_100_PANEL.md](docs/SAUREUS_100_PANEL.md). None was dropped for a poor score.
+which is what makes a paired test meaningful. Every arm of all 185 isolates was built by a
+single binary, so the comparison is clean by construction rather than by filtering; the
+cohort is described in [docs/SAUREUS_100_PANEL.md](docs/SAUREUS_100_PANEL.md).
 
 | Metric | TesserACT | SPAdes | W / L | |
 |---|---|---|---|---|
-| NGA50 | **247,188** | 188,658 | 133 / 47 | **win** (+31.0%, p=2e-10) |
-| NG50 | **253,984** | 196,578 | 131 / 49 | **win** (+29.2%, p=3e-10) |
-| Genome fraction | **98.83 %** | 98.37 % | 170 / 10 | **win** (p=1e-27) |
-| Largest alignment | **538,873** | 427,134 | 126 / 52 | **win** (+26.2%, p=3e-08) |
-| Mismatches /100 kb | **0.66** | 1.22 | 111 / 65 | **win** (−46.3%, p=0.002) |
-| Indels /100 kb | 0.25 | 0.29 | 89 / 77 | tie (p=0.13) |
-| Contigs | 38 | 40 | 88 / 86 | tie (p=0.60) |
-| Duplication ratio | 1.000 | 1.000 | 5 / 151 | loss (p=8e-25) |
-| Misassemblies | 0 | 0 | 29 / 53 | loss (p=0.011) |
+| NGA50 | **250,176** | 184,157 | 143 / 41 | **win** (+35.8%, p=1e-13) |
+| NG50 | **270,913** | 193,052 | 146 / 39 | **win** (+40.3%, p=2e-14) |
+| Genome fraction | **98.86 %** | 98.33 % | 174 / 11 | **win** (p=2e-28) |
+| Largest alignment | **546,622** | 423,362 | 141 / 41 | **win** (+29.1%, p=2e-12) |
+| LGA50 | **4** | 5 | 107 / 30 | **win** (p=5e-06) |
+| Mismatches /100 kb | **0.67** | 1.32 | 113 / 66 | **win** (−49.2%, p=4e-04) |
+| Contigs | **36** | 40 | 102 / 77 | **win** (p=8e-03) |
+| Indels /100 kb | 0.25 | 0.31 | 91 / 79 | tie (p=0.06) |
+| Duplication ratio | 1.003 | 1.000 | 4 / 152 | loss (p=3e-25) |
+| Misassemblies | 0 | 0 | 25 / 62 | loss (p=2e-04) |
 
-Same shape as the Klebsiella panel: more of the genome, more of the bases right, in longer
-contigs, paid for with a little redundancy and a few more misassemblies. Stratified by how
-much more contiguous we are on each isolate, part of that misassembly excess is the price of
-the contiguity — but a residual survives contiguity matching (p=0.022), so it is not only
-that. The analysis is in
-[docs/HOW_SPADES_CHOOSES_A_BRANCH.md](docs/HOW_SPADES_CHOOSES_A_BRANCH.md), which traces it
-into SPAdes' source: SPAdes ships two coverage-based branch choosers and has both **disabled**
-for isolate assembly, so at an ambiguous branch it refuses rather than guessing.
+Seven wins, one tie, two losses — more of the genome, more of the bases right, in longer and
+fewer contigs, paid for in redundancy and misassemblies.
 
-**What the model is worth.** Against the same binary with no model, over the same 180
-isolates: NGA50 **101 wins, 0 losses** (p=3e-18), NG50 103/0 (p=1e-18). It costs
-misassemblies — 18 isolates worse against 2 better (p=0.001).
+**Both losses have been taken apart, and one of them is solved.**
+
+*Duplication* had two causes in almost equal parts. We emitted contigs that are exact
+substrings of longer contigs — 6.2% of ours against 0 of SPAdes' 1,554 — because a resolved
+repeat was written both inside its flanking chain and again standalone. And our contig-end
+overlaps ran far longer than SPAdes': 70% of SPAdes' duplicated bases sit in a single overlap
+of exactly its final K, while 90.6% of ours sat in overlaps longer than 2k, at IS-element
+lengths. Dropping the contained copy and trimming the redundant dovetail takes duplication
+against SPAdes from 0 wins / 35 losses (p=3e-07) to **9 / 6, p=0.887** — a dead heat — while
+every other win above is unchanged to the decimal. It costs ~0.08 pp of genome fraction,
+because some of that redundancy was legitimately covering both copies of a two-copy repeat.
+
+*Misassemblies* split by the length of the shorter alignment block flanking each breakpoint
+into two disjoint classes with a dead zone between them: a `>= 20 kb` class that is the price
+of the contiguity, and a `< 2 kb` class that is not — it is identical in the no-model arm and
+is significant even on the isolates where SPAdes is the more contiguous assembler. Stage
+ablation puts our raw graph at 100 such events against SPAdes' 88, with our repeat resolver
+adding 54 more. Five candidate mechanisms have been tested and all five fail, including every
+threshold in the resolver. The analysis, the negatives and the stop condition are in
+[docs/EXPERIMENT_LEDGER.md](docs/EXPERIMENT_LEDGER.md).
+
+An earlier version of this section reported a misassembly residual surviving contiguity
+matching at p=0.022. That measurement was made on an older binary, **does not reproduce**
+(p=0.074), and the control itself was wrong: a sub-2 kb wrong tail costs no contiguity, so a
+defect of that shape hides inside the matched band instead of showing up outside it.
+
+**What the model is worth.** Against the same binary with no model, over the same 185
+isolates: NGA50 **104 wins / 4 losses** (+12.2%, p=1e-15), NG50 109/4, contigs **164/2**
+(p=1e-28), LGA50 84/3, genome fraction 99/36. It costs misassemblies (5/26, p=3e-04) and a
+little accuracy (mismatches 14/51). Without a model TesserACT still beats SPAdes on NGA50
+(124/60, +21.0%), genome fraction (174/11) and mismatches (120/59), and ties on contigs.
 
 **Replicons.** 117 of the 185 isolates carry plasmids, 146 in total. Every arm and SPAdes
 recover ~93% of them at >=50% coverage. SPAdes assembles 39.7% of them into a single contig

@@ -43,6 +43,8 @@ struct KIteration {
     double simplifySeconds = 0;
     size_t carryOverContigs = 0;
     size_t carryOverRescued = 0;   // k-mers admitted below the cutoff as trusted
+    size_t gapsClosed = 0;         // dead-end pairs bridged by the gap closer
+    size_t deadEndsBuilt = 0;      // dead ends in the raw graph, before any simplification
 };
 
 struct ContigRecord {

@@ -1,3 +1,5 @@
+#include <map>
+#include <set>
 #include "assembler.h"
 
 #include <algorithm>
@@ -7,12 +9,15 @@
 #include <memory>
 #include <ctime>
 #include <thread>
+#include <cstring>
 #include <unordered_map>
 #include <utility>
 
 #include "correct.h"
+#include "dev_fork_batch.h"
 #include "counter.h"
 #include "gapfill.h"
+#include "gap_evidence.h"
 #include "mappolish.h"
 #include "organism_join.h"
 #include "pairends.h"
@@ -20,6 +25,7 @@
 #include "gfa.h"
 #include "polish.h"
 #include "resolve.h"
+#include "read_coverage.h"
 #include "util.h"
 #include "version.h"
 
@@ -237,6 +243,196 @@ size_t Assembler::rescueLadderContigs(const std::vector<std::string>& reserve,
     }
     return added;
 }
+
+namespace {
+
+// Paired-read nomination for gap closing.
+//
+// SPAdes will not bridge two dead ends on sequence alone. Every join must also be
+// nominated by at least two read pairs falling within max_dist_to_tip of the two ends
+// (gap_closer.cpp:74-118 builds the tip neighbourhood, :54-72 casts the votes, :389
+// applies weight_threshold 2.0). The sequence test and the paired test are statistically
+// independent, and that conjunction is what makes the operation safe -- measured here,
+// sequence alone on a raw graph bridged 37,685 pairs against a ceiling of 804.
+//
+// Returns the set of oriented end-pairs with at least `minVotes` supporting pairs, keyed
+// as (min(a,b), max(a,b)) where an oriented end is (unitig << 1) | end.
+std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
+                                                         const SequenceStore& reads,
+                                                         size_t maxDistToTip, int probeK,
+                                                         uint32_t minVotes, size_t* votedOut) {
+    const char* oriented = std::getenv("TESSERACT_GAP_ORIENTED");
+    if (oriented && std::strcmp(oriented, "1") == 0)
+        return nominateOrientedGapJoins(g, reads, maxDistToTip, probeK, minVotes, votedOut);
+    std::set<std::pair<uint64_t, uint64_t>> out;
+    if (votedOut) *votedOut = 0;
+    if (!reads.paired()) return out;
+
+    const size_t n = g.nodes.size();
+    const size_t ov = static_cast<size_t>(g.k() - 1);
+
+    // Walk back from every dead end along non-branching paths, so a read sitting upstream
+    // of a dead end still votes for it. This is SPAdes' OutTipMap.
+    std::unordered_map<uint64_t, uint64_t> tipOf;
+    for (uint32_t u = 0; u < n; ++u) {
+        if (g.nodes[u].deleted) continue;
+        for (int e = 0; e < 2; ++e) {
+            if (!g.nodes[u].ends[e].empty()) continue;
+            const uint64_t tip = (static_cast<uint64_t>(u) << 1) | static_cast<uint64_t>(e);
+            std::vector<std::pair<uint32_t, size_t>> stack{{u, 0}};
+            tipOf[tip] = tip;
+            while (!stack.empty()) {
+                const uint32_t cur = stack.back().first;
+                const size_t dist = stack.back().second;
+                stack.pop_back();
+                const int back = 1 - e;
+                if (dist > maxDistToTip) continue;
+                for (const Link& l : g.nodes[cur].ends[back]) {
+                    if (g.nodes[l.to].deleted) continue;
+                    // only follow a path that does not branch on the way to the tip
+                    if (g.nodes[l.to].ends[1 - l.toEnd].size() != 1) continue;
+                    const uint64_t oid =
+                        (static_cast<uint64_t>(l.to) << 1) | static_cast<uint64_t>(l.toEnd);
+                    if (!tipOf.emplace(oid, tip).second) continue;
+                    const size_t add = g.nodes[l.to].seq.size() > ov
+                                           ? g.nodes[l.to].seq.size() - ov : 0;
+                    stack.push_back({l.to, dist + add});
+                }
+            }
+        }
+    }
+    if (tipOf.size() < 2) return out;
+
+    // A k-mer index over the tip neighbourhood only. A read that lands anywhere else is
+    // invisible, which is how SPAdes restricts attention without a filtering pass.
+    std::unordered_map<Kmer, uint64_t, KmerHasher> idx;
+    for (const auto& kv : tipOf) {
+        const uint32_t u = static_cast<uint32_t>(kv.first >> 1);
+        const std::string& seq = g.nodes[u].seq;
+        if (static_cast<int>(seq.size()) < probeK) continue;
+        Kmer fwd = 0, rc = 0;
+        int valid = 0;
+        for (size_t p = 0; p < seq.size(); ++p) {
+            const int c = baseCode(seq[p]);
+            if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+            fwd = pushBack(fwd, c, probeK);
+            rc = pushFrontRc(rc, c, probeK);
+            if (++valid < probeK) continue;
+            idx.emplace(fwd < rc ? fwd : rc, kv.second);   // first writer wins
+        }
+    }
+    if (idx.empty()) return out;
+
+    auto tipForRead = [&](size_t r) -> uint64_t {
+        const uint32_t len = reads.length(r);
+        if (static_cast<int>(len) < probeK) return UINT64_MAX;
+        Kmer fwd = 0, rc = 0;
+        int valid = 0;
+        for (uint32_t p = 0; p < len; ++p) {
+            const int c = reads.baseAt(r, p);
+            if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+            fwd = pushBack(fwd, c, probeK);
+            rc = pushFrontRc(rc, c, probeK);
+            if (++valid < probeK) continue;
+            auto it = idx.find(fwd < rc ? fwd : rc);
+            if (it != idx.end()) return it->second;
+        }
+        return UINT64_MAX;
+    };
+
+    std::map<std::pair<uint64_t, uint64_t>, uint32_t> votes;
+    const size_t pairs = reads.pairCount();
+    for (size_t p = 0; p < pairs; ++p) {
+        const uint64_t a = tipForRead(p * 2);
+        if (a == UINT64_MAX) continue;
+        const uint64_t b = tipForRead(p * 2 + 1);
+        if (b == UINT64_MAX || b == a) continue;
+        if ((a >> 1) == (b >> 1)) continue;            // same unitig
+        ++votes[{std::min(a, b), std::max(a, b)}];
+    }
+    for (const auto& kv : votes) {
+        if (kv.second >= minVotes) out.insert(kv.first);
+    }
+    if (votedOut) *votedOut = votes.size();
+    return out;
+}
+
+
+// Trim the redundant copy of a repeat carried at the end of two different contigs.
+//
+// Measured over 185 *S. aureus* isolates: 53% of our QUAST duplication excess is contig
+// ends overlapping each other on the reference, and we carry 3.8x more of it than SPAdes
+// over an almost identical number of overlapping pairs (2,598 vs 2,642) -- our overlaps
+// are individually far longer. 70% of SPAdes' duplicated bases sit in a single overlap of
+// exactly its final K, the unavoidable de Bruijn overhang. 90.6% of ours sit in overlaps
+// LONGER than 2k, 90% of them terminal on both contigs, at >=99% identity, with lengths
+// that recur to the base pair across unrelated isolates at canonical *S. aureus* IS
+// element sizes (1324 = IS256, ~1512 = IS1181, 790 = IS431).
+//
+// So the sequence written twice is a mobile element that both flanking contigs carry to
+// their ends. SPAdes avoids it by stopping at the repeat boundary -- which is also why it
+// is the less contiguous assembler, so that is not the trade to copy. Keeping the
+// extension and dropping the second copy of the overlap keeps the contiguity and removes
+// the duplication.
+//
+// Only EXACT dovetails longer than `minOverlap` are trimmed, and only from the shorter
+// partner, so the longer contig is never shortened and no sequence disappears from the
+// assembly -- it remains, once, on the contig better placed to carry it.
+struct Dovetail {
+    size_t a = 0, b = 0;        // a's suffix meets b's prefix, in orientation `bRc`
+    size_t len = 0;
+    bool bRc = false;
+};
+
+std::vector<Dovetail> findTerminalDovetails(const std::vector<std::string>& seqs,
+                                            size_t minOverlap, size_t window) {
+    constexpr size_t kProbe = 32;
+    std::vector<Dovetail> out;
+    if (seqs.size() < 2 || minOverlap < kProbe) return out;
+    auto hash = [](const char* p) {
+        uint64_t h = 1469598103934665603ULL;
+        for (size_t i = 0; i < kProbe; ++i) { h ^= static_cast<unsigned char>(p[i]); h *= 1099511628211ULL; }
+        return h;
+    };
+    // index: hash of a 32-mer inside the PREFIX window of each oriented contig
+    struct Ent { uint32_t idx; uint32_t pos; bool rc; };
+    std::unordered_map<uint64_t, std::vector<Ent>> index;
+    std::vector<std::string> rcs(seqs.size());
+    for (size_t j = 0; j < seqs.size(); ++j) {
+        if (seqs[j].size() < minOverlap) continue;
+        rcs[j] = reverseComplement(seqs[j]);
+        for (int o = 0; o < 2; ++o) {
+            const std::string& t = o ? rcs[j] : seqs[j];
+            const size_t lim = std::min(window, t.size()) - kProbe + 1;
+            for (size_t p = 0; p < lim; ++p)
+                index[hash(t.data() + p)].push_back({static_cast<uint32_t>(j),
+                                                     static_cast<uint32_t>(p), o != 0});
+        }
+    }
+    for (size_t i = 0; i < seqs.size(); ++i) {
+        const std::string& a = seqs[i];
+        if (a.size() < minOverlap) continue;
+        auto it = index.find(hash(a.data() + a.size() - kProbe));
+        if (it == index.end()) continue;
+        for (const Ent& e : it->second) {
+            if (e.idx == i) continue;
+            const size_t L = static_cast<size_t>(e.pos) + kProbe;
+            if (L <= minOverlap) continue;
+            const std::string& b = e.rc ? rcs[e.idx] : seqs[e.idx];
+            if (L > a.size() || L > b.size()) continue;
+            if (std::memcmp(a.data() + a.size() - L, b.data(), L) != 0) continue;
+            out.push_back({i, e.idx, L, e.rc});
+        }
+    }
+    std::sort(out.begin(), out.end(), [](const Dovetail& x, const Dovetail& y) {
+        if (x.len != y.len) return x.len > y.len;      // longest first: it decides the end
+        if (x.a != y.a) return x.a < y.a;
+        return x.b < y.b;                               // total order, so runs reproduce
+    });
+    return out;
+}
+
+}  // namespace
 
 std::vector<int> Assembler::baseKLadder() const {
 
@@ -596,6 +792,16 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
         std::fprintf(stderr, "  k=%-3d graph %.1fs  ", k, it.graphSeconds);
         graph.stats("built", true);
     }
+    // Dead ends BEFORE any cleaning. The per-round counter only reports what the graph
+    // looks like after simplify() has already run, so a rising count there cannot be told
+    // apart from a graph that was fragmented in the first place. Deleting an INTERIOR
+    // unitig creates two dead ends, and removeLocallyWeak/removeErroneousConnections have
+    // no dead-end guard -- only filterByReadDepth does. This baseline is what says whether
+    // the breaks are in the data or in our own cleaning.
+    it.deadEndsBuilt = graph.totalDeadEnds();
+    if (opt_.verbose) {
+        std::fprintf(stderr, "  k=%-3d deadends before cleaning: %zu\n", k, it.deadEndsBuilt);
+    }
 
     meanCoverage = cs.peakCoverage > 0 ? cs.peakCoverage : graph.medianCoverage();
     // First rung is counted without carry-over, so its peak is the honest library
@@ -609,6 +815,45 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
                    opt_.bubbleCoverageLimit, opt_.simplifyRounds, &it.rounds,
                    cs.errorThreshold);
     it.simplifySeconds = t.elapsed();
+
+    // Gap closing, as its own stage after simplification -- SPAdes' late_gapcloser
+    // (pipeline.cpp:175). It runs on the CLEAN graph: tips, bubbles and erroneous
+    // connections are gone, so the dead ends that survive are genuine coverage holes.
+    //
+    // Two independent tests must both pass. The sequence test asks for an exact overlap of
+    // [minIntersection, k-2] bases -- the missing bases are already carried in the two
+    // flanks' terminal overhangs, so nothing is invented. The paired test asks two read
+    // pairs to vouch for that specific pair of ends. Neither alone is sufficient: measured
+    // here, sequence alone on a raw graph bridged 37,685 pairs against a ceiling of 804.
+    static const size_t kGapCloseMinInt = [] {
+        const char* e = std::getenv("TESSERACT_GAPCLOSE");
+        return e ? static_cast<size_t>(std::atoi(e)) : 0u;
+    }();
+    static const uint32_t kGapCloseVotes = [] {
+        const char* e = std::getenv("TESSERACT_GAPCLOSE_VOTES");
+        return e ? static_cast<uint32_t>(std::atoi(e)) : 2u;
+    }();
+    const char* gapCompetitionEnv = std::getenv("TESSERACT_GAP_SEQUENCE_COMPETITION");
+    const bool gapSequenceCompetition = gapCompetitionEnv && std::strcmp(gapCompetitionEnv, "1") == 0;
+    if (kGapCloseMinInt > 0) {
+        util::Timer gt;
+        size_t voted = 0, tested = 0, closed = 0;
+        if (kGapCloseVotes > 0) {
+            const std::set<std::pair<uint64_t, uint64_t>> nom =
+                nominateGapJoins(graph, reads_, 5000, 31, kGapCloseVotes, &voted);
+            closed = graph.closeGapsByOverlap(kGapCloseMinInt, &nom, &tested, gapSequenceCompetition);
+        } else {
+            closed = graph.closeGapsByOverlap(kGapCloseMinInt, nullptr, &tested, gapSequenceCompetition);
+        }
+        if (closed) graph.compact();
+        it.gapsClosed = closed;
+        if (opt_.verbose && (closed || voted)) {
+            std::fprintf(stderr,
+                         "  k=%-3d gap close: %zu bridged from %zu nominated end-pairs "
+                         "(%zu overlaps tested), %.1fs\n",
+                         k, closed, voted, tested, gt.elapsed());
+        }
+    }
     it.unitigsFinal = graph.liveCount();
     it.lengthFinal = graph.totalLength();
     it.n50Final = graph.n50();
@@ -692,6 +937,9 @@ bool Assembler::run(std::string& error) {
         }
     }
 
+    dev::ForkBatch diagnosticBatch;
+    if (!diagnosticBatch.prepare(opt_, error)) return false;
+
     if (opt_.verbose) std::fprintf(stderr, "[1/7] loading reads\n");
     reads_.setQualityTrim(opt_.qtrim);
     if (!reads_.load(opt_.libraries, opt_.threads, error)) return false;
@@ -751,10 +999,41 @@ bool Assembler::run(std::string& error) {
         }
         util::Timer t;
         KmerCounter cc(kc, opt_.threads);
+        cc.setMemoryLimit(opt_.maxMemoryBytes);
         cc.count(reads_, {}, 0);
+        if (cc.exceededMemory()) {
+            char message[256];
+            std::snprintf(message, sizeof(message),
+                          "ran out of the memory budget (%.3f GB) while counting %d-mers "
+                          "for read error correction; raise --max-memory or run fewer "
+                          "assemblies concurrently",
+                          static_cast<double>(opt_.maxMemoryBytes) / 1073741824.0, kc);
+            error = message;
+            return false;
+        }
         KmerTable trusted;
         cc.extractSolid(opt_.trustCutoff, trusted);
-        report_.correction = correctReads(reads_, trusted, kc, opt_.threads, opt_.minMaskRun);
+        // Default-off experiment: preserve pairing and rescue only retained
+        // ACGT bases independently corroborated by the overlapping mate.
+        const char* rescueEnv = std::getenv("TESSERACT_MATE_RESCUE");
+        const bool mateRescue = rescueEnv && std::strcmp(rescueEnv, "1") == 0;
+        std::vector<uint32_t> maskedReadIds;
+        report_.correction = correctReads(reads_, trusted, kc, opt_.threads, opt_.minMaskRun,
+                                          mateRescue ? &maskedReadIds : nullptr);
+        if (mateRescue) {
+            const MateRescueStats rescued = rescueMateOverlaps(reads_, maskedReadIds);
+            // Report residual masking, so report.json reflects what the graph
+            // actually receives rather than the earlier correction-only mask.
+            report_.correction.basesMasked -= rescued.basesRescued;
+            if (opt_.verbose) {
+                std::fprintf(stderr,
+                             "      mate rescue: %zu bases in %zu reads, %zu overlaps "
+                             "from %zu masked pairs (%zu ambiguous)\n",
+                             rescued.basesRescued, rescued.readsRescued,
+                             rescued.overlapsAccepted, rescued.pairsExamined,
+                             rescued.ambiguousOverlaps);
+            }
+        }
         report_.correctionSeconds = t.elapsed();
         report_.correctionK = kc;
         report_.correctionRun = true;
@@ -848,6 +1127,49 @@ bool Assembler::run(std::string& error) {
                 }
             }
         }
+    }
+
+    const auto batchEntry = diagnosticBatch.enter(opt_, graph, reads_, total.elapsed(), error);
+    if (batchEntry == dev::ForkBatch::Entry::Failed) return false;
+    if (batchEntry == dev::ForkBatch::Entry::ParentComplete) {
+        diagnosticBatchComplete_ = true;
+        return true;
+    }
+    if (batchEntry == dev::ForkBatch::Entry::Child) {
+        diagnosticForkChild_ = true;
+        total.reset(); // A child reports only its own post-graph elapsed time.
+    }
+
+    // Experimental measurement only: no graph admission, sequence or link edits.
+    // This is after the optional diagnostic fork so shared preprocessing remains
+    // unchanged; its audited flag may vary independently between diagnostic arms.
+    const char* observedCoverage = std::getenv("TESSERACT_OBSERVED_GRAPH_COVERAGE");
+    if (observedCoverage && std::strcmp(observedCoverage, "1") == 0) {
+        const long long resident = util::currentMemoryBytes();
+        if (resident <= 0 || opt_.maxMemoryBytes <= resident) {
+            error = "observed coverage cannot reserve additional memory within --max-memory";
+            return false;
+        }
+        ReadCoverageResult measured;
+        util::Timer measurementTime;
+        if (!measureObservedGraphCoverage(graph, reads_,
+                static_cast<size_t>(opt_.maxMemoryBytes - resident), measured, error)) return false;
+        // All allocation/counting checks have completed. This serial assignment
+        // cannot fail part-way; zero-support carried nodes remain in the graph.
+        for (size_t node = 0; node < graph.nodes.size(); ++node) {
+            if (!graph.nodes[node].deleted) graph.nodes[node].coverage = measured.nodeDepths[node];
+        }
+        const auto& s = measured.stats;
+        std::fprintf(stderr,
+            "[observed graph coverage] %zu live nodes; %llu positions / %llu distinct targets; "
+            "%llu matched / %llu valid corrected-read windows; %llu zero positions; "
+            "%zu zero-depth nodes (%zu without valid kmers); %zu allocation bytes; %.3fs\n",
+            s.liveNodes, static_cast<unsigned long long>(s.graphPositions),
+            static_cast<unsigned long long>(s.distinctTargets),
+            static_cast<unsigned long long>(s.matchedReadWindows),
+            static_cast<unsigned long long>(s.readWindows),
+            static_cast<unsigned long long>(s.zeroPositions), s.zeroDepthNodes,
+            s.noValidKmerNodes, s.allocationBytes, measurementTime.elapsed());
     }
 
     const int finalK = graph.k();
@@ -1317,6 +1639,66 @@ bool Assembler::run(std::string& error) {
         return seqs[a] < seqs[b];
     });
 
+    // ---- drop contigs that are exact substrings of a longer contig -----------
+    // Measured over 185 *S. aureus* isolates against each isolate's own closed genome:
+    // 6.2% of our contigs (3.5 per isolate) are exact substrings of a longer contig of the
+    // same assembly, and contigs wholly contained in another carry 47% of our QUAST
+    // duplication excess. SPAdes emits 0 of 1554. The cause is repeat resolution: once a
+    // low-copy repeat is resolved into its flanking chains the standalone repeat unitig is
+    // still emitted, so the same bases are written twice -- QUAST counts them twice in the
+    // numerator of the duplication ratio and once in the denominator.
+    //
+    // Dropping such a contig cannot lose sequence: it is, literally, still present inside
+    // the longer contig. Only EXACT containment qualifies. Near-copies that share a core
+    // but differ are real variant sequence and are left alone, which is why this is a
+    // substring test and not a k-mer containment test.
+    std::vector<char> contained(seqs.size(), 0);
+    size_t containedN = 0, containedBases = 0;
+    if (opt_.dedupContained && seqs.size() > 1) {
+        util::Timer dt;
+        std::vector<size_t> byLen(seqs.size());
+        for (size_t i = 0; i < byLen.size(); ++i) byLen[i] = i;
+        std::sort(byLen.begin(), byLen.end(), [&](size_t a, size_t b) {
+            if (seqs[a].size() != seqs[b].size()) return seqs[a].size() > seqs[b].size();
+            return seqs[a] < seqs[b];          // total order, so the result is reproducible
+        });
+        size_t total = 0;
+        for (const std::string& s : seqs) total += s.size();
+        std::string text;                       // the contigs kept so far, longest first
+        text.reserve(total + seqs.size() + 1);
+        for (size_t idx : byLen) {
+            const std::string& s = seqs[idx];
+            // A plasmid call, and a contig whose own two ends the pairs joined, are
+            // results and not merely sequence. Deleting one because its bases also appear
+            // inside the chromosome would remove a finding from the report, so these are
+            // never dropped however redundant their sequence is.
+            const bool protectedCall =
+                idx < replicons.calls.size() &&
+                (replicons.calls[idx].cls == RepliconClass::Plasmid || replicons.calls[idx].circular);
+            bool hit = false;
+            if (!s.empty() && !text.empty() && !protectedCall) {
+                hit = text.find(s) != std::string::npos;
+                if (!hit) {
+                    const std::string r = reverseComplement(s);
+                    hit = text.find(r) != std::string::npos;
+                }
+            }
+            if (hit) {
+                contained[idx] = 1;
+                ++containedN;
+                containedBases += s.size();
+            } else {
+                text.push_back('\x01');        // a separator no base can match across
+                text.append(s);
+            }
+        }
+        if (opt_.verbose && containedN) {
+            std::fprintf(stderr,
+                         "      %zu contigs (%zu bp) dropped as exact substrings of a longer contig, %.1fs\n",
+                         containedN, containedBases, dt.elapsed());
+        }
+    }
+
     std::vector<std::string> outSeqs, outNames;
     // Kept beside each scaffold so the gap split at the write can rebuild a name in the
     // documented format. The replicon tag has to stay at the END of the name: aligners
@@ -1329,6 +1711,7 @@ bool Assembler::run(std::string& error) {
     outNames.reserve(order.size());
     for (size_t rank = 0; rank < order.size(); ++rank) {
         const size_t i = order[rank];
+        if (contained[i]) continue;
         // The replicon tag goes on the end of the existing name so nothing that parses
         // the old format breaks. `chr` and `plas` are the call; the trailing number on a
         // plasmid is a GROUP, present only when read pairs tied several contigs to the
@@ -1351,8 +1734,10 @@ bool Assembler::run(std::string& error) {
             }
         }
         char name[224];
+        // Numbered by what is actually written, not by position in `order`: a dropped
+        // contained contig must not leave a hole in the NODE numbering.
         std::snprintf(name, sizeof(name), "NODE_%zu_length_%zu_cov_%.4f%s",
-                      rank + 1, seqs[i].size(), covs[i], tag);
+                      outNames.size() + 1, seqs[i].size(), covs[i], tag);
         outNames.emplace_back(name);
         outTags.emplace_back(tag);
         outCovs.push_back(covs[i]);
@@ -1449,6 +1834,8 @@ bool Assembler::run(std::string& error) {
     }
 
     std::vector<std::string> splitSeqs, splitNames;
+    std::vector<std::string> splitTags;
+    std::vector<double> splitCovs;
     splitSeqs.reserve(outSeqs.size());
     splitNames.reserve(outSeqs.size());
     for (size_t i = 0; i < outSeqs.size(); ++i) {
@@ -1462,12 +1849,63 @@ bool Assembler::run(std::string& error) {
             size_t e = pos;
             while (e < sq.size() && sq[e] != 'N' && sq[e] != 'n') ++e;
             splitSeqs.emplace_back(sq.substr(pos, e - pos));
-            char nm[256];
-            std::snprintf(nm, sizeof(nm), "NODE_%zu_length_%zu_cov_%.4f%s",
-                          splitSeqs.size(), e - pos, cov, tag.c_str());
-            splitNames.emplace_back(nm);
+            splitTags.push_back(tag);
+            splitCovs.push_back(cov);
             pos = e;
         }
+    }
+
+    // ---- trim the second copy of a repeat shared by two contig ends ----------
+    // Applied to the split contigs, because those are what is scored and what a reader
+    // uses. The overlap is removed from the SHORTER partner only, so the longer contig --
+    // the one with more context around the repeat -- keeps it, and the assembly still
+    // contains every base it did before, once.
+    size_t trimmedN = 0, trimmedBases = 0;
+    if (opt_.trimTerminalOverlap > 0 && splitSeqs.size() > 1) {
+        util::Timer tt;
+        const size_t minOv = std::max<size_t>(opt_.trimTerminalOverlap,
+                                              static_cast<size_t>(finalK));
+        const std::vector<Dovetail> dv = findTerminalDovetails(splitSeqs, minOv, 8000);
+        std::vector<size_t> cutFront(splitSeqs.size(), 0), cutBack(splitSeqs.size(), 0);
+        std::vector<char> frontSet(splitSeqs.size(), 0), backSet(splitSeqs.size(), 0);
+        for (const Dovetail& d : dv) {
+            // Longest dovetails first, and an end already decided is not revisited: two
+            // overlaps sharing an end would otherwise cut the same bases twice.
+            const bool aLonger = splitSeqs[d.a].size() >= splitSeqs[d.b].size();
+            const size_t victim = aLonger ? d.b : d.a;
+            // a's SUFFIX meets b's PREFIX in b's own orientation; if b was matched
+            // reverse-complemented, its prefix there is its suffix here.
+            const bool cutAtFront = aLonger ? !d.bRc : false;
+            std::vector<char>& set = cutAtFront ? frontSet : backSet;
+            std::vector<size_t>& cut = cutAtFront ? cutFront : cutBack;
+            if (set[victim]) continue;
+            // Never leave a stub: a contig that is mostly overlap is the wholly-contained
+            // case, which --dedup-contained handles by removing it outright.
+            const size_t other = cutAtFront ? cutBack[victim] : cutFront[victim];
+            if (d.len + other + 200 >= splitSeqs[victim].size()) continue;
+            set[victim] = 1;
+            cut[victim] = d.len;
+            ++trimmedN;
+            trimmedBases += d.len;
+        }
+        for (size_t i = 0; i < splitSeqs.size(); ++i) {
+            if (!cutFront[i] && !cutBack[i]) continue;
+            splitSeqs[i] = splitSeqs[i].substr(cutFront[i],
+                                              splitSeqs[i].size() - cutFront[i] - cutBack[i]);
+        }
+        if (opt_.verbose && trimmedN) {
+            std::fprintf(stderr,
+                         "      %zu terminal repeat overlaps trimmed (%zu bp, min %zu), %.1fs\n",
+                         trimmedN, trimmedBases, minOv, tt.elapsed());
+        }
+    }
+
+    splitNames.reserve(splitSeqs.size());
+    for (size_t i = 0; i < splitSeqs.size(); ++i) {
+        char nm[256];
+        std::snprintf(nm, sizeof(nm), "NODE_%zu_length_%zu_cov_%.4f%s",
+                      i + 1, splitSeqs[i].size(), splitCovs[i], splitTags[i].c_str());
+        splitNames.emplace_back(nm);
     }
 
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
@@ -1529,6 +1967,7 @@ bool Assembler::run(std::string& error) {
             if (opt_.verbose) std::fprintf(stderr, "      %s\n", jp.c_str());
         } else {
             std::fprintf(stderr, "      warning: %s\n", err.c_str());
+            if (diagnosticBatch.isChild()) { error = err; return false; }
         }
     }
     if (opt_.emitHtml) {
@@ -1540,6 +1979,7 @@ bool Assembler::run(std::string& error) {
             std::fprintf(stderr, "      warning: %s\n", err.c_str());
         }
     }
+    if (!diagnosticBatch.finishChild(stats_.seconds, error)) return false;
     return true;
 }
 

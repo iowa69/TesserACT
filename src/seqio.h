@@ -108,6 +108,25 @@ public:
     void setQualityTrim(const QualityTrim& qt) { qtrim_ = qt; }
     uint64_t trimmedBases() const { return trimmedBases_; }
 
+    // Present only when TESSERACT_POLISH_ORIGINAL_QUALITY was exactly "1"
+    // during load(). Input calls/Q retain the existing trimmed coordinates;
+    // subsequent EC mutations and masks never change this provenance.
+    bool hasOriginalQualities() const { return originalQualitiesRetained_; }
+    int originalBaseAt(size_t read, uint32_t pos) const {
+        if (!originalQualitiesRetained_) return -1;
+        const uint64_t bit = offsets_[read] + pos;
+        if ((originalAmbiguous_[bit >> 6] >> (bit & 63)) & 1ULL) return -1;
+        return static_cast<int>((originalData_[bit >> 5] >> ((bit & 31) * 2)) & 3);
+    }
+    int originalQualityAt(size_t read, uint32_t pos) const {
+        if (!originalQualitiesRetained_) return -1;
+        const uint8_t q = originalQualities_[offsets_[read] + pos];
+        return q == 255 ? -1 : static_cast<int>(q);
+    }
+    size_t originalQualityBytes() const {
+        return (originalData_.capacity() + originalAmbiguous_.capacity()) * sizeof(uint64_t) + originalQualities_.capacity();
+    }
+
 private:
     bool isAmbiguous(uint64_t bit) const {
         return !ambiguous_.empty() && (ambiguous_[bit >> 6] >> (bit & 63)) & 1ULL;
@@ -122,7 +141,26 @@ private:
     size_t pairedReads_ = 0;
     QualityTrim qtrim_;
     uint64_t trimmedBases_ = 0;
+    std::vector<uint64_t> originalData_;
+    std::vector<uint64_t> originalAmbiguous_;
+    std::vector<uint8_t> originalQualities_; // numerical Q0..93;255 unavailable
+    bool originalQualitiesRetained_ = false;
 };
+
+struct MateRescueStats {
+    size_t pairsExamined = 0;
+    size_t overlapsAccepted = 0;
+    size_t ambiguousOverlaps = 0;
+    size_t readsRescued = 0;
+    size_t basesRescued = 0;
+};
+
+// Experimental, conservative recovery after spectrum correction. maskedReadIds
+// must contain only reads which were entirely ACGT before correction; the
+// corrector supplies exactly that provenance. Original input Ns are never
+// interpreted through rawBaseAt(). Original pairs and read lengths are kept.
+MateRescueStats rescueMateOverlaps(SequenceStore& reads,
+                                  const std::vector<uint32_t>& maskedReadIds);
 
 // Streams every valid k-mer of a read to `fn` as (canonicalKmer, position).
 // Runs of ambiguous bases restart the rolling k-mer.
