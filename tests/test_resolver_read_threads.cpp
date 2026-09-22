@@ -58,13 +58,14 @@ int main(int argc,char** argv){
  for(int length:{251,301}){
   Fixture f;auto pair=f.pair(length);auto input=reads({pair,pair});
   auto baseline=resolve(f.graph,input,nullptr),off=resolve(f.graph,input,"0"),nonnumeric=resolve(f.graph,input,"true"),candidate=resolve(f.graph,input,"1");
-  check(baseline.contigs==off.contigs&&baseline.contigs==nonnumeric.contigs,"flag-off and nonliteral flag identity");
-  check(baseline.log==off.log&&baseline.log==nonnumeric.log,"flag-off trace identity");
-  check(baseline.stats.pairsLinking==0,"fixture loses all legacy inter-unitig pair support");
+  // 1.3.0: exact threads are ON unless TESSERACT_EXACT_READ_THREADS=0.
+  check(baseline.contigs==candidate.contigs&&baseline.contigs==nonnumeric.contigs,"default-on: unset and nonzero flag identity");
+  check(baseline.log==candidate.log&&baseline.log==nonnumeric.log,"default-on trace identity");
+  check(off.stats.pairsLinking==0,"fixture loses all legacy inter-unitig pair support");
   auto reversedGraph=f.graph;for(auto& node:reversedGraph.nodes){node.seq=ts::reverseComplement(node.seq);std::swap(node.ends[0],node.ends[1]);for(auto& links:node.ends)for(auto& link:links)link.toEnd^=1;}
   check(reversedGraph.validate().empty(),"reverse represented resolver graph");
   check(hasPath(resolve(reversedGraph,input,"1"),{1,5,7}),"full resolver preserves reverse-unitig orientation");
-  check(!hasPath(baseline,{0,4,6}),"baseline remains unresolved");
+  check(!hasPath(off,{0,4,6}),"=0 legacy resolver remains unresolved");
   check(hasPath(candidate,{0,4,6}),"exact-thread fallback creates correct observed join");
   check(candidate.log.find("molecules=2 fresh=2 pairedExcluded=0")!=std::string::npos,"two physical molecules, four reads, two fresh votes");
   const std::string spelled=f.graph.nodes[0].seq+f.graph.nodes[2].seq.substr(126)+f.graph.nodes[3].seq.substr(126);
@@ -82,7 +83,7 @@ int main(int argc,char** argv){
   check(hasPath(missingMate,{0,4,6})&&missingMate.stats.pairsLinking==0,"two valid reads with unavailable mates can phase observed connector");
   std::vector<std::pair<std::string,std::string>> supported{pair,pair};
   for(int i=0;i<5;++i)supported.push_back({f.graph.nodes[0].seq.substr(100+i,70),ts::reverseComplement(f.graph.nodes[4].seq.substr(200+i,70))});
-  auto chosen=resolve(f.graph,reads(supported),nullptr),kept=resolve(f.graph,reads(supported),"1");
+  auto chosen=resolve(f.graph,reads(supported),"0"),kept=resolve(f.graph,reads(supported),"1");
   check(hasPath(chosen,{0,4,8}),"legacy fixture has supported competing choice");
   check(chosen.contigs==kept.contigs,"existing accepted paired choice unchanged");
   // Fresh exact evidence is not a second use of already linked endpoint pairs.
@@ -94,7 +95,7 @@ int main(int argc,char** argv){
  }
  // Keep initial production scope paired; standalone helper single-end tests remain separate.
  Fixture f;auto p=f.pair(301);auto single=reads({}, {p.first,p.first});
- check(resolve(f.graph,single,nullptr).contigs==resolve(f.graph,single,"1").contigs,"pure single-end resolver behavior unchanged");
+ check(resolve(f.graph,single,"0").contigs==resolve(f.graph,single,"1").contigs,"pure single-end resolver behavior unchanged");
  // A new join from A's right port must not consume B before B's supported
  // right-port join to Z. The trace verifies legacy arbitration runs first.
  Fixture priority;ts::Unitig z;z.seq=priority.graph.nodes[3].seq.substr(500)+dna(500,91);z.coverage=20;

@@ -23,19 +23,19 @@ win / tie / loss counts are per isolate. (NGA50 is undefined for one isolate, he
 
 | Metric | TesserACT | SPAdes | win / tie / loss | |
 |---|---|---|---|---|
-| NGA50 | **148,727** | 139,749 | 94 / 0 / 51 | **win** (p=0.0096) |
-| Genome fraction | **98.45 %** | 97.93 % | 131 / 0 / 15 | **win** (p=2e-17) |
-| Contigs | **69** | 84 | 108 / 0 / 38 | **win** (p=8e-7) |
-| Assembly size error | **56,490 bp** | 71,170 bp | 113 / 0 / 33 | **win** (p=3e-10) |
-| Duplication ratio | 1.0000 | 1.0000 | 41 / 78 / 27 | tie (p=0.67) |
-| Misassemblies | 1 | 0 | 31 / 55 / 60 | loss (p=0.009) |
+| NGA50 | **149,610** | 139,749 | 95 / 0 / 50 | **win** (p=0.005) |
+| Genome fraction | **98.46 %** | 97.93 % | 131 / 0 / 15 | **win** (p=1e-17) |
+| Contigs | **68** | 84 | 109 / 0 / 37 | **win** (p=3e-7) |
+| Assembly size error | **56,475 bp** | 71,170 bp | 114 / 0 / 32 | **win** (p=2e-10) |
+| Duplication ratio | 1.0000 | 1.0000 | 40 / 79 / 27 | tie (p=0.72) |
+| Misassemblies | 1 | 0 | 29 / 56 / 61 | loss (p=0.005) |
 
 Misassemblies are the one row still lost. All of them are *relocations* — a contig that
 joins two correctly assembled blocks across a repeat it has collapsed by one copy — and
 TesserACT's per-base accuracy is higher than SPAdes' on the same panel (17,970 against
 20,491 mismatches in total). It is being worked on, not hidden.
 
-What 1.3.0 changed to get here, both measured on this panel against the 1.2.x default:
+What 1.3.0 changed to get here, each measured on this panel:
 
 * **Head-to-head overlaps.** The terminal-overlap trimmer only ever probed each contig's
   forward 3′ end, so a 5′/5′ overlap — a quarter of all exact terminal overlaps — was never
@@ -46,6 +46,15 @@ What 1.3.0 changed to get here, both measured on this panel against the 1.2.x de
   2 % of the sequence and set the baseline at 5.7× for a genome sequenced at 35×, so almost
   everything counted as repeat and the resolver joined nearly nothing. The baseline is now a
   length-weighted median. NGA50 went from a tie to a win.
+* **Single-read threading.** Where one read spans a whole branch point, its exact path through
+  the graph now counts as evidence for the join. Against the release without it: NGA50
+  better on 27 isolates and worse on 1, fewer contigs on 65 against 4, genome fraction better
+  on 39 against 10. It is not free — misassemblies rose on 4 isolates and fell on 1, five
+  events net across 146 — and that is the row this release still loses.
+
+Each of the three can be switched off for comparison with the environment variables
+`TESSERACT_RC_DOVETAIL=0`, `TESSERACT_WEIGHTED_RESOLVER_COVERAGE=0` and
+`TESSERACT_EXACT_READ_THREADS=0`.
 
 ### 666 *Klebsiella pneumoniae* (1.2.x)
 

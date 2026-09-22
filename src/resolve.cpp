@@ -551,9 +551,12 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     const double linkBar = std::max(static_cast<double>(minLinkSupport_),
                                     std::min(6.0, medianCoverage_ * linkSupportPerX_));
 
+    // ON by default since 1.3.0. Paired against the 1.3.0 resolver on 146 isolates: NGA50
+    // 27 better / 1 worse, contigs 65 / 4, genome fraction 39 / 10, size accuracy 37 / 15;
+    // misassemblies 1 better / 4 worse (+5 events net). TESSERACT_EXACT_READ_THREADS=0 disables.
     const bool exactReadThreads = reads_.paired() && [] {
         const char* flag = std::getenv("TESSERACT_EXACT_READ_THREADS");
-        return flag && std::string(flag) == "1";
+        return !flag || std::string(flag) != "0";
     }();
     ReadThreadEvidence threadEvidence;
     // Preserve observed routes even if all their molecules already supplied
