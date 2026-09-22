@@ -11,6 +11,46 @@ or single-end. No dependencies beyond zlib and a C++17 compiler.
 
 ## Benchmark
 
+### 30 species, 146 isolates (1.3.0)
+
+A generalisation panel outside the ESKAPE pathogens: 30 bacterial species from 1.6 Mb
+(*H. pylori*) to 7.7 Mb (*B. cenocepacia*) and 27–67 % GC, up to five isolates each, every
+isolate paired by BioSample with its own closed reference genome. Raw untrimmed Illumina
+reads (100–301 bp), both assemblers at default settings — SPAdes 4.3.0 with its own error
+correction and automatic k, TesserACT with no model. QUAST 5.2.0, `--min-contig 500`.
+Paired Wilcoxon signed-rank on per-isolate differences, Holm-corrected across the six rows;
+win / tie / loss counts are per isolate. (NGA50 is undefined for one isolate, hence n=145.)
+
+| Metric | TesserACT | SPAdes | win / tie / loss | |
+|---|---|---|---|---|
+| NGA50 | **148,727** | 139,749 | 94 / 0 / 51 | **win** (p=0.0096) |
+| Genome fraction | **98.45 %** | 97.93 % | 131 / 0 / 15 | **win** (p=2e-17) |
+| Contigs | **69** | 84 | 108 / 0 / 38 | **win** (p=8e-7) |
+| Assembly size error | **56,490 bp** | 71,170 bp | 113 / 0 / 33 | **win** (p=3e-10) |
+| Duplication ratio | 1.0000 | 1.0000 | 41 / 78 / 27 | tie (p=0.67) |
+| Misassemblies | 1 | 0 | 31 / 55 / 60 | loss (p=0.009) |
+
+Misassemblies are the one row still lost. All of them are *relocations* — a contig that
+joins two correctly assembled blocks across a repeat it has collapsed by one copy — and
+TesserACT's per-base accuracy is higher than SPAdes' on the same panel (17,970 against
+20,491 mismatches in total). It is being worked on, not hidden.
+
+What 1.3.0 changed to get here, both measured on this panel against the 1.2.x default:
+
+* **Head-to-head overlaps.** The terminal-overlap trimmer only ever probed each contig's
+  forward 3′ end, so a 5′/5′ overlap — a quarter of all exact terminal overlaps — was never
+  seen. Duplication went from a loss (p=0.001) to a tie.
+* **The repeat threshold's baseline.** The single-copy depth the resolver compares against
+  was an unweighted median over graph nodes. On some libraries a cloud of short, shallow
+  fragments outvotes the chromosome — on one *S. enterica* isolate 33 % of the nodes held
+  2 % of the sequence and set the baseline at 5.7× for a genome sequenced at 35×, so almost
+  everything counted as repeat and the resolver joined nearly nothing. The baseline is now a
+  length-weighted median. NGA50 went from a tie to a win.
+
+### 666 *Klebsiella pneumoniae* (1.2.x)
+
+Measured on the 1.2 series and not yet re-run on 1.3.0.
+
 666 *Klebsiella pneumoniae* isolates, every one with a closed reference genome. Both
 assemblers ran on raw untrimmed reads with default settings — SPAdes 4.3.0 with its own
 error correction on and automatic k selection, TesserACT with no model. Scored by
