@@ -30,10 +30,14 @@ win / tie / loss counts are per isolate. (NGA50 is undefined for one isolate, he
 | Duplication ratio | 1.0000 | 1.0000 | 40 / 79 / 27 | tie (p=0.72) |
 | Misassemblies | 1 | 0 | 29 / 56 / 61 | loss (p=0.005) |
 
-Misassemblies are the one row still lost. All of them are *relocations* — a contig that
-joins two correctly assembled blocks across a repeat it has collapsed by one copy — and
-TesserACT's per-base accuracy is higher than SPAdes' on the same panel (17,970 against
-20,491 mismatches in total). It is being worked on, not hidden.
+Misassemblies are the one row still lost: 328 events against SPAdes' 182 across the panel.
+Nearly all of the excess is *relocations* (305 against 161; inversions 17 against 13,
+translocations 6 against 8) — a contig that joins two correctly assembled blocks across a
+repeat it has collapsed by one copy. At most of those junctions the repeat is as long as the
+sequencing fragment, so the reads are equally consistent with the right and the wrong join;
+SPAdes avoids them by stopping there, which is part of why it emits more contigs. Per-base
+accuracy is higher than SPAdes' on the same panel (17,970 against 20,491 mismatches in total).
+It is being worked on, not hidden.
 
 What 1.3.0 changed to get here, each measured on this panel:
 
