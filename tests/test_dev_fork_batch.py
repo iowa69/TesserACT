@@ -49,11 +49,16 @@ def semantic(value):
     if isinstance(value,list): return [semantic(x) for x in value]
     return value
 
-def same_outputs(x,y):
+def same_outputs(x,y,config_fields=()):
+    # config_fields: report keys that describe the configuration in force rather than the
+    # assembly (build_v3 T35: repeat_resolution.theta_estimator); compared separately.
     for f in ['contigs.fasta','scaffolds.fasta','scaffolds.agp','assembly_graph.gfa','unitigs.fasta']:
         check((x/f).exists()==(y/f).exists(),f+' presence')
         if (x/f).exists(): check((x/f).read_bytes()==(y/f).read_bytes(),f+' bytes')
-    check(semantic(json.loads((x/'report.json').read_text()))==semantic(json.loads((y/'report.json').read_text())), 'report semantic identity')
+    rx, ry = json.loads((x/'report.json').read_text()), json.loads((y/'report.json').read_text())
+    for sec, key in config_fields:
+        rx.get(sec, {}).pop(key, None); ry.get(sec, {}).pop(key, None)
+    check(semantic(rx)==semantic(ry), 'report semantic identity')
 
 old,new = a.out/'old', a.out/'disabled'
 run(asm(a.baseline,old),'old')
@@ -76,8 +81,14 @@ check(batch['binary_sha256']==hashlib.sha256(a.binary.read_bytes()).hexdigest(),
 check(batch['manifest_sha256']==hashlib.sha256(m.read_bytes()).hexdigest(),'parsed manifest SHA-256')
 check(batch['parent_tesseract_environment']['TESSERACT_ROUTE_DISTANCE']=='1','parent environment recorded')
 check(batch['parent_tesseract_environment']['TESSERACT_OBSERVED_GRAPH_COVERAGE']=='1','inherited observed-depth environment recorded')
-for arm in ['first','explicit_off','last']:
+for arm in ['first','last']:
     same_outputs(new,out/arm)
+# explicit_off turns the default-on WEIGHTED_RESOLVER_COVERAGE off: identical assembly on this
+# repeat-free genome, but since build_v3 (T35) report.json names the theta estimator in force.
+same_outputs(new,out/'explicit_off',config_fields=[('repeat_resolution','theta_estimator')])
+check(json.loads((out/'explicit_off'/'report.json').read_text())['repeat_resolution']['theta_estimator']=='unweighted'
+      and json.loads((new/'report.json').read_text())['repeat_resolution']['theta_estimator']=='weighted',
+      'explicit_off child really ran the unweighted estimator (T35 field)')
 for arm in ['first','owned','observed','explicit_off','last']:
     child=json.loads((out/arm/'fork_child.json').read_text())
     check(child['status']=='complete' and child['mode']=='fork-child','child completion provenance')

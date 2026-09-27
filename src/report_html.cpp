@@ -1667,7 +1667,9 @@ std::string sectionLadder(const AssemblyReport& rep) {
                                                 static_cast<double>(it.solidKmers))});
         a.push_back({"Abundance cutoff", fmtInt(it.cutoff) + "x"});
         a.push_back({"Coverage peak", fmtNum(it.peakCoverage, 1) + "x"});
-        a.push_back({"Median unitig coverage", fmtNum(it.medianCoverage, 1) + "x"});
+        // build_v3 (T35): the unweighted node median; the resolver's theta is in report.json
+        // repeat_resolution.resolver_theta.
+        a.push_back({"Median unitig coverage (unweighted)", fmtNum(it.medianCoverage, 1) + "x"});
         a.push_back({"Carry-over contigs", fmtInt(static_cast<double>(it.carryOverContigs))});
         s += kv(a);
         s += "</div><div><h4>Graph, before and after simplification</h4>";

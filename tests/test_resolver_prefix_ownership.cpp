@@ -1,5 +1,6 @@
 // Ownership-aware terminal extension: actual resolver graph fixtures.
 #include <algorithm>
+#include "test_env.h"
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -104,6 +105,8 @@ BiasedRepeat biasedRepeat(bool reverse) {
 }
 }
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
+    setenv("TESSERACT_COMMON_PREFIX", "3000", 1);  // the three-copy fixture needs the shipped 3000 bp common-prefix extension
     unsetenv("TESSERACT_PREFIX_SNP_BUBBLES"); unsetenv("TESSERACT_EXACT_READ_THREADS");
     unsetenv("TESSERACT_ROUTE_DISTANCE"); unsetenv("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE");
     unsetenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");

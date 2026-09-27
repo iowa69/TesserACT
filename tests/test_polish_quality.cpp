@@ -1,4 +1,5 @@
 #include "polish_quality.h"
+#include "test_env.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -12,6 +13,7 @@ void check(bool ok, const char* label) { ++checks; if (!ok) { std::fprintf(stder
 void add(Pileup& p, int base, int q, int strand) { Observation o{uint8_t(base),uint8_t(q),uint8_t(strand)}; addFragment(p,&o,1); }
 }
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     check(logOdds(0)==0 && logOdds(1)==0,"Q0 and below-chance Q1 are uniform");
     for(unsigned q=2;q<=40;++q) check(logOdds(q)>logOdds(q-1),"informative odds increase with Q");
     for(unsigned q=40;q<=93;++q) check(logOdds(q)==logOdds(40),"fixed Q40 cap");

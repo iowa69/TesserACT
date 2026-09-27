@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "counter.h"
+#include "graph_fix_flags.h"
 #include "kmer.h"
 
 namespace ts {
@@ -148,6 +149,12 @@ public:
     // refused: a run of a single base matches everywhere and means nothing.
     //
     // Returns the number of edges added.
+    //
+    // NOTE (build_v3, T36): despite `minOverlap`, only an overlap of exactly k-1 is ever
+    // tested (a Link has no length of its own), requests above k-1 return at once, and on
+    // a graph from build() no two dead ends can share an exact (k-1) overlap -- build()
+    // links every such pair. simplify() therefore calls this only when a cheap exact count
+    // finds a candidate pair; it remains available for hand-made graphs.
     size_t joinDeadEnds(size_t minOverlap);
 
     // SPAdes-style gap closing: bridge two dead ends that share an exact overlap of
@@ -206,12 +213,27 @@ public:
     void toContigs(size_t minLen, std::vector<std::string>& seqs,
                    std::vector<double>& covs) const;
 
+    // T28 (build_v3, TESSERACT_FIX_HAIRPIN_KEEP=1, default off). A unitig end whose
+    // terminal (k-1)-mer is a reverse-complement palindrome carries a hairpin: a link from
+    // that end back to itself, made by build(). When compaction absorbs the node that
+    // carries it, mergeInto used to drop it, and when the carrier absorbed its neighbour
+    // instead the hairpin survived -- so node numbering decided the topology. With the fix
+    // the hairpin moves onto the merged end, as the k-mers say it should. The flag is read
+    // when the graph is constructed (per graph, not per process); the setter overrides it.
+    void setKeepHairpins(bool on) { keepHairpins_ = on; }
+    bool keepHairpins() const { return keepHairpins_; }
+    size_t hairpinsKept() const { return hairpinsKept_; }        // moved onto a merged end
+    size_t hairpinsDropped() const { return hairpinsDropped_; }  // lost (flag off)
+
 private:
     void addLink(uint32_t u, int ue, uint32_t v, int ve);
     void unlink(uint32_t u, int ue, uint32_t v, int ve);
     bool mergeInto(uint32_t u, int ue);
 
     int k_ = 0;
+    bool keepHairpins_ = fixflags::fixLevel("TESSERACT_FIX_HAIRPIN_KEEP") > 0;
+    size_t hairpinsKept_ = 0;
+    size_t hairpinsDropped_ = 0;
 };
 
 // Sequence identity between two strings, computed with banded edit distance.

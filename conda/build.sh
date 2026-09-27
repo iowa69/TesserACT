@@ -24,8 +24,7 @@ install -m 0755 tesseract-klebsiella "${PREFIX}/bin/tesseract-klebsiella"
 # models arrive. A package without them installs cleanly and then has no command by the name
 # the docs use.
 #
-# Not in the 1.2.5 package -- that tarball is already cut and bioconda PR #68728 is queued
-# against its sha256, so this ships in 1.3 rather than invalidating an open PR.
+# Not in the 1.2.5 package (tarball cut before these existed); packaged from 1.3.0 on.
 install -m 0755 tesseract-eskape "${PREFIX}/bin/tesseract-eskape"
 install -m 0755 tesseract-get-models "${PREFIX}/bin/tesseract-get-models"
 # tesseract-get-models resolves the checksum list as $(dirname $0)/models.sha256, so it has to

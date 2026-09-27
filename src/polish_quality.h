@@ -10,11 +10,12 @@
 #include <cstring>
 #include <limits>
 
+#include "envflags.h"
+
 namespace ts { namespace quality_consensus {
 
 inline bool enabled() {
-    const char* value = std::getenv("TESSERACT_POLISH_ORIGINAL_QUALITY");
-    return value && std::strcmp(value, "1") == 0;
+    return env::on("TESSERACT_POLISH_ORIGINAL_QUALITY", false);
 }
 
 constexpr unsigned kMaxPhred = 40;  // Fixed before experiments, not calibrated.

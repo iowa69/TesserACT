@@ -1,8 +1,10 @@
 #include <iostream>
+#include "test_env.h"
 #include <stdexcept>
 #include "resolve_evidence.h"
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     using ts::detail::BranchEvidence;
     using ts::detail::distinctiveBranchScores;
     int checks = 0;

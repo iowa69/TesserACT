@@ -2,6 +2,7 @@
 #define main originalGapEvidenceTests
 #include "test_gap_evidence.cpp"
 #undef main
+#include "test_env.h"
 #include <algorithm>
 
 namespace {
@@ -17,6 +18,7 @@ std::vector<std::string> canonicalSequences(ts::UnitigGraph g) {
 }
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     const char* prior = std::getenv(competitionFlag);
     const bool hadPrior = prior != nullptr;
     const std::string priorValue = prior ? prior : "";

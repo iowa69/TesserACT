@@ -117,16 +117,19 @@ struct AssemblyReport {
     size_t gfaSegments = 0;
     size_t gfaLinks = 0;
 
-    // The same assembly split at every run of 10 or more N -- which is how QUAST, NCBI and
-    // every published contig statistic count it. Scaffolding raises n50/largest above these
-    // by asserting an order across gaps; it adds no assembled sequence. Reporting only the
-    // scaffold figure is how a layout change gets read as an assembly improvement, so both
-    // travel together everywhere they are shown.
-    size_t scaffoldGaps = 0;     // number of N runs >= 10
-    size_t contigPieces = 0;     // sequences after splitting at them
+    // The contigs as written to contigs.fasta: split at every N, after the terminal-overlap trim
+    // (and any split post-processing). Scaffolding raises n50/largest above these by asserting
+    // an order across gaps; it adds no assembled sequence. Reporting only the scaffold figure is
+    // how a layout change gets read as an assembly improvement, so both travel together
+    // everywhere they are shown. (Release 1.3.0 counted the scaffolds split at runs of 10+ N,
+    // before the trim; that described no written file -- G-emit T17.)
+    size_t scaffoldGaps = 0;     // number of N-runs of any length (= scaffolds.agp N rows)
+    size_t contigPieces = 0;     // contigs.fasta records
     size_t contigN50 = 0;
     size_t contigLargest = 0;
-    size_t contigTotal = 0;      // called bases, i.e. total length minus the N
+    size_t contigTotal = 0;      // bases in contigs.fasta (called bases; the records hold no N)
+    size_t trimmedOverlaps = 0;      // terminal repeat overlaps trimmed from the records
+    size_t trimmedOverlapBases = 0;  // bases they removed
 
     // Recomputes the derived summary fields from `contigs`.
     void finalize();

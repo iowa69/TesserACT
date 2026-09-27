@@ -1,9 +1,11 @@
 #include "resolve_route_density.h"
+#include "test_env.h"
 #include <cmath>
 #include <iostream>
 #include <stdexcept>
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     using namespace ts::detail;
     int checks = 0;
     auto check = [&](bool good, const char* message) {

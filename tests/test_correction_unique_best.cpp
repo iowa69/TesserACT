@@ -1,5 +1,7 @@
 // Standalone focused test. Compile with correct.cpp, seqio.cpp, counter.cpp, util.cpp.
 #include "correct.h"
+#include "test_env.h"
+#include "env_reject.h"
 #include <algorithm>
 #include <cstdio>
 #include <cstdlib>
@@ -46,6 +48,7 @@ void sameStats(const ts::CorrectionStats& a,const ts::CorrectionStats& b) {
 }
 }
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     directory=std::filesystem::path("/tmp")/("test-ec-unique-"+std::to_string(getpid()));
     std::filesystem::create_directory(directory);
     for(int k:{21,33})for(int position:{25,90})for(bool unequal:{false,true}) {
@@ -55,11 +58,19 @@ int main() {
         auto legacy=load(raw);flag(nullptr);const auto old=ts::correctReads(legacy,solid,k,1,1000);
         check(legacy.decode(0)==g && rc(legacy.decode(1))==t,"off retains exact alphabet-order behavior");
         check(old.basesCorrected==2 && old.ambiguousExtensions==0 && old.ambiguityMaskedBases==0,"off counters");
-        for(const char* v:{"","0","true","01","1x"}) {
-            auto disabled=load(raw);flag(v);const auto ds=ts::correctReads(disabled,solid,k,2,1000);
-            same(disabled,legacy,"only exact literal 1 enables");sameStats(ds,old);
+        {
+            auto disabled=load(raw);flag("0");const auto ds=ts::correctReads(disabled,solid,k,2,1000);
+            same(disabled,legacy,"=0 is off");sameStats(ds,old);
             check(ds.ambiguousExtensions==0 && ds.ambiguityMaskedBases==0,"disabled diagnostic counters zero");
         }
+        // Only the exact literal 1 enables. Since build_v3 any other value is a hard error
+        // (exit 2), where 1.3.0 read "", "true", "01" and "1x" silently as off.
+        for(const char* v:{"","true","01","1x","2"}) {
+            check(exitsWithEnvError("TESSERACT_EC_REQUIRE_UNIQUE_BEST",[&]{
+                      auto rejected=load(raw);flag(v);ts::correctReads(rejected,solid,k,2,1000);}),
+                  "malformed flag value is rejected, never silently off");
+        }
+        flag(nullptr);
         auto retained=load(raw);flag("1");const auto rs=ts::correctReads(retained,solid,k,2,1000);
         check(retained.decode(0)==raw && rc(retained.decode(1))==raw,"equal best abstains in both orientations");
         check(rs.basesCorrected==0 && rs.ambiguousExtensions==2 && rs.basesMasked==0 && rs.ambiguityMaskedBases==0,

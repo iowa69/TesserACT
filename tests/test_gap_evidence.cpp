@@ -1,5 +1,6 @@
 // Standalone scientific regression tests for the default-off gap-evidence arm.
 #include <cstdio>
+#include "test_env.h"
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -73,6 +74,7 @@ auto nominate(const ts::UnitigGraph& g, const ts::SequenceStore& r, size_t dista
 }
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     const std::string a = sequence(180), b = sequence(180), c = sequence(180);
     const auto g = graph({a, b});
     const std::pair<std::string, std::string> fr{a.substr(100, 60), rc(b.substr(20, 60))};

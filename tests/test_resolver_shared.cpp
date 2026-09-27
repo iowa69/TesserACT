@@ -1,5 +1,6 @@
 // End-to-end resolver scoring regression using graph-consistent synthetic pairs.
 #include <cstdlib>
+#include "test_env.h"
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -32,6 +33,7 @@ struct TempReads {
 }
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     // Isolate chain arbitration from the independently tested terminal emitter.
     setenv("TESSERACT_COMMON_PREFIX", "0", 1);
     unsetenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");

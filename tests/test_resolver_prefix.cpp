@@ -1,6 +1,7 @@
 // Focused regression for terminal repeat completion. Run separately from the
 // broad unit suite; no reads or reference sequence are used by this fixture.
 #include <algorithm>
+#include "test_env.h"
 #include <cstdlib>
 #include <iostream>
 #include <random>
@@ -85,6 +86,8 @@ std::string resolveAnchor(const Fixture& f, bool enabled) {
 }
 }
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
+    setenv("TESSERACT_COMMON_PREFIX", "3000", 1);  // the baseline expectation is the shipped 3000 bp common-prefix budget
     int checks = 0;
     auto check = [&](bool ok, const char* message) {
         ++checks;

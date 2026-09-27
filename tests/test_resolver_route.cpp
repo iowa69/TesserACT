@@ -1,5 +1,6 @@
 // Actual graph anchoring, internal insert fitting and reciprocal resolution.
 #include "resolve.h"
+#include "test_env.h"
 #include <algorithm>
 #include <cstdlib>
 #include <filesystem>
@@ -30,6 +31,7 @@ struct Temp {
 struct Result { int arm = -1; size_t length = 0; std::vector<std::string> contigs; };
 }
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     setenv("TESSERACT_COMMON_PREFIX","0",1);
     setenv("TESSERACT_JOIN_TRACE","1",1);
     for (auto flag : {"TESSERACT_WEIGHTED_RESOLVER_COVERAGE", "TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE",

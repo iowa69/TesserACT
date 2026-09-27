@@ -55,7 +55,45 @@ struct ResolveStats {
     size_t scaffoldJoins = 0;
     size_t gapBases = 0;
     InsertModel insert;
+    // T35: the single-copy depth every repeat decision is taken against, the repeat
+    // threshold derived from it, and how it was estimated. `legacyMedian` is the unweighted
+    // median over live nodes >= 2k (UnitigGraph::medianCoverage, which is what report.json
+    // iterations[].median_coverage shows); `thetaPopulation` counts the nodes the chosen
+    // estimator weighed. Filled by the constructor; not yet written to report.json.
+    double theta = 0;
+    double repeatThreshold = 0;
+    double legacyMedian = 0;
+    const char* thetaEstimator = "unweighted";
+    size_t thetaPopulation = 0;
 };
+
+// T03 (TESSERACT_FIX_GAP_FLANK): how one scaffold gap must look if it is still OPEN after
+// gap filling. The resolver writes the release layout (`nWritten` Ns standing in for the
+// first k-1 bases of the unitig after the gap), which is what the gap filler needs: its
+// target k-mer then lies in full-depth sequence, and a gap it closes gets those bases back
+// from the reads. A gap it leaves open gets them back from here: the N-run becomes `nOpen`
+// (the estimated true gap; 1 for a verified overlap; kUnknownGapN for an unknown length)
+// followed by `restore`. `left` / `right` are the flank bases around the N-run (in the
+// orientation the resolver wrote it) that identify the gap after gap filling.
+struct GapFlankRecord {
+    std::string left, right;
+    int nWritten = 0;
+    int nOpen = 0;
+    std::string restore;
+};
+
+// Applies the records to the scaffolds after gap filling: an N-run of exactly `nWritten`
+// between `left` and `right` (either orientation) becomes `nOpen` Ns plus `restore`.
+// A gap the filler closed, or one whose flanks changed, is left alone. Prints
+// `[gapflank-restore]` on every call, zeros included.
+void restoreGapFlanks(std::vector<std::string>& seqs, const std::vector<GapFlankRecord>& records);
+
+// Prints every always-on resolver counter line ([resolver], [resolveflags], [enumtrunc],
+// [revisit], [scafcycle], [gapest], [gapflank], [cov_contrib], [routeorder], [mirrorroute])
+// with run=0 and
+// zero counts. For runs in which the paired resolver is not constructed (single-end input,
+// --no-resolve), so that each line appears on every run (OBJECTIVE amendment A2).
+void printResolverCountersNotRun();
 
 class PairedResolver {
 public:
@@ -113,6 +151,10 @@ public:
     // How each emitted contig walks the graph, in output order.
     const std::vector<ResolvedPath>& paths() const { return paths_; }
 
+    // T03: one record per scaffold gap written by resolve() (empty unless
+    // TESSERACT_FIX_GAP_FLANK is on). To be applied by restoreGapFlanks() after gap filling.
+    const std::vector<GapFlankRecord>& gapFlankRecords() const { return gapFlank_; }
+
     // Fragment-length histogram observed from same-unitig pairs.
     const std::vector<uint64_t>& insertHistogram() const { return insertHistogram_; }
 
@@ -156,7 +198,11 @@ private:
     std::unordered_map<uint64_t, std::unordered_map<uint64_t, SpanList>> support_;
 
     InsertModel insert_;
+    // combo2/ends: every read's anchor, kept by buildSupport() only when
+    // TESSERACT_PAIR_ANCHORED_PREFIX is set (12 bytes per read); empty otherwise.
+    std::vector<Anchor> readAnchors_;
     std::vector<ResolvedPath> paths_;
+    std::vector<GapFlankRecord> gapFlank_;
     std::vector<uint64_t> insertHistogram_;
     // Default-off: conditional route lengths only; endpoint count scores stay intact.
     bool routeDistance_ = false;

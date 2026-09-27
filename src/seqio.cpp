@@ -10,6 +10,8 @@
 #include <cstring>
 #include <thread>
 
+#include <sys/stat.h>
+
 namespace ts {
 namespace {
 
@@ -29,17 +31,47 @@ struct BaseLut {
 };
 const BaseLut kLut;
 
-uint64_t nameHashOf(const char* s, size_t n) {
+// Pairing key of a read name: its first whitespace-delimited token, less the mate
+// suffix, hashed. The low 62 bits hash the stem; the top 2 bits hold a trailing
+// '.1' / '.2' that was set aside (0 when there was none), so a key still costs 8
+// bytes per read, as the plain hash did.
+constexpr uint64_t kStemBits = (1ULL << 62) - 1;
+
+uint64_t nameKeyOf(const char* s, size_t n) {
     size_t e = 0;
     while (e < n && s[e] != ' ' && s[e] != '\t') ++e;
     // Mate suffixes differ between the two files of a pair by design.
     if (e >= 2 && s[e - 2] == '/' && (s[e - 1] == '1' || s[e - 1] == '2')) e -= 2;
+    // fastq-dump --readids writes the mate as a '.1' / '.2' suffix instead
+    // (SRR1.7.1 and SRR1.7.2), which failed as "out of sync at record 1". The digit
+    // is kept apart rather than dropped, so that matesAgree() can still demand an
+    // exact match whenever the two names do not both carry one.
+    uint64_t dot = 0;
+    if (e >= 3 && s[e - 2] == '.' && (s[e - 1] == '1' || s[e - 1] == '2')) {
+        dot = static_cast<uint64_t>(s[e - 1] - '0');
+        e -= 2;
+    }
     uint64_t h = 1469598103934665603ULL;
     for (size_t i = 0; i < e; ++i) {
         h ^= static_cast<unsigned char>(s[i]);
         h *= 1099511628211ULL;
     }
-    return h;
+    return (h & kStemBits) | (dot << 62);
+}
+
+// Whether two names can be mates. Accepts every pair the '/1' '/2' rule accepted
+// (same stem and the same '.d' suffix, or none on either: identical keys), and in
+// addition '.1' against '.2' on one stem, which sets `viaDot`. 'X' against 'X.1'
+// is still refused.
+bool matesAgree(uint64_t a, uint64_t b, bool& viaDot) {
+    viaDot = false;
+    if (a == b) return true;
+    if ((a & kStemBits) != (b & kStemBits)) return false;
+    if ((a >> 62) != 0 && (b >> 62) != 0) {
+        viaDot = true;
+        return true;
+    }
+    return false;
 }
 
 std::string trimName(const std::string& s) {
@@ -63,7 +95,7 @@ public:
         gzbuffer(gz_, static_cast<unsigned>(kZlibBuffer));
         buf_.resize(kIoBuffer);
         pos_ = end_ = 0;
-        eof_ = failed_ = false;
+        eof_ = failed_ = truncated_ = false;
         return true;
     }
 
@@ -80,7 +112,12 @@ public:
         if (!gz_) return "read error";
         int code = 0;
         const char* m = gzerror(gz_, &code);
-        return (m && *m) ? std::string(m) : std::string("read error");
+        std::string msg = (m && *m) ? std::string(m) : std::string("read error");
+        if (truncated_) {
+            msg += " (the gzip stream stops before its end-of-member trailer: the file is "
+                   "truncated or incomplete; 'gzip -t' confirms it)";
+        }
+        return msg;
     }
 
     // `out` points into the internal buffer and is invalidated by the next call.
@@ -119,6 +156,17 @@ public:
                 failed_ = true;
                 eof_ = true;
             } else if (got == 0) {
+                // gzread() returns 0 at the end of the input even when the input ended
+                // inside a gzip member, with no final block or CRC/ISIZE trailer. zlib
+                // then leaves Z_BUF_ERROR ("unexpected end of file") in gzerror(), and
+                // Z_OK after a clean end. Taking every 0 as a clean end assembled a
+                // partial download from the records it happened to hold, with exit 0.
+                int code = Z_OK;
+                gzerror(gz_, &code);
+                if (code != Z_OK) {
+                    failed_ = true;
+                    truncated_ = (code == Z_BUF_ERROR);
+                }
                 eof_ = true;
             } else {
                 end_ += static_cast<size_t>(got);
@@ -133,14 +181,17 @@ private:
     size_t end_ = 0;
     bool eof_ = false;
     bool failed_ = false;
+    bool truncated_ = false;
 };
 
 // Walks a FASTA or FASTQ stream (format detected from the first record) and
 // calls fn(name, seq, seqLen, qual) once per record. `seq` and `qual` are only
 // valid inside the callback, and `qual` is null for FASTA. fn returns false to
-// abort, having already filled `error`.
+// abort, having already filled `error`. When `blankLines` is given, it is
+// incremented once per empty line skipped where a FASTQ header was due.
 template <typename Fn>
-bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&& fn) {
+bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&& fn,
+                   size_t* blankLines = nullptr) {
     const char* line = nullptr;
     size_t len = 0;
     std::string name;
@@ -148,12 +199,21 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
     name.reserve(128);
     seqBuf.reserve(1024);
 
+    auto readError = [&]() {
+        error = "read error in '" + path + "': " + r.ioMessage();
+        return false;
+    };
+    // A record cut short by the end of the input. When the input itself failed
+    // (a truncated gzip stream) that is the cause worth reporting.
+    auto truncatedRecord = [&]() {
+        if (r.failed()) return readError();
+        error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
+        return false;
+    };
+
     do {
         if (!r.nextLine(line, len)) {
-            if (r.failed()) {
-                error = "read error in '" + path + "': " + r.ioMessage();
-                return false;
-            }
+            if (r.failed()) return readError();
             return true;  // empty file
         }
     } while (len == 0);
@@ -161,37 +221,40 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
     if (line[0] == '@') {
         for (;;) {
             if (len == 0 || line[0] != '@') {
+                if (r.failed()) return readError();
                 error = "malformed FASTQ in '" + path + "': expected a '@' header line";
                 return false;
             }
             name.assign(line + 1, len - 1);
-            if (!r.nextLine(line, len)) {
-                error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
-                return false;
-            }
+            if (!r.nextLine(line, len)) return truncatedRecord();
             // Copied because reading the quality line invalidates `line`.
             seqBuf.assign(line, len);
             const size_t seqLen = seqBuf.size();
-            if (!r.nextLine(line, len)) {
-                error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
-                return false;
-            }
+            if (!r.nextLine(line, len)) return truncatedRecord();
             if (len == 0 || line[0] != '+') {
+                if (r.failed()) return readError();
                 error = "malformed FASTQ record '" + trimName(name) + "' in '" + path +
                         "': expected a '+' separator";
                 return false;
             }
-            if (!r.nextLine(line, len)) {
-                error = "truncated FASTQ record '" + trimName(name) + "' in '" + path + "'";
-                return false;
-            }
+            if (!r.nextLine(line, len)) return truncatedRecord();
             if (len != seqLen) {
+                if (r.failed()) return readError();
                 error = "malformed FASTQ record '" + trimName(name) + "' in '" + path +
                         "': quality length differs from sequence length";
                 return false;
             }
             if (!fn(name, seqBuf.data(), seqLen, line)) return false;
-            if (!r.nextLine(line, len)) break;
+            // Empty lines where the next header is due -- a trailing blank line, or
+            // one between records -- are skipped, as kseq and Biopython skip them; a
+            // file ending in "\n\n" used to fail as "expected a '@' header line". The
+            // sequence and quality lines above are still read verbatim, so a
+            // zero-length record is unaffected.
+            bool more;
+            while ((more = r.nextLine(line, len)) && len == 0) {
+                if (blankLines) ++*blankLines;
+            }
+            if (!more) break;
         }
     } else if (line[0] == '>') {
         bool more = true;
@@ -206,14 +269,12 @@ bool forEachRecord(GzReader& r, const std::string& path, std::string& error, Fn&
             if (!fn(name, seqBuf.data(), seqBuf.size(), nullptr)) return false;
         }
     } else {
+        if (r.failed()) return readError();
         error = "unrecognised format in '" + path + "': expected FASTA ('>') or FASTQ ('@')";
         return false;
     }
 
-    if (r.failed()) {
-        error = "read error in '" + path + "': " + r.ioMessage();
-        return false;
-    }
+    if (r.failed()) return readError();
     return true;
 }
 
@@ -338,8 +399,9 @@ struct FileSlot {
     uint64_t bases = 0;
     uint64_t trimmedBases = 0;
     uint32_t maxLen = 0;
+    size_t blankLines = 0;
     std::vector<uint32_t> lengths;
-    std::vector<uint64_t> nameHashes;
+    std::vector<uint64_t> nameKeys;
 };
 
 enum LibMode { kSingle, kPaired, kInterleaved };
@@ -366,6 +428,7 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     std::vector<uint64_t>().swap(originalAmbiguous_);
     std::vector<uint8_t>().swap(originalQualities_);
     originalQualitiesRetained_ = false;
+    loadStats_ = LoadStats();
     const bool retainOriginalQuality = quality_consensus::enabled();
 
     std::vector<FileSlot> slots;
@@ -376,6 +439,13 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     for (const Library& lib : libs) {
         if (lib.r1.empty()) {
             error = "library has no r1 file";
+            return false;
+        }
+        // Paired mode used to win silently over the interleaved flag, so the
+        // interleaved reading of r1 was dropped without a word.
+        if (lib.interleaved && !lib.r2.empty()) {
+            error = "library gives both an interleaved file ('" + lib.r1 + "') and an r2 file ('" +
+                    lib.r2 + "')";
             return false;
         }
         LibPlan plan;
@@ -404,6 +474,26 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         plans.push_back(plan);
     }
 
+    // The same file named twice -- as both mates of a pair, or in two libraries --
+    // loads every read in it twice. As mates, the names agree, so the pairing check
+    // passed: R2 was never read and each R1 read counted double, which makes every
+    // error k-mer solid. Compared by device and inode, so a symlink or another
+    // spelling of the path is caught too. A path that cannot be stat()ed is left
+    // for open() to report.
+    for (size_t a = 0; a < slots.size(); ++a) {
+        struct stat sa;
+        if (::stat(slots[a].path.c_str(), &sa) != 0) continue;
+        for (size_t b = a + 1; b < slots.size(); ++b) {
+            struct stat sb;
+            if (::stat(slots[b].path.c_str(), &sb) != 0) continue;
+            if (sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino) {
+                error = "the same input file is given twice ('" + slots[a].path + "' and '" +
+                        slots[b].path + "'): its reads would be loaded twice";
+                return false;
+            }
+        }
+    }
+
     // Pass 1: count records and bases so every buffer is allocated exactly once.
     std::vector<std::string> slotErr(slots.size());
     runParallel(slots.size(), threads, [&](size_t s) {
@@ -423,9 +513,10 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
                           slot.lengths.push_back(len);
                           slot.bases += len;
                           if (len > slot.maxLen) slot.maxLen = len;
-                          if (slot.needNames) slot.nameHashes.push_back(nameHashOf(name.data(), name.size()));
+                          if (slot.needNames) slot.nameKeys.push_back(nameKeyOf(name.data(), name.size()));
                           return true;
-                      });
+                      },
+                      &slot.blankLines);
     });
     for (const std::string& e : slotErr) {
         if (!e.empty()) {
@@ -434,9 +525,12 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         }
     }
 
+    size_t blankLines = 0;
+    size_t dotSuffixPairs = 0;
     for (FileSlot& slot : slots) {
         slot.count = slot.lengths.size();
         trimmedBases_ += slot.trimmedBases;
+        blankLines += slot.blankLines;
     }
 
     // Pairing sanity checks, then the global read index layout.
@@ -470,7 +564,10 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
                 return false;
             }
             for (size_t j = 0; j < a.count; ++j) {
-                if (a.nameHashes[j] != b.nameHashes[j]) {
+                bool viaDot = false;
+                if (matesAgree(a.nameKeys[j], b.nameKeys[j], viaDot)) {
+                    dotSuffixPairs += viaDot;
+                } else {
                     error = "paired files are out of sync at record " + std::to_string(j + 1) +
                             ": '" + a.path + "' has '" + recordNameAt(a.path, j) + "' but '" +
                             b.path + "' has '" + recordNameAt(b.path, j) + "'";
@@ -489,7 +586,10 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
                 return false;
             }
             for (size_t j = 0; j + 1 < a.count; j += 2) {
-                if (a.nameHashes[j] != a.nameHashes[j + 1]) {
+                bool viaDot = false;
+                if (matesAgree(a.nameKeys[j], a.nameKeys[j + 1], viaDot)) {
+                    dotSuffixPairs += viaDot;
+                } else {
                     error = "interleaved file '" + a.path + "' is out of sync at record " +
                             std::to_string(j + 1) + ": '" + recordNameAt(a.path, j) +
                             "' is not mated with '" + recordNameAt(a.path, j + 1) + "'";
@@ -533,8 +633,8 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
     for (FileSlot& slot : slots) {
         slot.lengths.clear();
         slot.lengths.shrink_to_fit();
-        slot.nameHashes.clear();
-        slot.nameHashes.shrink_to_fit();
+        slot.nameKeys.clear();
+        slot.nameKeys.shrink_to_fit();
     }
 
     data_.assign(static_cast<size_t>((totalBases_ + 31) / 32), 0);
@@ -599,6 +699,16 @@ bool SequenceStore::load(const std::vector<Library>& libs, int threads, std::str
         std::fprintf(stderr, "[qualitypolish] retained_original=1 reads=%zu bases=%zu bytes=%zu phred_offset=%d missing_quality=255\n",
                      size(), totalBases(), originalQualityBytes(), qtrim_.phredOffset);
     }
+    loadStats_.files = slots.size();
+    loadStats_.records = nReads;
+    loadStats_.interRecordBlankLines = blankLines;
+    loadStats_.dotSuffixMatePairs = dotSuffixPairs;
+    // Printed on every run, zeros included: the loader's two tolerances (blank lines
+    // between FASTQ records, '.1'/'.2' mate names) never change the reads of a file the
+    // release accepted, and this line is how a run log shows whether either was used.
+    std::fprintf(stderr, "[seqio] files=%zu records=%zu interrecord_blank_lines=%zu dot_suffix_mate_pairs=%zu\n",
+                 loadStats_.files, loadStats_.records, loadStats_.interRecordBlankLines,
+                 loadStats_.dotSuffixMatePairs);
     return true;
 }
 

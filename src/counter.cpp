@@ -14,10 +14,18 @@ constexpr double kMaxLoad = 0.6;
 constexpr size_t kMinCapacity = 1024;
 constexpr size_t kHistMax = 100000;
 
-// Per-thread, per-shard staging buffer. Sized so a whole thread's staging area
-// stays around 2 MiB with the default 256 shards: big enough that the shard
-// mutex is taken once per 512 k-mers, small enough to stay out of the way.
+// Per-thread, per-shard staging buffer: the shard mutex is taken once per 512 k-mers.
+// A Kmer is 32 bytes, so with the default 256 shards a whole thread stages 4 MiB.
 constexpr size_t kShardBuffer = 512;
+// T39 (build_v3): bound the staging area independently of -t. The shard count is
+// nextpow2(max(256, 8*T)) and every worker used to stage nShards*512 k-mers, so the total
+// grew as T^2 -- 16 MiB at T=4, 2 GiB at T=128, 8 GiB at T=256, 2 TiB at the CLI maximum
+// of 4096 -- and was allocated (and touched) before the memory guard could run. The shard
+// count is capped and each worker's staging held at the 256-shard size, 4 MiB. For T <= 32
+// both values are unchanged; above that only the flush granularity and the order of
+// insertion into the shard tables change, which the counts do not depend on.
+constexpr size_t kMaxShards = 1024;
+constexpr size_t kStagingKmers = 256 * kShardBuffer;
 
 void rehashTable(std::vector<Kmer>& keys, std::vector<uint32_t>& counts, size_t& mask,
                  size_t newCapacity) {
@@ -120,6 +128,7 @@ KmerCounter::~KmerCounter() = default;
 
 KmerCounter::KmerCounter(int k, int threads) : k_(k), threads_(threads > 0 ? threads : 1) {
     size_t target = std::max<size_t>(256, static_cast<size_t>(8) * static_cast<size_t>(threads_));
+    if (target > kMaxShards) target = kMaxShards;
     size_t nShards = 1;
     while (nShards < target) nShards <<= 1;
     shards_.resize(nShards);
@@ -134,6 +143,7 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
     if (shards_.empty()) return;
     const size_t nShards = shards_.size();
     const size_t shardMask = nShards - 1;
+    const size_t perShard = std::max<size_t>(1, std::min(kShardBuffer, kStagingKmers / nShards));
     const size_t nReads = store.size();
     const int k = k_;
 
@@ -150,7 +160,7 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
     if (nThreads > nBlocks + extraSeqs.size()) nThreads = std::max<size_t>(1, nBlocks + extraSeqs.size());
 
     auto worker = [&]() {
-        std::vector<Kmer> buf(nShards * kShardBuffer);
+        std::vector<Kmer> buf(nShards * perShard);
         std::vector<uint32_t> fill(nShards, 0);
         uint64_t local = 0;
         uint32_t weight = 1;
@@ -158,7 +168,7 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
         auto flushShard = [&](size_t s) {
             const uint32_t n = fill[s];
             if (n == 0) return;
-            const Kmer* p = &buf[s * kShardBuffer];
+            const Kmer* p = &buf[s * perShard];
             Shard& shard = *shards_[s];
             std::lock_guard<std::mutex> lock(shard.mu);
             for (uint32_t i = 0; i < n; ++i) {
@@ -171,8 +181,8 @@ void KmerCounter::count(const SequenceStore& store, const std::vector<std::strin
         // Shard selection uses high hash bits; the tables index with low bits.
         auto push = [&](Kmer key) {
             const size_t s = static_cast<size_t>(kmerHash(key) >> 40) & shardMask;
-            buf[s * kShardBuffer + fill[s]] = key;
-            if (++fill[s] == kShardBuffer) flushShard(s);
+            buf[s * perShard + fill[s]] = key;
+            if (++fill[s] == perShard) flushShard(s);
             local += weight;
         };
 

@@ -1,4 +1,5 @@
 #include "dev_fork_batch.h"
+#include "envflags.h"
 #include "assembler.h"
 #include "util.h"
 
@@ -171,11 +172,11 @@ public:
 } // namespace
 
 bool ForkBatch::prepare(const AssemblyOptions& o,std::string& error) {
-    const char* requested=std::getenv("TESSERACT_DEV_FORK_BATCH");if(!requested)return true;
+    const char* requested=env::text("TESSERACT_DEV_FORK_BATCH");if(!requested)return true;
     enabled_=true;
     if(!*requested){error="TESSERACT_DEV_FORK_BATCH requires a manifest path";return false;}
     if(!o.organismModelPath.empty()||!o.organism.empty()||!o.isPanelPath.empty()||!o.isSitesPath.empty()||o.mapPolisher!=Mapper::None||!o.resolveRepeats){error="developer fork batch requires model-free paired resolution and no external mapper";return false;}
-    if(std::getenv("TESSERACT_PLASMID_CLUSTERS")||std::getenv("TESSERACT_JOIN_DUMP")){error="developer fork batch forbids external dump/model-cluster paths";return false;}
+    if(env::text("TESSERACT_PLASMID_CLUSTERS")||env::text("TESSERACT_JOIN_DUMP")){error="developer fork batch forbids external dump/model-cluster paths";return false;}
     manifest_=absolute(requested);root_=absolute(o.outDir);invocation_=o.commandLine;config_=optionJson(o);
     if(manifest_.empty()||root_.empty()){error="cannot resolve developer manifest/output directory";return false;}
     std::ifstream manifestFile(manifest_, std::ios::binary);

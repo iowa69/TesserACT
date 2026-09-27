@@ -1,5 +1,6 @@
 // Reference-free tests of exact routes and physical-molecule accounting.
 #include <algorithm>
+#include "test_env.h"
 #include <cstdio>
 #include <chrono>
 #include <cstdlib>
@@ -52,6 +53,7 @@ auto collect(const Fixture& f,const ts::SequenceStore& r,ts::ReadThreadLimits li
 bool one(const ts::ReadThreadEvidence& e,ts::ReadThreadPath p,size_t count=1){return e.routes.size()==1&&e.routes[0].oriented==canonical(p)&&e.routes[0].fragments.size()==count;}
 }
 int main(int argc,char** argv){
+ testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
  if(argc==3&&std::string(argv[1])=="--benchmark-pairs"){
   const size_t n=size_t(std::strtoull(argv[2],nullptr,10));check(n>0&&n<=100000,"bounded benchmark size");
   Fixture fixture;auto input=reads(std::vector<std::pair<std::string,std::string>>(n,fixture.pair(301)));

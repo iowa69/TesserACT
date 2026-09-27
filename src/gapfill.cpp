@@ -1,4 +1,5 @@
 #include "gapfill.h"
+#include "envflags.h"
 
 #include <algorithm>
 #include <atomic>
@@ -12,6 +13,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "emit_fixflags.h"
 #include "kmer.h"
 #include "util.h"
 
@@ -47,6 +49,11 @@ constexpr size_t kMaxRecruits = 40000;
 constexpr double kDominanceRatio = 3.0;
 
 constexpr uint32_t kAmbiguousGap = UINT32_MAX;
+
+// T11 back-off limits: moved anchors tried per side, and the expansion budget all back-off
+// ladders of one gap may spend together (the release ladder alone may spend 3 budgets).
+constexpr size_t kBackoffCandidatesPerSide = 8;
+constexpr long long kBackoffExpansionBudget = 8LL * kMaxExpansions;
 
 struct Gap {
     uint32_t contig = 0;
@@ -85,9 +92,13 @@ struct Walker {
     uint16_t minCount;
     int expansions = 0;
     std::vector<Solution> solutions;
+    // T09: set when the expansion budget stopped the search while some branch was still
+    // unexplored. The walk returns at exactly the release points; this only records it.
+    bool truncated = false;
 
     void walk(Kmer cur, std::string& out, uint16_t weakest) {
-        if (solutions.size() >= kMaxSolutions || expansions > kMaxExpansions) return;
+        if (solutions.size() >= kMaxSolutions) return;
+        if (expansions > kMaxExpansions) { truncated = true; return; }
         ++expansions;
 
         // Candidate next bases, strongest first: a real continuation is
@@ -130,17 +141,145 @@ struct Walker {
             }
             if (out.size() < maxLen) walk(nxt, out, w);
             out.pop_back();
-            if (solutions.size() >= kMaxSolutions || expansions > kMaxExpansions) return;
+            if (solutions.size() >= kMaxSolutions) return;
+            if (expansions > kMaxExpansions) {
+                if (i + 1 < nc) truncated = true;
+                return;
+            }
         }
     }
 };
 
+// Outcome of one floor ladder between one pair of anchors.
+struct LadderResult {
+    bool closed = false;
+    size_t solutions = 0;       // of the deciding search (the last one run)
+    int expansions = 0;         // of the deciding search
+    long long totalExpansions = 0;
+    bool truncated = false;     // deciding search stopped at the budget with work left
+    bool capped = false;        // deciding search stopped at kMaxSolutions
+    bool refusedTruncated = false;  // would have closed; withheld by the strict flag
+};
+
+// A closure after back-off replaces flank bases as well as Ns; two such closures a few
+// dozen bases apart could claim the same bases.
+struct Replacement {
+    uint32_t contig = 0;
+    uint32_t start = 0;
+    uint32_t len = 0;
+    bool backedOff = false;
+    bool closed = false;
+};
+
+// Walking each contig left to right, a closure's replaced stretch must end at or before
+// the next closure's seed k-mer starts -- which also keeps the next stretch clear of this
+// closure's target k-mer, the two conditions being the same inequality. Release closures
+// always pass (their anchors hold no N, so a seed never starts inside the Ns before it);
+// where a clash involves a back-off closure, the back-off closure is dropped.
+size_t cancelBackoffClashes(std::vector<Replacement>& reps, int k) {
+    size_t cancelled = 0;
+    size_t prev = SIZE_MAX;
+    for (size_t gi = 0; gi < reps.size(); ++gi) {
+        Replacement& c = reps[gi];
+        if (!c.closed) continue;
+        if (prev != SIZE_MAX && reps[prev].contig == c.contig &&
+            static_cast<uint64_t>(c.start) <
+                static_cast<uint64_t>(reps[prev].start) + reps[prev].len + static_cast<uint64_t>(k)) {
+            if (c.backedOff) { c.closed = false; ++cancelled; continue; }
+            if (reps[prev].backedOff) { reps[prev].closed = false; ++cancelled; }
+        }
+        prev = gi;
+    }
+    return cancelled;
+}
+
 }  // namespace
 
+size_t cancelBackoffClashes(std::vector<GapClosure>& closures, int k) {
+    std::vector<Replacement> reps(closures.size());
+    for (size_t i = 0; i < closures.size(); ++i) {
+        reps[i].contig = closures[i].contig;
+        reps[i].start = closures[i].repStart;
+        reps[i].len = closures[i].repLen;
+        reps[i].backedOff = closures[i].backedOff;
+        reps[i].closed = closures[i].closed;
+    }
+    const size_t cancelled = cancelBackoffClashes(reps, k);
+    for (size_t i = 0; i < closures.size(); ++i) closures[i].closed = reps[i].closed;
+    return cancelled;
+}
+
+std::vector<uint8_t> readsWithInputAmbiguity(const SequenceStore& reads, int threads) {
+    std::vector<uint8_t> out(reads.size(), 0);
+    if (threads <= 0) threads = 1;
+    auto worker = [&](int tid) {
+        for (size_t r = static_cast<size_t>(tid); r < reads.size(); r += static_cast<size_t>(threads)) {
+            const uint32_t len = reads.length(r);
+            for (uint32_t p = 0; p < len; ++p) {
+                if (reads.baseAt(r, p) < 0) { out[r] = 1; break; }
+            }
+        }
+    };
+    std::vector<std::thread> pool;
+    pool.reserve(static_cast<size_t>(threads));
+    for (int t = 0; t < threads; ++t) pool.emplace_back(worker, t);
+    for (auto& th : pool) th.join();
+    return out;
+}
+
+GapFillStats gapFillIdleStats() {
+    GapFillStats s;
+    s.strictBudget = emitfix::enabled(emitfix::kGapfillStrict);
+    s.backoff = emitfix::backoffBases();
+    s.skipInputN = emitfix::enabled(emitfix::kGapfillSkipInputN);
+    return s;
+}
+
+void logGapFillCounters(const GapFillStats& s) {
+    std::fprintf(stderr,
+                 "[gapfill-budget] strict=%d truncated=%zu truncAccepted=%zu truncRefused=%zu "
+                 "capped=%zu cappedAccepted=%zu searches=%zu\n",
+                 s.strictBudget ? 1 : 0, s.gapsTruncated, s.gapsTruncatedAccepted,
+                 s.gapsTruncatedRefused, s.gapsCapped, s.gapsCappedAccepted, s.searches);
+    std::fprintf(stderr,
+                 "[gapfill-backoff] B=%d seedBelowFloor=%zu targetBelowFloor=%zu seedBackedOff=%zu "
+                 "targetBackedOff=%zu attempts=%zu closedAfterBackoff=%zu trimmedBp=%zu cancelled=%zu\n",
+                 s.backoff, s.seedBelowFloor, s.targetBelowFloor, s.seedBackedOff, s.targetBackedOff,
+                 s.backoffAttempts, s.closedAfterBackoff, s.trimmedBp, s.backoffCancelled);
+    std::fprintf(stderr,
+                 "[gapfill-inputn] enabled=%d provenance=%d reads_input_n=%zu recruited_input_n=%zu "
+                 "kmers_skipped_input_n=%zu\n",
+                 s.skipInputN ? 1 : 0, s.inputNProvenance ? 1 : 0, s.readsInputN, s.recruitedInputN,
+                 s.kmersSkippedInputN);
+    if (s.skipInputN && !s.inputNProvenance) {
+        std::fprintf(stderr, "[gapfill-inputn] WARNING: %s is on but no input-N provenance was "
+                             "supplied; reads were read as in release\n", emitfix::kGapfillSkipInputN);
+    }
+}
+
 GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& reads,
-                       int threads, int k, int flank) {
+                       int threads, int k, int flank,
+                       const std::vector<uint8_t>* inputAmbiguousReads) {
     GapFillStats stats;
     util::Timer timer;
+    // Fix switches, read per call (never cached): see emit_fixflags.h.
+    const bool strictBudget = emitfix::enabled(emitfix::kGapfillStrict);
+    const int backoff = emitfix::backoffBases();
+    const bool skipInputN = emitfix::enabled(emitfix::kGapfillSkipInputN);
+    stats.strictBudget = strictBudget;
+    stats.backoff = backoff;
+    stats.skipInputN = skipInputN;
+    const bool provenance = inputAmbiguousReads != nullptr && inputAmbiguousReads->size() == reads.size();
+    stats.inputNProvenance = provenance;
+    // T27: only a read that carried a non-ACGT base in the input is read with its ambiguous
+    // positions skipped. Every other read keeps the release raw read-through of correction
+    // masks, which is what this stage relies on at coverage dropouts.
+    const bool useInputN = skipInputN && provenance;
+    if (useInputN) {
+        for (uint8_t v : *inputAmbiguousReads) stats.readsInputN += v ? 1 : 0;
+    }
+    auto hadInputN = [&](size_t r) { return useInputN && (*inputAmbiguousReads)[r] != 0; };
+
     if (contigs.empty() || reads.size() == 0) return stats;
     if (threads <= 0) threads = 1;
     k = std::max(19, std::min(k, 31));
@@ -213,13 +352,15 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
                  r += static_cast<size_t>(threads)) {
                 uint32_t hit = kAmbiguousGap;
                 bool conflict = false;
-                forEachKmerRaw(reads, r, k, [&](const Kmer& km, uint32_t) {
+                auto probe = [&](const Kmer& km, uint32_t) {
                     if (conflict) return;
                     auto it = flankIndex.find(km);
                     if (it == flankIndex.end() || it->second == kAmbiguousGap) return;
                     if (hit == kAmbiguousGap) hit = it->second;
                     else if (hit != it->second) conflict = true;
-                });
+                };
+                if (hadInputN(r)) forEachKmer(reads, r, k, probe);
+                else forEachKmerRaw(reads, r, k, probe);
                 if (conflict || hit == kAmbiguousGap) continue;
                 mine[hit].push_back(static_cast<uint32_t>(r));
                 if (paired && reads.hasMate(r)) {
@@ -244,21 +385,112 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
             std::sort(bucket[g].begin(), bucket[g].end());
             bucket[g].erase(std::unique(bucket[g].begin(), bucket[g].end()), bucket[g].end());
             stats.readsRecruited += bucket[g].size();
+            if (useInputN) {
+                for (uint32_t r : bucket[g]) stats.recruitedInputN += (*inputAmbiguousReads)[r] ? 1 : 0;
+            }
         }
     }
 
     // ---- 4. one local reassembly per gap ---------------------------------
     std::vector<std::string> fill(gaps.size());
     std::vector<uint8_t> closed(gaps.size(), 0);
+    // What a closure replaces: the Ns, or -- after a back-off -- the Ns plus the flank tip
+    // bases between the moved anchors. Read only where closed[g].
+    std::vector<uint32_t> repStart(gaps.size(), 0), repLen(gaps.size(), 0);
+    // 0 = release anchors; else the release attempt's outcome, kept so a cancelled
+    // back-off closure is counted as the release would count it: 1 ambiguous,
+    // 2 unspanned, 3 unspanned and out of budget.
+    std::vector<uint8_t> backedOff(gaps.size(), 0);
     std::atomic<size_t> cursor{0};
     std::atomic<size_t> nAmbiguous{0}, nNoPath{0}, nThinPool{0}, nBudget{0};
     std::atomic<size_t> nSeedGone{0}, nTargetGone{0};
     std::atomic<size_t> dbgDepth{0}, dbgFloor{0};
-    const bool debug = std::getenv("TESSERACT_GF_DEBUG") != nullptr;
+    std::atomic<size_t> nTruncated{0}, nTruncAccepted{0}, nTruncRefused{0}, nCapped{0}, nCappedAccepted{0};
+    std::atomic<size_t> nSeedBackedOff{0}, nTargetBackedOff{0}, nAttempts{0};
+    std::atomic<size_t> nKmersSkippedInputN{0}, nSearches{0};
+    const bool debug = env::present("TESSERACT_GF_DEBUG");
 
     auto solve = [&](int) {
         Local local;
         std::string path;
+        // The floor ladder from `seed` to `target`. `expect` is the length the replaced
+        // stretch is predicted to have (the tie-break) and `maxLen` the walk ceiling.
+        // Writes `fillOut` only when it closes.
+        auto ladder = [&](const Kmer& seed, const Kmer& target, uint32_t expect, uint32_t maxLen,
+                          uint16_t minCount, std::string& fillOut) -> LadderResult {
+            LadderResult res;
+            // A gap exists because coverage there is poor -- that is usually
+            // why the graph stopped in the first place. Starting at the floor
+            // the flanks justify and stepping down only when nothing spans the
+            // gap keeps the strict answer when there is one, and still reaches
+            // the sequence sitting under a dropout. Stepping down after an
+            // *ambiguous* result would be pointless: a lower floor can only add
+            // paths, never remove them.
+            const uint16_t floors[3] = {minCount, static_cast<uint16_t>(3), static_cast<uint16_t>(2)};
+            // T38: each floor runs at most once, and only below every floor already tried.
+            // The release test compared a floor with the array entry before it only, so with
+            // minCount == 2 the floor-2 walk ran twice; a walk depends only on its inputs, so
+            // the repeat returned the same nothing at up to a full budget of expansions.
+            uint16_t lowestTried = UINT16_MAX;
+            for (int f = 0; f < 3; ++f) {
+                if (floors[f] >= lowestTried) continue;
+                lowestTried = floors[f];
+                // The estimated gap is only an estimate -- the true distance
+                // can be shorter (the model over-shot) or longer.
+                Walker w{local, k, target, static_cast<uint32_t>(k), maxLen, floors[f], 0, {}};
+                path.clear();
+                w.walk(seed, path, kCountCeil);
+                ++nSearches;
+                res.solutions = w.solutions.size();
+                res.expansions = w.expansions;
+                res.totalExpansions += w.expansions;
+                res.truncated = w.truncated;
+                res.capped = w.solutions.size() >= kMaxSolutions;
+                if (res.solutions == 0) continue;   // nothing spanned it; try a lower floor
+
+                // Rank by the weakest link: a path that never drops below 40x
+                // is read-backed along its whole length, while one that dips to
+                // 3x is a chain of coincidences that happens to end in the
+                // right place. Ties on that go to the length the fragment model
+                // predicted.
+                size_t bestI = 0;
+                for (size_t i = 1; i < w.solutions.size(); ++i) {
+                    const Solution& a = w.solutions[i];
+                    const Solution& b = w.solutions[bestI];
+                    const long da = std::labs(static_cast<long>(a.seq.size()) - static_cast<long>(expect));
+                    const long db = std::labs(static_cast<long>(b.seq.size()) - static_cast<long>(expect));
+                    if (a.weakest > b.weakest || (a.weakest == b.weakest && da < db)) bestI = i;
+                }
+                uint16_t runnerUp = 0;
+                for (size_t i = 0; i < w.solutions.size(); ++i) {
+                    if (i != bestI && w.solutions[i].weakest > runnerUp)
+                        runnerUp = w.solutions[i].weakest;
+                }
+                // One path, or one path that dominates everything else by a
+                // clear margin. Anything closer than that is a repeat the reads
+                // cannot separate, and guessing there is how a gap becomes a
+                // misassembly.
+                if (w.solutions.size() == 1 ||
+                    static_cast<double>(w.solutions[bestI].weakest) >=
+                        kDominanceRatio * static_cast<double>(runnerUp)) {
+                    // T09: a truncated search saw only a prefix of the paths, so "one path"
+                    // and "dominates the rest" are unproven. Under the strict flag that is
+                    // ambiguity, not a closure (and the ladder does not step down after it).
+                    if (w.truncated && strictBudget) {
+                        res.refusedTruncated = true;
+                        ++nTruncRefused;
+                    } else {
+                        fillOut = w.solutions[bestI].seq;
+                        res.closed = true;
+                        if (w.truncated) ++nTruncAccepted;
+                        if (res.capped) ++nCappedAccepted;
+                    }
+                }
+                break;
+            }
+            return res;
+        };
+
         for (;;) {
             const size_t g = cursor.fetch_add(1);
             if (g >= gaps.size()) break;
@@ -271,13 +503,28 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
 
             local.counts.clear();
             uint64_t recruitedBases = 0;
+            size_t skippedHere = 0;
             for (uint32_t r : bucket[g]) {
                 recruitedBases += reads.length(r);
-                forEachKmerRaw(reads, r, k, [&](const Kmer& km, uint32_t) {
+                auto count = [&](const Kmer& km, uint32_t) {
                     uint16_t& c = local.counts[km];
                     if (c < kCountCeil) ++c;
-                });
+                };
+                if (hadInputN(r)) {
+                    // T27: an input N read as 'A' is a base no read observed; restart the
+                    // window there instead. Correction never masks such a read, so its
+                    // ambiguous positions are exactly its input Ns.
+                    const uint32_t len = reads.length(r);
+                    size_t emitted = 0;
+                    forEachKmer(reads, r, k, [&](const Kmer& km, uint32_t p) { ++emitted; count(km, p); });
+                    const size_t windows = len >= static_cast<uint32_t>(k)
+                                               ? static_cast<size_t>(len) - static_cast<size_t>(k) + 1 : 0;
+                    skippedHere += windows - emitted;
+                } else {
+                    forEachKmerRaw(reads, r, k, count);
+                }
             }
+            nKmersSkippedInputN += skippedHere;
 
             // Abundance floor for the local graph. The reads here cover roughly
             // 2*flank + gap bases, so their depth is knowable, and an error
@@ -300,8 +547,10 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
             // An anchor missing from the pool its own flank recruited means the
             // recruitment or the floor is wrong, not the data; worth counting
             // separately from a gap nothing spans.
-            if (local.at(seed, k) < minCount) ++nSeedGone;
-            if (local.at(target, k) < minCount) ++nTargetGone;
+            const bool seedLow = local.at(seed, k) < minCount;
+            const bool targetLow = local.at(target, k) < minCount;
+            if (seedLow) ++nSeedGone;
+            if (targetLow) ++nTargetGone;
             dbgDepth += static_cast<size_t>(depth);
             dbgFloor += minCount;
 
@@ -320,65 +569,116 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
                 std::fprintf(stderr, "%s\n", buf);
             }
 
-            // A gap exists because coverage there is poor -- that is usually
-            // why the graph stopped in the first place. Starting at the floor
-            // the flanks justify and stepping down only when nothing spans the
-            // gap keeps the strict answer when there is one, and still reaches
-            // the sequence sitting under a dropout. Stepping down after an
-            // *ambiguous* result would be pointless: a lower floor can only add
-            // paths, never remove them.
-            const uint16_t floors[3] = {minCount, static_cast<uint16_t>(3), static_cast<uint16_t>(2)};
-            size_t solutions = 0;
-            int lastExpansions = 0;
-            for (int f = 0; f < 3; ++f) {
-                if (f > 0 && floors[f] >= floors[f - 1]) continue;
-                // The estimated gap is only an estimate -- the true distance
-                // can be shorter (the model over-shot) or longer.
-                Walker w{local, k, target, static_cast<uint32_t>(k),
-                         gp.len + static_cast<uint32_t>(kSlackBases) + static_cast<uint32_t>(k),
-                         floors[f], 0, {}};
-                path.clear();
-                w.walk(seed, path, kCountCeil);
-                solutions = w.solutions.size();
-                lastExpansions = w.expansions;
-                if (solutions == 0) continue;   // nothing spanned it; try a lower floor
+            const LadderResult rel = ladder(
+                seed, target, gp.len,
+                gp.len + static_cast<uint32_t>(kSlackBases) + static_cast<uint32_t>(k), minCount, fill[g]);
+            if (rel.truncated) ++nTruncated;
+            if (rel.capped) ++nCapped;
+            if (rel.closed) {
+                closed[g] = 1;
+                repStart[g] = gp.start;
+                repLen[g] = gp.len;
+            }
 
-                // Rank by the weakest link: a path that never drops below 40x
-                // is read-backed along its whole length, while one that dips to
-                // 3x is a chain of coincidences that happens to end in the
-                // right place. Ties on that go to the length the fragment model
-                // predicted.
-                size_t bestI = 0;
-                for (size_t i = 1; i < w.solutions.size(); ++i) {
-                    const Solution& a = w.solutions[i];
-                    const Solution& b = w.solutions[bestI];
-                    const long da = std::labs(static_cast<long>(a.seq.size()) - static_cast<long>(gp.len));
-                    const long db = std::labs(static_cast<long>(b.seq.size()) - static_cast<long>(gp.len));
-                    if (a.weakest > b.weakest || (a.weakest == b.weakest && da < db)) bestI = i;
+            // T11 (TESSERACT_FIX_GAPFILL_BACKOFF=<B>): tried only where the release anchors
+            // left the gap open and an anchor is below the floor, so every release closure
+            // stays exactly as it was. A flank tip the reads were already thinning out over
+            // is often spelled by a couple of reads only; when it is not what the deeper
+            // reads spell, no walk from it reaches the other side. The moved anchor is a
+            // supported flank k-mer at most B bases from the gap, inside the recruited flank
+            // window and never across an N. Branch points -- a supported k-mer with a
+            // supported successor that leaves the contig -- are tried first, nearest first,
+            // then the other supported k-mers: the first supported k-mer is often where the
+            // tip joins a paralog, and a walk from there follows the paralog. A closure
+            // re-spells the stepped-over tip bases from the same local reads, with the ladder
+            // and the dominance rule unchanged; the first closure wins.
+            if (!closed[g] && backoff > 0 && !rel.refusedTruncated && (seedLow || targetLow)) {
+                const size_t ls = gp.start > static_cast<uint32_t>(flank)
+                                      ? gp.start - static_cast<uint32_t>(flank) : 0;
+                const size_t re = std::min(s.size(), static_cast<size_t>(gp.start + gp.len + flank));
+                const size_t seedPos0 = gp.start - static_cast<size_t>(k);
+                const size_t targetPos0 = gp.start + gp.len;
+                struct Anchor { size_t pos; Kmer km; bool branch; };
+                auto order = [](std::vector<Anchor>& v) {
+                    std::stable_sort(v.begin(), v.end(), [](const Anchor& a, const Anchor& b) {
+                        return a.branch && !b.branch;
+                    });
+                    if (v.size() > kBackoffCandidatesPerSide) v.resize(kBackoffCandidatesPerSide);
+                };
+                std::vector<Anchor> seedC, targetC;
+                if (seedLow) {
+                    for (int j = 1; j <= backoff; ++j) {
+                        if (seedPos0 < static_cast<size_t>(j)) break;
+                        const size_t pos = seedPos0 - static_cast<size_t>(j);
+                        if (pos < ls || baseCode(s[pos]) < 0) break;
+                        bool okk = false;
+                        const Kmer km = stringToKmer(s.substr(pos, static_cast<size_t>(k)), k, okk);
+                        if (!okk) break;
+                        if (local.at(km, k) < minCount) continue;
+                        const int next = baseCode(s[pos + static_cast<size_t>(k)]);
+                        bool branch = false;
+                        for (int b = 0; b < 4 && !branch; ++b)
+                            if (b != next && local.at(pushBack(km, b, k), k) >= minCount) branch = true;
+                        seedC.push_back({pos, km, branch});
+                    }
+                    order(seedC);
                 }
-                uint16_t runnerUp = 0;
-                for (size_t i = 0; i < w.solutions.size(); ++i) {
-                    if (i != bestI && w.solutions[i].weakest > runnerUp)
-                        runnerUp = w.solutions[i].weakest;
+                if (targetLow) {
+                    for (int j = 1; j <= backoff; ++j) {
+                        const size_t pos = targetPos0 + static_cast<size_t>(j);
+                        if (pos + static_cast<size_t>(k) > re) break;
+                        if (baseCode(s[pos + static_cast<size_t>(k) - 1]) < 0) break;
+                        bool okk = false;
+                        const Kmer km = stringToKmer(s.substr(pos, static_cast<size_t>(k)), k, okk);
+                        if (!okk) break;
+                        if (local.at(km, k) < minCount) continue;
+                        const int prev = baseCode(s[pos - 1]);
+                        bool branch = false;
+                        for (int b = 0; b < 4 && !branch; ++b)
+                            if (b != prev && local.at(pushFront(km, b, k), k) >= minCount) branch = true;
+                        targetC.push_back({pos, km, branch});
+                    }
+                    order(targetC);
                 }
-                // One path, or one path that dominates everything else by a
-                // clear margin. Anything closer than that is a repeat the reads
-                // cannot separate, and guessing there is how a gap becomes a
-                // misassembly.
-                if (w.solutions.size() == 1 ||
-                    static_cast<double>(w.solutions[bestI].weakest) >=
-                        kDominanceRatio * static_cast<double>(runnerUp)) {
-                    fill[g] = w.solutions[bestI].seq;
-                    closed[g] = 1;
+                if (!seedC.empty()) ++nSeedBackedOff;
+                if (!targetC.empty()) ++nTargetBackedOff;
+
+                struct Attempt { size_t seedPos; Kmer seed; size_t targetPos; Kmer target; };
+                std::vector<Attempt> attempts;
+                for (const Anchor& a : seedC) attempts.push_back({a.pos, a.km, targetPos0, target});
+                for (const Anchor& a : targetC) attempts.push_back({seedPos0, seed, a.pos, a.km});
+                if (!seedC.empty() && !targetC.empty())
+                    attempts.push_back({seedC.front().pos, seedC.front().km, targetC.front().pos,
+                                        targetC.front().km});
+                long long spent = 0;
+                for (const Attempt& at : attempts) {
+                    if (spent > kBackoffExpansionBudget) break;
+                    const uint32_t shiftL = static_cast<uint32_t>(seedPos0 - at.seedPos);
+                    const uint32_t shiftR = static_cast<uint32_t>(at.targetPos - targetPos0);
+                    const uint32_t expect = gp.len + shiftL + shiftR;
+                    ++nAttempts;
+                    const LadderResult r = ladder(
+                        at.seed, at.target, expect,
+                        expect + static_cast<uint32_t>(kSlackBases) + static_cast<uint32_t>(k),
+                        minCount, fill[g]);
+                    spent += r.totalExpansions;
+                    if (r.closed) {
+                        closed[g] = 1;
+                        repStart[g] = static_cast<uint32_t>(at.seedPos) + static_cast<uint32_t>(k);
+                        repLen[g] = expect;
+                        backedOff[g] = rel.solutions > 0 ? 1 : (rel.expansions > kMaxExpansions ? 3 : 2);
+                        break;
+                    }
+                    // A strict-budget refusal is ambiguity; no other anchor overrides it.
+                    if (r.refusedTruncated) break;
                 }
-                break;
             }
 
             if (!closed[g]) {
-                if (solutions > 0) ++nAmbiguous;
+                if (rel.solutions > 0) ++nAmbiguous;
                 else {
                     ++nNoPath;
-                    if (lastExpansions > kMaxExpansions) ++nBudget;
+                    if (rel.expansions > kMaxExpansions) ++nBudget;
                 }
             }
         }
@@ -389,12 +689,42 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
         for (int t = 0; t < threads; ++t) pool.emplace_back(solve, t);
         for (auto& th : pool) th.join();
     }
+    // A back-off closure replaces flank bases as well as Ns, so two gaps a few dozen bases
+    // apart could claim the same bases. A dropped closure is counted as the release attempt
+    // left that gap.
+    if (backoff > 0) {
+        std::vector<Replacement> reps(gaps.size());
+        for (size_t gi = 0; gi < gaps.size(); ++gi) {
+            reps[gi] = {gaps[gi].contig, repStart[gi], repLen[gi], backedOff[gi] != 0, closed[gi] != 0};
+        }
+        stats.backoffCancelled = cancelBackoffClashes(reps, k);
+        for (size_t gi = 0; gi < gaps.size(); ++gi) {
+            if (!closed[gi] || reps[gi].closed) continue;
+            closed[gi] = 0;
+            if (backedOff[gi] == 1) ++nAmbiguous;
+            else {
+                ++nNoPath;
+                if (backedOff[gi] == 3) ++nBudget;
+            }
+            backedOff[gi] = 0;
+        }
+    }
     stats.gapsAmbiguous = nAmbiguous.load();
     stats.gapsNoPath = nNoPath.load() + nThinPool.load();
     stats.gapsThinPool = nThinPool.load();
     stats.gapsOutOfBudget = nBudget.load();
     stats.seedBelowFloor = nSeedGone.load();
     stats.targetBelowFloor = nTargetGone.load();
+    stats.gapsTruncated = nTruncated.load();
+    stats.gapsTruncatedAccepted = nTruncAccepted.load();
+    stats.gapsTruncatedRefused = nTruncRefused.load();
+    stats.gapsCapped = nCapped.load();
+    stats.gapsCappedAccepted = nCappedAccepted.load();
+    stats.seedBackedOff = nSeedBackedOff.load();
+    stats.targetBackedOff = nTargetBackedOff.load();
+    stats.backoffAttempts = nAttempts.load();
+    stats.kmersSkippedInputN = nKmersSkippedInputN.load();
+    stats.searches = nSearches.load();
     const size_t nWorked = gaps.size() - nThinPool.load();
     stats.meanLocalDepth = nWorked ? static_cast<double>(dbgDepth.load()) / static_cast<double>(nWorked) : 0;
     stats.meanFloor = nWorked ? static_cast<double>(dbgFloor.load()) / static_cast<double>(nWorked) : 0;
@@ -404,10 +734,14 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
     for (size_t gi = gaps.size(); gi-- > 0;) {
         if (!closed[gi]) continue;
         Gap& gp = gaps[gi];
-        contigs[gp.contig].replace(gp.start, gp.len, fill[gi]);
+        contigs[gp.contig].replace(repStart[gi], repLen[gi], fill[gi]);
         ++stats.gapsClosed;
         stats.nBasesRemoved += gp.len;
         stats.basesInserted += fill[gi].size();
+        if (backedOff[gi]) {
+            stats.trimmedBp += repLen[gi] - gp.len;
+            ++stats.closedAfterBackoff;
+        }
     }
 
     stats.seconds = timer.elapsed();

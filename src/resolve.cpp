@@ -1,4 +1,5 @@
 #include "resolve.h"
+#include "envflags.h"
 #include "graph_coverage.h"
 #include "resolve_evidence.h"
 #include "read_thread_evidence.h"
@@ -9,6 +10,8 @@
 #include <atomic>
 #include <cmath>
 #include <cstdio>
+#include <cstring>
+#include <limits>
 #include <mutex>
 #include <cstdlib>
 #include <thread>
@@ -16,6 +19,123 @@
 namespace ts {
 
 namespace {
+
+// ---- build_v3 G-resolve fixes ----------------------------------------------------------
+// Every output-changing fix below is default OFF and is read per resolve() call, never
+// cached in a function-local static, so a driver that runs several configurations in one
+// process sees each one. Resolution: TESSERACT_FIX_<NAME>=1 on, =0 off; unset follows the
+// umbrella TESSERACT_FIXES (=1 on, =0 off); both unset = off = release 1.3.0 behaviour.
+// Any other value is an error (exit status 2), never a silent default: a flag that is set
+// but mis-typed must not look like an arm that ran.
+// build_v3: the values are read through the envflags table (T16), whose Binary kind is
+// exactly this contract. The campaign package's TESSERACT_GAP_KEEP_FLANK (build_v2_merge
+// PKG-GAP) fixed the same k-1 deletion as T03 with a render-whole design; build_v3 keeps ONE
+// implementation, T03's record-and-restore, and the package flag is its alias. Precedence:
+// the fix's own variable, then the package alias, then the umbrella.
+bool fixEnabled(const char* name) {
+    if (env::isSet(name)) return env::on(name, false);
+    if (std::strcmp(name, "TESSERACT_FIX_GAP_FLANK") == 0 && env::isSet("TESSERACT_GAP_KEEP_FLANK"))
+        return env::on("TESSERACT_GAP_KEEP_FLANK", false);
+    return env::on("TESSERACT_FIXES", false);
+}
+
+// The resolver's repeat test: a unitig deeper than this multiple of the single-copy depth
+// (theta) is treated as a collapsed repeat. One constant, so the value reported in the
+// [resolver] line cannot drift from the value used.
+constexpr double kRepeatMultiplier = 1.6;
+
+// T03: the shortest exact suffix/prefix overlap between the two flanks of a scaffold gap
+// that is taken as a real overlap and dropped once. A chance match of l bases has
+// probability ~(3/4)4^-l; measured on 59 reference-placed K2 gaps (combo3/verify/T03,
+// gapflank_rows.tsv), true overlaps had L = 1..108 (18/20 at L >= 4) and every chance
+// match at D >= 0 had L <= 3 (one L=45 row is a misplaced join).
+constexpr size_t kMinFlankOverlap = 4;
+// T20: a join whose flanks the estimate says overlap, but which share no verified
+// overlap, has no measurable length. It is written as this many Ns (AGP type U length).
+constexpr int kUnknownGapN = 100;
+// T03: bases of flank context on each side of an N-run that identify a gap record when
+// restoreGapFlanks() runs after gap filling (both flanks are at least k+1 >= 32 bases).
+constexpr size_t kGapFlankContext = 32;
+
+// The always-printed resolver counter lines (OBJECTIVE amendment A2: every flag prints
+// its counter on every run, zeros included). One struct and one printer, so a run in
+// which the resolver never runs prints exactly the same lines with run=0. Decision
+// counts from bestContinuation() are EVALUATIONS: every chain end is re-evaluated each
+// round (up to 24), so a side refused in three rounds counts three times.
+struct ResolverCounters {
+    int run = 0;
+    // [resolveflags] -- release flags in force (the values actually used) and outcomes (T14).
+    int requireSupportSingle = 0, excludeSharedRepeat = 0, sharedAudit = 0, noUnspannedFallback = 0;
+    size_t minFallbackDest = 0;
+    double linkBar = 0, tieRatio = 0;
+    long long evals = 0, ok = 0, noCand = 0, noPick = 0, tie = 0, midChain = 0, byCoverage = 0;
+    long long matched = 0, shortDest = 0, unspanned = 0, loneRepeat = 0;
+    long long sharedExcludedAll = 0, esrsChanged = 0;
+    // [enumtrunc] (T21)
+    int truncGuard = 0;
+    long long trSides = 0, trBudget = 0, trMaxNodes = 0, trCap = 0, trLone = 0, trLoneBelowBar = 0, trRefused = 0;
+    // [revisit] (T07)
+    int revisitGuard = 0;
+    long long rvPrunedSides = 0, rvPicked = 0, rvRefused = 0;
+    // [scafcycle] (T13)
+    int cycleBreak = 0;
+    size_t scCycles = 0, scChains = 0, scJoins = 0, scDropped = 0, scBases = 0, scBroken = 0;
+    // [gapest] (T20)
+    int gapEstimate = 0;
+    size_t geJoins = 0, geEstimated = 0, geChanged = 0, geFloor1 = 0, geOverlapEst = 0, geSkippedNoMean = 0;
+    int geMedianShift = 0;
+    // [gapflank] (T03)
+    int gapFlank = 0;
+    size_t gfGaps = 0, gfKept = 0, gfOverlapGaps = 0, gfOverlapBases = 0, gfOverlapRejected = 0;
+    size_t gfFloor1 = 0, gfUnknown = 0;
+    // [cov_contrib] (T24)
+    int covContrib = 0;
+    size_t cvPaths = 0, cvOff10 = 0;
+    // [routeorder] (T31)
+    int routeOrder = 0;
+    long long roDecisions = 0, roSorted = 0;
+    // [mirrorroute] (R6, housekeeping)
+    int mirrorRoute = 0;
+    long long mrDisagree = 0, mrChoseBack = 0;
+};
+
+void printResolverCounters(const ResolverCounters& c) {
+    std::fprintf(stderr,
+        "[resolveflags] run=%d requireSupportSingle=%d minFallbackDest=%zu excludeSharedRepeat=%d "
+        "sharedAudit=%d noUnspannedFallback=%d linkBar=%.3f tieRatio=%.3f evals=%lld ok=%lld noCand=%lld "
+        "noPick=%lld tie=%lld midChain=%lld byCoverage=%lld matched=%lld shortDest=%lld unspanned=%lld "
+        "loneRepeat=%lld sharedExcludedAll=%lld esrsChanged=%lld\n",
+        c.run, c.requireSupportSingle, c.minFallbackDest, c.excludeSharedRepeat, c.sharedAudit,
+        c.noUnspannedFallback, c.linkBar, c.tieRatio, c.evals, c.ok, c.noCand, c.noPick, c.tie, c.midChain,
+        c.byCoverage, c.matched, c.shortDest, c.unspanned, c.loneRepeat, c.sharedExcludedAll, c.esrsChanged);
+    std::fprintf(stderr,
+        "[enumtrunc] run=%d guard=%d sides=%lld budget=%lld maxNodes=%lld cap64=%lld lone=%lld "
+        "loneBelowBar=%lld refused=%lld\n",
+        c.run, c.truncGuard, c.trSides, c.trBudget, c.trMaxNodes, c.trCap, c.trLone, c.trLoneBelowBar,
+        c.trRefused);
+    std::fprintf(stderr, "[revisit] run=%d guard=%d prunedSides=%lld pickedSkipped=%lld refused=%lld\n",
+        c.run, c.revisitGuard, c.rvPrunedSides, c.rvPicked, c.rvRefused);
+    std::fprintf(stderr,
+        "[scafcycle] run=%d enabled=%d cycles=%zu chains=%zu joinsInCycles=%zu joinsDropped=%zu "
+        "cycleBases=%zu broken=%zu\n",
+        c.run, c.cycleBreak, c.scCycles, c.scChains, c.scJoins, c.scDropped, c.scBases, c.scBroken);
+    std::fprintf(stderr,
+        "[gapest] run=%d enabled=%d joins=%zu estimated=%zu changed=%zu floor1=%zu overlapEst=%zu "
+        "skippedNoMean=%zu medianShift=%d\n",
+        c.run, c.gapEstimate, c.geJoins, c.geEstimated, c.geChanged, c.geFloor1, c.geOverlapEst,
+        c.geSkippedNoMean, c.geMedianShift);
+    std::fprintf(stderr,
+        "[gapflank] run=%d enabled=%d gaps=%zu restorableBases=%zu overlapGaps=%zu overlapBases=%zu "
+        "pLineOverspell=%zu overlapRejected=%zu floor1=%zu unknownLen=%zu\n",
+        c.run, c.gapFlank, c.gfGaps, c.gfKept, c.gfOverlapGaps, c.gfOverlapBases, c.gfOverlapBases,
+        c.gfOverlapRejected, c.gfFloor1, c.gfUnknown);
+    std::fprintf(stderr, "[cov_contrib] run=%d enabled=%d paths=%zu full_vs_contributed_off10=%zu\n",
+        c.run, c.covContrib, c.cvPaths, c.cvOff10);
+    std::fprintf(stderr, "[routeorder] run=%d enabled=%d decisions=%lld sorted=%lld\n",
+        c.run, c.routeOrder, c.roDecisions, c.roSorted);
+    std::fprintf(stderr, "[mirrorroute] run=%d enabled=%d disagreements=%lld choseBack=%lld\n",
+        c.run, c.mirrorRoute, c.mrDisagree, c.mrChoseBack);
+}
 
 // The distance enumeration may search when it is only establishing which
 // continuations exist. Repeats in an enterobacterial genome run to a few
@@ -58,6 +178,16 @@ inline uint32_t idxUnitig(uint64_t v) { return static_cast<uint32_t>(v >> 33); }
 inline uint32_t idxPos(uint64_t v) { return static_cast<uint32_t>((v >> 1) & 0xFFFFFFFFULL); }
 inline int idxStrand(uint64_t v) { return static_cast<int>(v & 1); }
 
+// combo2/ends (default OFF). TESSERACT_PAIR_ANCHORED_PREFIX=<m>|bar: a terminal walk is kept only as far
+// as >= m read pairs vouch for it (-1 = the resolver's own linkBar). build_v3: read per call
+// through the envflags table (an integer in [0, INT_MAX] or "bar"; anything else exits 2).
+long pairAnchoredPrefixSetting() {
+    const char* e = env::text("TESSERACT_PAIR_ANCHORED_PREFIX");
+    if (!e) return 0L;
+    if (std::string(e) == "bar") return -1L;
+    return std::strtol(e, nullptr, 10);
+}
+
 }  // namespace
 
 PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
@@ -69,9 +199,9 @@ PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& re
       linkSupportPerX_(linkSupportPerX >= 0 ? linkSupportPerX : 0.10),
       minScaffoldSupport_(minScaffoldSupport) {
     medianCoverage_ = graph.medianCoverage();
-    const char* weightedCoverage = std::getenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");
-    const char* eligibleCoverage = std::getenv("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE");
-    const bool useEligibleCoverage = eligibleCoverage && std::string(eligibleCoverage) == "1";
+    const double legacyMedian = medianCoverage_;
+    const char* estimator = "unweighted";
+    const bool useEligibleCoverage = env::on("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE", false);
     // Explicit precedence: eligible-only calibration wins if both experiments
     // are enabled. They are alternative estimators, never cumulative weights.
     // Length-weighted by default since 1.3.0. The unweighted node median lets a cloud of
@@ -80,13 +210,38 @@ PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& re
     // for a genome sequenced at 35x, every unitig above 9.2x becomes a "repeat" and the
     // resolver joins almost nothing. 146 isolates: NGA50 tie -> WIN, genome-fraction losses
     // 21 -> 15. TESSERACT_WEIGHTED_RESOLVER_COVERAGE=0 restores the unweighted median.
-    const bool useWeightedCoverage = !weightedCoverage || std::string(weightedCoverage) != "0";
+    const bool useWeightedCoverage = env::on("TESSERACT_WEIGHTED_RESOLVER_COVERAGE", true);
     if (useEligibleCoverage || useWeightedCoverage) {
         const double calibrated = useEligibleCoverage
             ? graphEligibleLengthWeightedMedianCoverage(graph)
             : graphLengthWeightedMedianCoverage(graph);
         if (calibrated > 0.0) medianCoverage_ = calibrated;
+        estimator = calibrated > 0.0 ? (useEligibleCoverage ? "eligible_weighted" : "weighted")
+                                     : "unweighted_fallback";
     }
+
+    // T35: theta (the single-copy depth every repeat decision is taken against) and the
+    // repeat threshold were never reported; report.json's median_coverage is the legacy
+    // unweighted node median, which on 17/248 K2 isolates is >25% away from theta.
+    // Output-neutral: stats and one stderr line, printed on every construction.
+    // Population = the nodes the chosen estimator actually weighed.
+    const std::string est(estimator);
+    const bool massWeighted = est == "weighted" || est == "eligible_weighted";
+    const size_t minLen = static_cast<size_t>(std::max(graph.k(), 0)) * (est == "weighted" ? 1 : 2);
+    size_t population = 0;
+    for (const Unitig& u : graph.nodes) {
+        if (u.deleted || u.seq.size() < minLen) continue;
+        if (massWeighted && (!std::isfinite(u.coverage) || u.coverage <= 0.0)) continue;
+        ++population;
+    }
+    stats_.theta = medianCoverage_;
+    stats_.repeatThreshold = medianCoverage_ * kRepeatMultiplier;
+    stats_.legacyMedian = legacyMedian;
+    stats_.thetaEstimator = estimator;
+    stats_.thetaPopulation = population;
+    std::fprintf(stderr,
+        "[resolver] run=1 theta=%.4f repeatThreshold=%.4f estimator=%s legacyMedian=%.4f population=%zu\n",
+        stats_.theta, stats_.repeatThreshold, estimator, legacyMedian, population);
 }
 
 void PairedResolver::buildIndex() {
@@ -190,8 +345,7 @@ void PairedResolver::buildSupport() {
     buildIndex();
     if (!reads_.paired()) return;
 
-    const char* routeFlag = std::getenv("TESSERACT_ROUTE_DISTANCE");
-    routeDistance_ = routeFlag && std::string(routeFlag) == "1";
+    routeDistance_ = env::on("TESSERACT_ROUTE_DISTANCE", false);
     routeDensity_ = {};
     const size_t pairs = reads_.pairCount();
     std::vector<std::vector<detail::RouteTrainingInterval>> routeIntervals(routeDistance_ ? g_.nodes.size() : 0);
@@ -203,7 +357,7 @@ void PairedResolver::buildSupport() {
             const auto& node = g_.nodes[u];
             if (!node.deleted && node.seq.size() >= size_t(2 * k_) &&
                 std::isfinite(node.coverage) && node.coverage > 0 &&
-                node.coverage <= 1.6 * medianCoverage_)
+                node.coverage <= kRepeatMultiplier * medianCoverage_)
                 uniqueStarts[u].resize(node.seq.size() - size_t(kMap_) + 1, 0);
         }
         // Reuse the actual ambiguity-aware anchoring index. Nominal low depth
@@ -225,6 +379,8 @@ void PairedResolver::buildSupport() {
     std::vector<std::unordered_map<uint64_t, std::unordered_map<uint64_t, std::vector<int32_t>>>>
         localSupport(static_cast<size_t>(threads_));
     std::atomic<size_t> mappedCount{0}, linkCount{0};
+    const bool keepAnchors = pairAnchoredPrefixSetting() != 0;
+    if (keepAnchors) readAnchors_.assign(reads_.size(), Anchor{});
 
     auto worker = [&](int tid) {
         auto& samples = insertSamples[static_cast<size_t>(tid)];
@@ -234,8 +390,13 @@ void PairedResolver::buildSupport() {
         for (size_t p = static_cast<size_t>(tid); p < pairs; p += static_cast<size_t>(threads_)) {
             const size_t i1 = p * 2, i2 = p * 2 + 1;
             const Anchor a1 = anchorRead(i1);
-            if (!a1.mapped()) continue;
+            if (keepAnchors) readAnchors_[i1] = a1;
+            if (!a1.mapped()) {
+                if (keepAnchors) readAnchors_[i2] = anchorRead(i2);
+                continue;
+            }
             const Anchor a2 = anchorRead(i2);
+            if (keepAnchors) readAnchors_[i2] = a2;
             if (!a2.mapped()) continue;
             localMapped += 2;
 
@@ -397,6 +558,18 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     const size_t n = g_.nodes.size();
     const size_t ov = static_cast<size_t>(k_ - 1);
 
+    // build_v3 G-resolve fixes: all default off (see fixEnabled). Each prints its counter
+    // line at the end of this function on every run, zero included.
+    const bool fixGapFlank = fixEnabled("TESSERACT_FIX_GAP_FLANK");            // T03
+    const bool fixRevisitGuard = fixEnabled("TESSERACT_FIX_REVISIT_GUARD");    // T07 refuse
+    const bool fixCycleBreak = fixEnabled("TESSERACT_FIX_SCAFFOLD_CYCLE");     // T13
+    const bool fixGapEstimate = fixEnabled("TESSERACT_FIX_GAP_ESTIMATE");      // T20
+    const bool fixTruncGuard = fixEnabled("TESSERACT_FIX_TRUNC_GUARD");        // T21
+    const bool fixCovContrib = fixEnabled("TESSERACT_FIX_COV_CONTRIB");        // T24
+    const bool fixRouteOrder = fixEnabled("TESSERACT_FIX_ROUTE_ORDER");        // T31
+    const bool fixMirrorRoute = fixEnabled("TESSERACT_FIX_MIRROR_ROUTE");      // R6 (housekeeping)
+    gapFlank_.clear();
+
     // A collapsed repeat may be traversed more than once and carries no unique
     // paired evidence, so it cannot seed a chain, terminate a path, or be
     // traversed -- it is emitted verbatim and walls off both neighbours.
@@ -421,7 +594,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // So this stays depth-only. The plasmid cost is real but is the cheaper
     // error, and the contiguity it was meant to buy came from the scaffolding
     // and tie-break changes instead.
-    const double repeatThreshold = medianCoverage_ * 1.6;
+    const double repeatThreshold = medianCoverage_ * kRepeatMultiplier;
     // Vouching is done over a CONNECTED GROUP of high-depth unitigs, not one unitig at a
     // time, because the marker sampling will not support the per-unitig question. The
     // model samples one canonical k-mer in `markerDenom_` -- 512 for the shipped S. aureus
@@ -486,7 +659,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             for (uint32_t u : grp) { plasmidVouched[u] = 1; ++vouchedCount; }
         }
     }
-    if (getenv("TESSERACT_DEBUG_RESOLVE") && exclusiveMarkers_) {
+    if (env::present("TESSERACT_DEBUG_RESOLVE") && exclusiveMarkers_) {
         size_t hi = 0, hiLen = 0, hiMax = 0;
         for (uint32_t u = 0; u < n; ++u) {
             if (g_.nodes[u].deleted || medianCoverage_ <= 0) continue;
@@ -501,10 +674,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             exclusiveMarkers_->size());
     }
 
+    const bool noPlasmidVouch = env::present("TESSERACT_NO_PLASMID_VOUCH");
     auto isRepeat = [&](uint32_t u) {
         if (medianCoverage_ <= 0) return false;
         if (g_.nodes[u].coverage <= repeatThreshold) return false;
-        if (plasmidVouched[u] && !getenv("TESSERACT_NO_PLASMID_VOUCH")) return false;
+        if (plasmidVouched[u] && !noPlasmidVouch) return false;
         return true;
     };
 
@@ -554,10 +728,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // ON by default since 1.3.0. Paired against the 1.3.0 resolver on 146 isolates: NGA50
     // 27 better / 1 worse, contigs 65 / 4, genome fraction 39 / 10, size accuracy 37 / 15;
     // misassemblies 1 better / 4 worse (+5 events net). TESSERACT_EXACT_READ_THREADS=0 disables.
-    const bool exactReadThreads = reads_.paired() && [] {
-        const char* flag = std::getenv("TESSERACT_EXACT_READ_THREADS");
-        return !flag || std::string(flag) != "0";
-    }();
+    const bool exactReadThreads = reads_.paired() && env::on("TESSERACT_EXACT_READ_THREADS", true);
     ReadThreadEvidence threadEvidence;
     // Preserve observed routes even if all their molecules already supplied
     // paired evidence: contrary exact observations must remain visible vetoes.
@@ -676,9 +847,25 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         return match;
     };
 
+    // What enumerate() discarded without completing (T21). A discarded frame is a
+    // route whose destination was never learned, not proof that none exists; the
+    // "sole way through" argument above holds only when nothing was discarded.
+    // Dead ends and revisits are not truncation.
+    struct EnumTrunc {
+        size_t budget = 0, maxNodes = 0, cap = 0;
+        bool any() const { return budget || maxNodes || cap; }
+    };
+    // Revisits enumerate() pruned (T07): the frame reached `prefix.back()` again,
+    // i.e. the graph offers a cycle through it that no enumerated route traverses
+    // more than once.
+    struct EnumLoops {
+        std::vector<std::vector<uint64_t>> prefix;
+    };
+
     // Every way out of `from` that terminates on an anchorable unitig within
     // fragment reach; intermediate nodes are unanchorable repeats.
-    auto enumerate = [&](uint64_t from, std::vector<std::vector<uint64_t>>& out) {
+    auto enumerate = [&](uint64_t from, std::vector<std::vector<uint64_t>>& out,
+                         EnumTrunc* trunc = nullptr, EnumLoops* loops = nullptr) {
         // `forced` marks a path that has never had an alternative. Paired reads
         // cannot vouch for anything beyond one fragment length, but where the
         // graph offers no other way through, length is irrelevant -- so a forced
@@ -697,20 +884,24 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             const uint64_t tail = f.nodes.back();
             const uint32_t tu = unitigOf(tail);
             if (anchorable(tu)) { out.push_back(std::move(f.nodes)); continue; }
-            if (f.nodes.size() >= kMaxNodes) continue;
+            if (f.nodes.size() >= kMaxNodes) { if (trunc) ++trunc->maxNodes; continue; }
             // A forced path (one the graph offered no alternative to) may run a
             // little past what a fragment can span, but not far: measured on the
             // benchmark panel, letting it run unbounded bought only a lower
             // contig count and cost a misassembly on K. pneumoniae.
             const double budget = f.forced ? searchBudget * kForcedReachFactor : searchBudget;
-            if (static_cast<double>(f.len) > budget) continue;
+            if (static_cast<double>(f.len) > budget) { if (trunc) ++trunc->budget; continue; }
             const auto& exits = g_.exits(tu, orientOf(tail));
             for (const Link& l : exits) {
                 if (g_.nodes[l.to].deleted) continue;
                 const uint64_t nxt = orientedId(l.to, UnitigGraph::enterOrient(l));
-                bool seen = false;
-                for (uint64_t o : f.nodes) if (o == nxt) { seen = true; break; }
-                if (seen) continue;
+                size_t seenAt = SIZE_MAX;
+                for (size_t q = 0; q < f.nodes.size(); ++q) if (f.nodes[q] == nxt) { seenAt = q; break; }
+                if (seenAt != SIZE_MAX) {
+                    if (loops)
+                        loops->prefix.emplace_back(f.nodes.begin(), f.nodes.begin() + static_cast<std::ptrdiff_t>(seenAt) + 1);
+                    continue;
+                }
                 Frame g2 = f;
                 g2.nodes.push_back(nxt);
                 g2.len += g_.nodes[l.to].seq.size() - ov;
@@ -718,6 +909,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 work.push_back(std::move(g2));
             }
         }
+        if (trunc && out.size() >= kMaxCandidates) trunc->cap += work.size();
     };
 
     // Where SPAdes was ahead, the junction is a short branch node -- 219 to
@@ -756,6 +948,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         return len;
     };
 
+    const double dom = env::real("TESSERACT_MATCH_DOMINANCE", kMatchDominance);
     auto matchingAgrees = [&](uint64_t from, const std::vector<uint64_t>& connector,
                               uint64_t terminal, int interLen) {
         if (connector.size() != 2) return false;      // one repeat between, then the terminal
@@ -791,20 +984,13 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                                scoreCandidate(other, alt, interLen);
         const double crossed = scoreCandidate(from, alt, interLen) +
                                scoreCandidate(other, terminal, interLen);
-        static const double dom = [] {
-            const char* e = std::getenv("TESSERACT_MATCH_DOMINANCE");
-            return e ? std::atof(e) : kMatchDominance;
-        }();
         return matched >= 1.0 && matched >= dom * crossed;
     };
 
     // Complete terminal repeats across a single-substitution bubble only when
     // explicitly requested. This extends sequence; it does not relax the anchor
     // join chooser or make a choice between distinct flanking destinations.
-    const bool completePrefixBubbles = [] {
-        const char* e = std::getenv("TESSERACT_PREFIX_SNP_BUBBLES");
-        return e && std::atoi(e) != 0;
-    }();
+    const bool completePrefixBubbles = env::on("TESSERACT_PREFIX_SNP_BUBBLES", false);
 
     // Start with every anchorable unitig as a chain of one, then repeatedly
     // join chains whose paired evidence mutually prefers each other. Growing
@@ -837,6 +1023,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         bool exactThread = false;
         double score = 0;
         bool ok = false;
+        // TESSERACT_ONE_SIDED_TIE (default off): `weak` marks a nomination made from
+        // inside the tie zone, which may only join a `decisive` partner (a lone
+        // candidate with best >= linkBar, or several candidates and no rival support).
+        bool weak = false;
+        bool decisive = false;
     };
 
     // Best continuation off one end of a chain, scored with every member of
@@ -844,35 +1035,55 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     long long dbgNoCand = 0, dbgLowSupport = 0, dbgTie = 0, dbgMidChain = 0, dbgOk = 0;
     long long dbgCoverage = 0, dbgMatched = 0, dbgShortDest = 0, dbgUnspanned = 0;
     long long dbgLoneRepeat = 0;
-    static const bool requireSupportSingle_ = [] {
-        const char* e = std::getenv("TESSERACT_REQUIRE_SUPPORT_SINGLE");
-        return e && std::atoi(e) != 0;
-    }();
-    static const bool joinTrace_ = [] {
-        const char* e = std::getenv("TESSERACT_JOIN_TRACE");
-        return e && std::atoi(e) != 0;
-    }();
-    static const bool noUnspannedFallback_ = [] {
-        const char* e = std::getenv("TESSERACT_NO_UNSPANNED_FALLBACK");
-        return e && std::atoi(e) != 0;
-    }();
+    // T14 (always printed): what the shared-repeat exclusion did to the decisions.
+    long long dbgEsrsAllExcluded = 0, dbgEsrsChanged = 0, dbgEvals = 0;
+    // T21 (always printed): evaluations whose enumeration discarded frames.
+    long long trSides = 0, trBudget = 0, trMaxNodes = 0, trCap = 0, trLone = 0;
+    long long trLoneBelowBar = 0, trRefused = 0;
+    // T07 (always printed): evaluations with a pruned revisit, picks that pass a pruned
+    // loop, and refusals.
+    long long rvPrunedSides = 0, rvPicked = 0, rvRefused = 0;
+    // T31 (always printed): route-distance decisions whose spans were put in canonical order.
+    long long roDecisions = 0, roSorted = 0;
+    // R6 housekeeping (always printed): mutual legacy joins whose two ends chose different
+    // interior routes.
+    long long mrDisagree = 0, mrChoseBack = 0;
+    const bool requireSupportSingle_ = env::on("TESSERACT_REQUIRE_SUPPORT_SINGLE", false);
+    const bool joinTrace_ = env::on("TESSERACT_JOIN_TRACE", false);
+    const bool noUnspannedFallback_ = env::on("TESSERACT_NO_UNSPANNED_FALLBACK", false);
     long long dbgTieBest = 0, dbgTieSecond = 0;
 
     // Withdraw the fallbacks when the continuation they would take lands on a unitig
     // shorter than this. 0 disables, which is the shipped behaviour until measured.
-    static const size_t minFallbackDest_ = [] {
-        const char* e = std::getenv("TESSERACT_MIN_FALLBACK_DEST");
-        return e ? static_cast<size_t>(std::atoi(e)) : 0u;
-    }();
+    const size_t minFallbackDest_ = static_cast<size_t>(env::integer("TESSERACT_MIN_FALLBACK_DEST", 0));
 
-    const bool excludeSharedRepeatSupport = [] {
-        const char* e = std::getenv("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT");
-        return e && std::atoi(e) != 0;
-    }();
-    const bool auditSharedRepeatSupport = [] {
-        const char* e = std::getenv("TESSERACT_SHARED_SUPPORT_AUDIT");
-        return e && std::atoi(e) != 0;
-    }();
+    const bool excludeSharedRepeatSupport = env::on("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", false);
+    const bool auditSharedRepeatSupport = env::on("TESSERACT_SHARED_SUPPORT_AUDIT", false);
+
+    // Default-off experiment (combo2/joinrule, L4): a near-tied pick is nominated
+    // "weak" instead of refused, and joins only when the reverse nomination had no
+    // rival; long-long joins at a branching chain end stay refused.  Measured on
+    // reference-labelled traces, the tie-zone ratio carries no error signal while
+    // the partner's lack of a rival does (one-sided ~1.3% wrong, two-sided ~25%).
+    const bool oneSidedTie = env::on("TESSERACT_ONE_SIDED_TIE", false);
+    const size_t oneSidedLongBp = static_cast<size_t>(env::integer("TESSERACT_ONE_SIDED_TIE_LONG", 2000));
+    // Default-off experiment (FB-M): of the three fallbacks keep only the perfect
+    // matching (matchingAgrees); withdraw same-destination and coverage picks.
+    // Default-off experiment (XO1, combo2/joinrule L6): a near-tied pick at a chain
+    // end whose unitig has ONE live exit nominates normally.  The candidates then
+    // diverge downstream of a connector, so every chain member's pairs are specific
+    // to one terminal; at a branching end the end's own pairs reach every terminal.
+    const bool tieSingleExit = env::on("TESSERACT_TIE_SINGLE_EXIT", false);
+    // Length gate for XO1 (default: none).  L7 = XO1 only when the shorter of the
+    // two chains is below this, weak nominations only below ONE_SIDED_TIE_LONG.
+    const long long tieSingleExitLongSet = env::integer("TESSERACT_TIE_SINGLE_EXIT_LONG", -1);   // -1: unset
+    const size_t tieSingleExitLong = tieSingleExitLongSet < 0 ? std::numeric_limits<size_t>::max()
+                                                              : static_cast<size_t>(tieSingleExitLongSet);
+    long long dbgSingleExit = 0, dbgSingleExitLong = 0;
+    const bool fallbackMatchingOnly = env::on("TESSERACT_FALLBACK_MATCHING_ONLY", false);
+    long long dbgWeakNom = 0, dbgWeakLongBranch = 0, dbgWeakTwoSided = 0, dbgWeakPartner = 0;
+    long long dbgWeakJoin = 0, dbgWeakThread = 0, dbgFbmKept = 0, dbgFbmRefused = 0;
+    long long dbgJtExt = 0, dbgFbTraced = 0, dbgFbTracedRefused = 0;   // JOIN_TRACE extensions
 
     auto bestContinuation = [&](uint32_t c, int end) {
         Cont result;
@@ -896,7 +1107,18 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         }
 
         std::vector<std::vector<uint64_t>> cands;
-        enumerate(tailFirst.back(), cands);
+        EnumTrunc trunc;
+        EnumLoops loops;
+        enumerate(tailFirst.back(), cands, &trunc, &loops);
+        ++dbgEvals;
+        if (trunc.any()) {
+            ++trSides;
+            if (trunc.budget) ++trBudget;
+            if (trunc.maxNodes) ++trMaxNodes;
+            if (trunc.cap) ++trCap;
+            if (cands.size() == 1) ++trLone;
+        }
+        if (!loops.prefix.empty()) ++rvPrunedSides;
         if (cands.empty()) { ++dbgNoCand; return result; }
 
         double best = -1, second = -1;
@@ -955,6 +1177,8 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 }
             }
             if (excludeSharedRepeatSupport) {
+                const double rawBest = best;
+                const size_t rawPick = pick;
                 scores = adjusted;
                 best = second = -1.0;
                 pick = 0;
@@ -963,6 +1187,9 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     if (sc > best) { second = best; best = sc; pick = i; }
                     else if (sc > second) second = sc;
                 }
+                // T14 counters only; no decision reads them.
+                if (rawBest > 0 && best <= 0) ++dbgEsrsAllExcluded;
+                if (pick != rawPick || ((rawBest >= linkBar) != (best >= linkBar))) ++dbgEsrsChanged;
             }
         }
 
@@ -989,6 +1216,17 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         // proposals caused accepted misjoins was therefore unwarranted; this
         // guard's measured output was unchanged. Actual arbitration now emits
         // [acceptedjoin], and terminal-repeat additions emit [prefixtrace].
+        //
+        // T21 (TESSERACT_FIX_TRUNC_GUARD, default off): a lone candidate is "the sole
+        // way through" only when enumerate() discarded nothing. With a discarded rival
+        // the side is contested by a route whose destination is unknown; counted, that
+        // rival scores 0 (a budget-dropped route is longer than any fragment), so the
+        // side needs the paired bar a contested side needs, and the fallbacks cannot
+        // weigh a rival they never saw.
+        if (cands.size() == 1 && trunc.any() && best < linkBar) {
+            ++trLoneBelowBar;
+            if (fixTruncGuard) { ++trRefused; return result; }
+        }
         if (requireSupportSingle_ && cands.size() == 1 && best <= 0.0) {
             bool throughRepeat = false;
             for (size_t j = 0; j + 1 < cands[0].size(); ++j) {
@@ -996,15 +1234,59 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             }
             if (throughRepeat) {
                 ++dbgLoneRepeat;
+                // (H33 housekeeping: the inline lambda that summed interLen here was
+                // indented as if the for loop guarded its return; interLenOf computes the
+                // same value.)
                 if (joinTrace_)
                     std::fprintf(stderr, "[refused] from=%u dest=%u interLen=%d\n",
                                  unitigOf(tailFirst.back()), unitigOf(cands[0].back()),
-                                 [&]{ int L=0; for (size_t j=0;j+1<cands[0].size();++j)
-                                      L+=static_cast<int>(g_.nodes[unitigOf(cands[0][j])].seq.size())-(k_-1);
-                                      return L; }());
+                                 interLenOf(cands[0]));
                 return result;
             }
         }
+
+        // Output-neutral JOIN_TRACE extension (combo2 PKG-MERGE): the chain and end a candidate
+        // terminal would attach to, mirroring the terminal check below (-1 = no chain / mid-chain).
+        auto termPort = [&](uint64_t term, long long& chainB, int& endB) {
+            chainB = -1;
+            endB = -1;
+            const uint32_t tu2 = unitigOf(term);
+            if (ownerChain[tu2] == UINT32_MAX) return;
+            chainB = ownerChain[tu2];
+            if (ownerChain[tu2] == c) return;
+            const std::vector<uint64_t>& oth = chains[ownerChain[tu2]];
+            const uint32_t jx = ownerPos[tu2];
+            if (orientOf(oth[jx]) == orientOf(term) && jx == 0) endB = 0;
+            else if (orientOf(oth[jx]) != orientOf(term) && jx + 1 == oth.size()) endB = 1;
+        };
+        // One [fallbackproposal] line per fallback decision, refused ones included: a refused
+        // fallback returns before [jointrace] and would otherwise leave no record.
+        auto fbTrace = [&](const char* type, int chosen, const char* outcome) {
+            if (!joinTrace_) return;
+            ++dbgFbTraced;
+            if (outcome[0] == 'r') ++dbgFbTracedRefused;   // "refused_*"
+            long long chainB = -1;
+            int endB = -1;
+            if (chosen < 0) {
+                std::fprintf(stderr,
+                    "[fallbackproposal] chain=%u end=%d from=%u cands=%zu best=%.1f second=%.1f "
+                    "linkBar=%.2f type=%s dest=-1 destOrient=-1 destLen=0 destCov=0.0 interLen=-1 "
+                    "destChain=-1 destEnd=-1 outcome=%s\n",
+                    c, end, unitigOf(tailFirst.back()), cands.size(), best, second, linkBar,
+                    type, outcome);
+                return;
+            }
+            const uint64_t term = cands[static_cast<size_t>(chosen)].back();
+            termPort(term, chainB, endB);
+            std::fprintf(stderr,
+                "[fallbackproposal] chain=%u end=%d from=%u cands=%zu best=%.1f second=%.1f "
+                "linkBar=%.2f type=%s dest=%u destOrient=%d destLen=%zu destCov=%.1f interLen=%d "
+                "destChain=%lld destEnd=%d outcome=%s\n",
+                c, end, unitigOf(tailFirst.back()), cands.size(), best, second, linkBar, type,
+                unitigOf(term), orientOf(term), g_.nodes[unitigOf(term)].seq.size(),
+                g_.nodes[unitigOf(term)].coverage, interLenOf(cands[static_cast<size_t>(chosen)]),
+                chainB, endB, outcome);
+        };
 
         // Whether the paired reads decided this, or coverage had to.
         bool byCoverage = false;
@@ -1030,16 +1312,30 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             // continues into sequence at 45x, while a repeat it merely passes
             // through sits at a multiple of that.
             int chosen = -1;
+            const char* fbType = "coverage";
             if (matchingAgrees(tailFirst.back(), cands[pick], cands[pick].back(),
                                interLenOf(cands[pick]))) {
                 chosen = static_cast<int>(pick);
+                fbType = "matching";
                 ++dbgMatched;
+                if (fallbackMatchingOnly) ++dbgFbmKept;
+            } else if (fallbackMatchingOnly) {
+                ++dbgFbmRefused;
+                ++dbgLowSupport;
+                if (joinTrace_) {   // what the withdrawn fallback would have picked (pure helpers)
+                    const bool sd = allSameDestination(cands);
+                    fbTrace(sd ? "samedest" : "coverage",
+                            sd ? pickByInterior(cands) : pickByCoverage(tailFirst, cands),
+                            "refused_matchingonly");
+                }
+                return result;
             } else if (allSameDestination(cands)) {
                 chosen = pickByInterior(cands);
+                fbType = "samedest";
             } else {
                 chosen = pickByCoverage(tailFirst, cands);
             }
-            if (chosen < 0) { ++dbgLowSupport; return result; }
+            if (chosen < 0) { fbTrace(fbType, chosen, "refused_nopick"); ++dbgLowSupport; return result; }
             // A short destination reached on fallback evidence is where our
             // misassemblies actually come from. Measured over 177 *S. aureus*
             // isolates, splitting every extensive misassembly by the length of
@@ -1066,6 +1362,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             if (minFallbackDest_ > 0) {
                 const uint32_t destU = unitigOf(cands[static_cast<size_t>(chosen)].back());
                 if (g_.nodes[destU].seq.size() < minFallbackDest_) {
+                    fbTrace(fbType, chosen, "refused_shortdest");
                     ++dbgShortDest;
                     return result;
                 }
@@ -1099,10 +1396,12 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                                     - (k_ - 1);
                 }
                 if (interLenChosen > insert_.maxPlausible) {
+                    fbTrace(fbType, chosen, "refused_unspanned");
                     ++dbgUnspanned;
                     return result;
                 }
             }
+            fbTrace(fbType, chosen, "proposed");
             pick = static_cast<size_t>(chosen);
             byCoverage = true;
             ++dbgCoverage;
@@ -1121,18 +1420,34 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             for (size_t j = 0; j + 1 < cands[pick].size(); ++j) {
                 interDepth += g_.nodes[unitigOf(cands[pick][j])].coverage; ++interN;
             }
+            // Trailing fields (combo2 PKG-MERGE): chain, end, pick index and, per candidate,
+            // terminal unitig:orient:score:interLen:destChain:destEnd.
+            std::string candScores;
+            for (size_t i = 0; i < cands.size(); ++i) {
+                long long chainB = -1;
+                int endB = -1;
+                termPort(cands[i].back(), chainB, endB);
+                char buf[160];
+                std::snprintf(buf, sizeof(buf), "%s%u:%d:%.1f:%d:%lld:%d", i ? "," : "",
+                              unitigOf(cands[i].back()), orientOf(cands[i].back()), scores[i],
+                              interLenOf(cands[i]), chainB, endB);
+                candScores += buf;
+            }
+            ++dbgJtExt;
             std::fprintf(stderr,
                 "[jointrace] from=%u fromLen=%zu fromCov=%.1f dest=%u destLen=%zu destCov=%.1f "
                 "cands=%zu best=%.1f second=%.1f interLen=%d interN=%zu interCov=%.1f "
-                "byCov=%d med=%.1f maxPl=%d\n",
+                "byCov=%d med=%.1f maxPl=%d chain=%u end=%d pick=%zu candScores=%s\n",
                 fromU, g_.nodes[fromU].seq.size(), g_.nodes[fromU].coverage,
                 destU, g_.nodes[destU].seq.size(), g_.nodes[destU].coverage,
                 cands.size(), best, second, interLen, interN,
                 interN ? interDepth / interN : 0.0, byCoverage ? 1 : 0,
-                medianCoverage_, insert_.usable ? insert_.maxPlausible : -1);
+                medianCoverage_, insert_.usable ? insert_.maxPlausible : -1,
+                c, end, pick, candScores.c_str());
         }
 
         if (cands.size() > 1 && !byCoverage) {
+            bool tieExempt = false;   // L4 weak or XO1 nomination: skip the same-destination re-pick
             // A near tie means the repeat is genuinely unresolved; guessing
             // would manufacture a misassembly.
             if (second > 0 && best < tieRatio_ * second) {
@@ -1153,8 +1468,38 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     ++dbgTie;
                     dbgTieBest += static_cast<long long>(best);
                     dbgTieSecond += static_cast<long long>(second);
-                    return result;
+                    if (!oneSidedTie && !tieSingleExit) return result;
+                    const uint64_t tailOid = tailFirst.back();
+                    size_t liveExits = 0;
+                    for (const Link& l : g_.exits(unitigOf(tailOid), orientOf(tailOid)))
+                        if (!g_.nodes[l.to].deleted) ++liveExits;
+                    const size_t lenA = acc + ov;
+                    size_t lenB = 0;
+                    const uint32_t cbw = ownerChain[unitigOf(cands[pick].back())];
+                    if (cbw != UINT32_MAX) {
+                        for (uint64_t o : chains[cbw]) lenB += addedLen(o);
+                        lenB += ov;
+                    }
+                    const size_t shorter = std::min(lenA, lenB);
+                    if (tieSingleExit && liveExits == 1 && shorter < tieSingleExitLong) {
+                        tieExempt = true;
+                        ++dbgSingleExit;
+                    } else {
+                    if (tieSingleExit && liveExits == 1) ++dbgSingleExitLong;
+                    if (!oneSidedTie) return result;
+                    // Weak nomination.  Refused when the shorter chain is >= the gate, except
+                    // (L4 alone, XO1 off) at a single-exit end, which L4 never gated.
+                    const bool gateExempt = liveExits < 2 && !tieSingleExit;
+                    if (shorter >= oneSidedLongBp && !gateExempt) {
+                        ++dbgWeakLongBranch;
+                        return result;
+                    }
+                    result.weak = true;
+                    tieExempt = true;
+                    ++dbgWeakNom;
+                    }
                 }
+                if (!tieExempt) {
                 double bestInterior = -1.0;
                 for (size_t i = 0; i < cands.size(); ++i) {
                     if (scores[i] * tieRatio_ < best) continue;
@@ -1197,7 +1542,24 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                             }
                         }
                         std::vector<double> contrast;
+                        // T31 (TESSERACT_FIX_ROUTE_ORDER, default off): support_ lists are
+                        // merged in thread order, so the SAME multiset of spans arrives in a
+                        // -t dependent order and the floating-point totals below differ in the
+                        // last bits with the thread count. A canonical order makes them exact.
+                        ++roDecisions;
+                        if (fixRouteOrder) { std::sort(spans.begin(), spans.end()); ++roSorted; }
                         const auto allocated = detail::routeDistanceAllocation(routeDensity_, spans, lengths, &contrast, linkBar);
+                        if (joinTrace_) {
+                            // Exact bits (%a): the [routedistance] line's %.6f hides -t differences.
+                            std::fprintf(stderr, "[routeorder-trace] chain=%u end=%d sorted=%d pairs=%zu totals=",
+                                         c, end, fixRouteOrder ? 1 : 0, spans.size());
+                            for (size_t i = 0; i < allocated.size(); ++i)
+                                std::fprintf(stderr, "%s%a", i ? "," : "", allocated[i]);
+                            std::fprintf(stderr, " contrasts=");
+                            for (size_t i = 0; i < contrast.size(); ++i)
+                                std::fprintf(stderr, "%s%a", i ? "," : "", contrast[i]);
+                            std::fprintf(stderr, "\n");
+                        }
                         // The existing bar applies to distinguishing route mass,
                         // not common/flat pairs. Fractions are never rounded up:
                         // two near-certain pairs may need a third to clear bar2.
@@ -1231,6 +1593,31 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                         }
                     }
                 }
+                }   // !tieExempt
+            }
+        }
+
+        // T07 (TESSERACT_FIX_REVISIT_GUARD, default off). enumerate() never extends a frame to
+        // a node it already holds, so every route through a tandem R -> body -> R carries ONE
+        // copy of the unit, whatever the genome has. When the pick passes a node that its own
+        // history could have looped back to, its copy number is 1 by construction, not by
+        // evidence: QUAST finds whole tandem units missing (21 K2 local misassemblies at +1/2/3x
+        // the loop length) and shorter ones as indels. The guard refuses such a pick; the end
+        // stays open. The exact read-thread fallback can still nominate the join, because a
+        // read thread may repeat a node and so carries the real copy number. (Deciding the
+        // copy number from paired distances was prototyped and dropped: the distance model
+        // was 24-129 bp off on real libraries -- see combo3/fix_G-resolve/README.md.)
+        if (!loops.prefix.empty()) {
+            const std::vector<uint64_t>& route = cands[pick];
+            bool onRoute = false;   // a loop entered with the pick's own history
+            for (const auto& pre : loops.prefix)
+                if (pre.size() < route.size() && std::equal(pre.begin(), pre.end(), route.begin())) {
+                    onRoute = true;
+                    break;
+                }
+            if (onRoute) {
+                ++rvPicked;
+                if (fixRevisitGuard) { ++rvRefused; return result; }
             }
         }
 
@@ -1252,6 +1639,8 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         result.chainB = cb;
         result.connector.assign(cands[pick].begin(), cands[pick].end() - 1);
         result.score = best;
+        result.decisive = (cands.size() == 1 && best >= linkBar) ||
+                          (cands.size() > 1 && !byCoverage && second <= 0);
         result.ok = true;
         return result;
     };
@@ -1331,6 +1720,11 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         if (exactReadThreads) {
             for (uint32_t c = 0; c < nc; ++c) for (int e = 0; e < 2; ++e) {
                 if (!cont[c * 2 + e].ok) cont[c * 2 + e] = exactThreadContinuation(c, e);
+                else if (cont[c * 2 + e].weak) {
+                    // Exact read threads outrank a weak (near-tied) nomination.
+                    Cont t = exactThreadContinuation(c, e);
+                    if (t.ok) { cont[c * 2 + e] = t; ++dbgWeakThread; }
+                }
             }
         }
 
@@ -1347,6 +1741,12 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                     // Only join when both ends independently chose each other.
                     const Cont& back = cont[f.chainB * 2 + f.endB];
                     if (!back.ok || back.chainB != c || back.endB != e) continue;
+                    if (f.weak || back.weak) {
+                        // Only reachable with TESSERACT_ONE_SIDED_TIE.
+                        if (f.weak && back.weak) { ++dbgWeakTwoSided; continue; }
+                        const Cont& strong = f.weak ? back : f;
+                        if (!strong.decisive || strong.exactThread) { ++dbgWeakPartner; continue; }
+                    }
                     const bool threadJoin = f.exactThread || back.exactThread;
                     if (exactReadThreads && threadJoin != (pass == 1)) continue;
                     if (threadJoin) {
@@ -1354,6 +1754,40 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                         for (size_t j = 0; same && j < f.connector.size(); ++j)
                             same = f.connector[j] == flip(back.connector[back.connector.size() - 1 - j]);
                         if (!same) continue;
+                    }
+
+                    // R6 (TESSERACT_FIX_MIRROR_ROUTE, default off). A legacy join takes the
+                    // interior route of whichever end is visited first (the lower chain index),
+                    // so when the two ends chose different interiors to the same endpoints the
+                    // emitted arm depends on chain numbering. Choose symmetrically instead: the
+                    // route whose weakest interior unitig is better covered (the rule the tie
+                    // branch uses), then the smaller orientation-independent SEQUENCE (node ids
+                    // are numbering, so they cannot break the tie).
+                    std::vector<uint64_t> connector = f.connector;
+                    if (!threadJoin) {
+                        std::vector<uint64_t> other;
+                        for (size_t j = back.connector.size(); j-- > 0;) other.push_back(flip(back.connector[j]));
+                        if (other != f.connector) {
+                            ++mrDisagree;
+                            if (fixMirrorRoute) {
+                                auto minCov = [&](const std::vector<uint64_t>& r) {
+                                    double mc = std::numeric_limits<double>::max();
+                                    for (uint64_t o : r) mc = std::min(mc, g_.nodes[unitigOf(o)].coverage);
+                                    return mc;
+                                };
+                                auto canon = [&](const std::vector<uint64_t>& r) {
+                                    std::string sp;
+                                    for (uint64_t o : r) {
+                                        const std::string piece = g_.oriented(unitigOf(o), orientOf(o));
+                                        sp += sp.empty() ? piece : piece.substr(ov);
+                                    }
+                                    return std::min(sp, reverseComplement(sp));
+                                };
+                                const double cf = minCov(f.connector), cb = minCov(other);
+                                const bool takeBack = cb > cf || (cb == cf && canon(other) < canon(f.connector));
+                                if (takeBack) { connector = other; ++mrChoseBack; }
+                            }
+                        }
                     }
 
                     std::vector<uint64_t> a;
@@ -1391,13 +1825,19 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                         std::fprintf(stderr, ",%llu\n", static_cast<unsigned long long>(b.front()));
                     }
 
-                    a.insert(a.end(), f.connector.begin(), f.connector.end());
+                    a.insert(a.end(), connector.begin(), connector.end());
                     a.insert(a.end(), b.begin(), b.end());
                     chains[c].swap(a);
                     chains[f.chainB].clear();
                     merged[c] = 1;
                     merged[f.chainB] = 1;
                     ++joins;
+                    if (f.weak || back.weak) {
+                        ++dbgWeakJoin;
+                        if (joinTrace_) std::fprintf(stderr,
+                            "[weakjoin] round=%d chainA=%u endA=%d chainB=%u endB=%d\n",
+                            round, c, e, f.chainB, f.endB);
+                    }
                     if (threadJoin) {
                         ++threadJoins;
                         if (joinTrace_) std::fprintf(stderr,
@@ -1414,8 +1854,24 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     if (exactReadThreads) std::fprintf(stderr,
         "[readthread-result] nominations=%zu conflictingPorts=%zu joins=%zu\n",
         threadNominations, threadConflictingPorts, threadJoins);
+    // build_v3: the package counters are printed on every run, zeros included, with a trailing
+    // enabled= field (OBJECTIVE A2); the leading fields are the package's own.
+    std::fprintf(stderr,
+        "[onesidedtie] weakNominations=%lld weakJoins=%lld refusedLongBranching=%lld "
+        "refusedTwoSided=%lld refusedPartnerNotDecisive=%lld threadPreferred=%lld long=%zu enabled=%d\n",
+        dbgWeakNom, dbgWeakJoin, dbgWeakLongBranch, dbgWeakTwoSided, dbgWeakPartner, dbgWeakThread,
+        oneSidedLongBp, oneSidedTie ? 1 : 0);
+    std::fprintf(stderr, "[tiesingleexit] exempted=%lld refusedLong=%lld long=%zu enabled=%d\n",
+                 dbgSingleExit, dbgSingleExitLong,
+                 tieSingleExitLong == std::numeric_limits<size_t>::max() ? size_t(0) : tieSingleExitLong,
+                 tieSingleExit ? 1 : 0);
+    std::fprintf(stderr, "[fallbackmatching] kept=%lld refused=%lld enabled=%d\n", dbgFbmKept, dbgFbmRefused,
+                 fallbackMatchingOnly ? 1 : 0);
+    if (joinTrace_) std::fprintf(stderr,
+        "[jointrace-ext] jointraceWithCands=%lld fallbackProposals=%lld fallbackRefused=%lld\n",
+        dbgJtExt, dbgFbTraced, dbgFbTracedRefused);
 
-    if (getenv("TESSERACT_DEBUG_RESOLVE")) {
+    if (env::present("TESSERACT_DEBUG_RESOLVE")) {
         std::fprintf(stderr,
                      "      [debug] continuation outcomes: ok=%lld no-candidate=%lld "
                      "low-support=%lld tie=%lld mid-chain=%lld by-coverage=%lld matched=%lld "
@@ -1434,8 +1890,23 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     const size_t nc = chains.size();
     std::vector<uint32_t> joinTo(nc * 2, UINT32_MAX);   // port -> port
     std::vector<int> joinGap(nc * 2, 0);
+    // Per accepted join, both ports: the unfloored estimate behind joinGap (release frame:
+    // true gap + k-1), its standard error, whether the T20 estimate says the flanks
+    // overlap or abut (true gap <= 0), and its support (T13's cycle break).
+    std::vector<int> joinEst(nc * 2, 0);
+    std::vector<double> joinSigma(nc * 2, 0.0);
+    std::vector<char> joinOverlapEst(nc * 2, 0);
+    std::vector<double> joinScore(nc * 2, 0.0);
+    // T20 counters (always printed).
+    size_t geJoins = 0, geEstimated = 0, geChanged = 0, geFloor1 = 0, geOverlapEst = 0, geSkippedNoMean = 0;
+    std::vector<int> geShift;
 
-    if (scaffolding_ && insert_.usable) {
+    // T20: forced insert bounds (TESSERACT_QC_INSERT) without a fitted model leave
+    // insert_.mean at 0, so every gap would be -span-dist: skip scaffolding instead.
+    const bool noFittedMean = haveForcedBounds_ && insert_.observations == 0;
+    if (scaffolding_ && insert_.usable && fixGapEstimate && noFittedMean) geSkippedNoMean = 1;
+
+    if (scaffolding_ && insert_.usable && !(fixGapEstimate && noFittedMean)) {
         reindex();
         struct End { uint64_t oriented; std::vector<uint64_t> members; std::vector<size_t> dist; };
         std::vector<End> ends(nc * 2);
@@ -1522,10 +1993,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         // Scaling with the observed depth keeps the evidence bar constant in
         // the units that matter, with a floor of 3 so a shallow library still
         // needs corroboration.
-        static const double scafOverride = [] {
-            const char* e = std::getenv("TESSERACT_SCAF_SUPPORT");
-            return e ? std::atof(e) : 0.0;
-        }();
+        const double scafOverride = env::real("TESSERACT_SCAF_SUPPORT", 0.0);
         const double minScaffoldSupport =
             scafOverride > 0 ? scafOverride
             : minScaffoldSupport_ > 0
@@ -1540,6 +2008,110 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             joinTo[b.partner] = idx;
             joinGap[idx] = std::max(1, b.gap);
             joinGap[b.partner] = joinGap[idx];
+            joinEst[idx] = joinEst[b.partner] = b.gap;
+            joinSigma[idx] = joinSigma[b.partner] =
+                1.2533 * insert_.stddev / std::sqrt(std::max(1.0, b.score));
+            joinScore[idx] = joinScore[b.partner] = std::min(b.score, best[b.partner].score);
+            ++geJoins;
+            if (b.gap < 1) ++geFloor1;
+        }
+
+        // T20 (TESSERACT_FIX_GAP_ESTIMATE, default off). The release gap of a join is the
+        // estimate of whichever port has the lower index -- the median over ITS members'
+        // pairs to the partner's entry unitig -- so renumbering the nodes changes the N-run
+        // (47/48 fixture replicates). Here both ports' estimates are averaged, which no
+        // numbering can change; each is still the release estimate, so the release's
+        // accuracy is kept. (The release estimate is also biased short where the insert
+        // distribution is wide -- linking pairs are length-biased -- but that bias did not
+        // follow any model on real libraries: MEASURED against the references, an analytic
+        // spanning-conditioned correction moved efaecalis GCA053117665v1 from -220 to +73 bp
+        // but abaumannii GCF046097175v1 from +3 to +336 bp, and a correction calibrated on
+        // graph junctions does not transfer to scaffold gaps. Not corrected; see README.)
+        // With T03, an estimate <= 0 without a verified flank overlap is written as an
+        // unknown-length gap instead of a 1-N adjacency claim.
+        if (fixGapEstimate) {
+            for (uint32_t idx = 0; idx < joinTo.size(); ++idx) {
+                const uint32_t q = joinTo[idx];
+                if (q == UINT32_MAX || q < idx) continue;
+                ++geEstimated;
+                const double sum = static_cast<double>(best[idx].gap) + static_cast<double>(best[q].gap);
+                const int est = static_cast<int>(std::floor(sum / 2.0 + 0.5));   // release frame
+                if (est != joinEst[idx]) ++geChanged;
+                geShift.push_back(est - joinEst[idx]);
+                joinEst[idx] = joinEst[q] = est;
+                joinGap[idx] = joinGap[q] = std::max(1, est);
+                joinSigma[idx] = joinSigma[q] =
+                    1.2533 * insert_.stddev / std::sqrt(std::max(1.0, std::max(best[idx].score, best[q].score)));
+                const bool overlapEst = est - static_cast<int>(ov) <= 0;
+                joinOverlapEst[idx] = joinOverlapEst[q] = overlapEst ? 1 : 0;
+                if (overlapEst) ++geOverlapEst;
+            }
+        }
+    }
+
+    // ---- scaffold cycles (T13) ---------------------------------------------
+    // Accepted joins give each port at most one partner and never pair a chain with
+    // itself, so they form simple paths AND simple cycles (a circular element split at two
+    // or more scaffold gaps). The emit walk below starts only at a free port, so a cycle
+    // has no start, and the fallback after it renders the cycle's chains one by one: every
+    // join in the cycle was accepted and is then silently dropped (no N-run, no
+    // scaffoldJoins, no gap for the closer). Counted on every run (stderr only);
+    // TESSERACT_FIX_SCAFFOLD_CYCLE=1 breaks each cycle once, at its weakest join (lowest
+    // support; tie -> lowest port), so the rest is walked as one linear scaffold.
+    size_t scCycles = 0, scChains = 0, scJoins = 0, scBases = 0, scBroken = 0;
+    {
+        std::vector<char> seenChain(nc, 0);
+        for (uint32_t c = 0; c < nc; ++c) {
+            if (seenChain[c] || chains[c].empty()) continue;
+            if (joinTo[c * 2 + 0] == UINT32_MAX || joinTo[c * 2 + 1] == UINT32_MAX) continue;
+            // Walk out of port 1; a cycle comes back to c through port 0. A walk that meets
+            // a chain already seen, or a free port, is on a path (a cycle's chains are
+            // reachable only from inside it, and the first visit walks all of it).
+            std::vector<uint32_t> outPorts, members;
+            uint32_t cur = c;
+            int inPort = 0;
+            bool isCycle = false;
+            for (size_t steps = 0; steps <= nc; ++steps) {
+                members.push_back(cur);
+                seenChain[cur] = 1;
+                const uint32_t out = cur * 2 + (inPort == 0 ? 1 : 0);
+                const uint32_t partner = joinTo[out];
+                if (partner == UINT32_MAX) break;
+                outPorts.push_back(out);
+                cur = partner / 2;
+                inPort = static_cast<int>(partner % 2);
+                if (cur == c) { isCycle = inPort == 0; break; }
+                if (seenChain[cur]) break;
+            }
+            if (!isCycle) continue;
+            ++scCycles;
+            scChains += members.size();
+            scJoins += outPorts.size();
+            for (uint32_t m : members)
+                for (size_t i = 0; i < chains[m].size(); ++i)
+                    scBases += g_.nodes[unitigOf(chains[m][i])].seq.size() - (i ? ov : 0);
+            if (joinTrace_) {
+                std::fprintf(stderr, "[scafcycle-detail] cycle=%zu chains=", scCycles);
+                for (size_t i = 0; i < members.size(); ++i)
+                    std::fprintf(stderr, "%s%u:u%u", i ? "," : "", members[i], unitigOf(chains[members[i]].front()));
+                std::fprintf(stderr, " joins=");
+                for (size_t i = 0; i < outPorts.size(); ++i)
+                    std::fprintf(stderr, "%s%u-%u:s%.0f:g%d", i ? "," : "", outPorts[i], joinTo[outPorts[i]],
+                                 joinScore[outPorts[i]], joinGap[outPorts[i]]);
+                std::fprintf(stderr, "\n");
+            }
+            if (!fixCycleBreak) continue;
+            uint32_t weakest = outPorts.front();
+            for (uint32_t p : outPorts) {
+                const uint32_t lo = std::min(p, joinTo[p]);
+                const uint32_t wlo = std::min(weakest, joinTo[weakest]);
+                if (joinScore[p] < joinScore[weakest] || (joinScore[p] == joinScore[weakest] && lo < wlo))
+                    weakest = p;
+            }
+            const uint32_t other = joinTo[weakest];
+            joinTo[weakest] = joinTo[other] = UINT32_MAX;
+            joinGap[weakest] = joinGap[other] = 0;
+            ++scBroken;
         }
     }
 
@@ -1547,7 +2119,50 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     std::vector<char> placed(n, 0);
     std::vector<char> done(nc, 0);
 
+    // T03 (TESSERACT_FIX_GAP_FLANK, default off). The first unitig after a scaffold N-gap
+    // is not graph-adjacent to what precedes it -- the Ns are -- yet the release renders
+    // it like a graph successor and drops its first k-1 bases, while joinGap estimates the
+    // true gap PLUS k-1 (span = consumedU + consumedV - (k-1)), so the Ns stand in for
+    // those real bases and the GFA P-line (gN + the WHOLE segment) spells k-1 more than
+    // the FASTA. A gap the gap filler closes gets those bases back (it spells everything
+    // between its seed and a target k-mer that lies wholly in full-depth sequence); a gap
+    // it leaves open loses them. Rendering the unitig whole here instead moved the
+    // filler's target onto the dropout tip and cost closures (MEASURED, ecloacae
+    // GCF053691565v1: 15 -> 10 of 32 closed with G-emit's back-off on). So the resolver
+    // keeps the release layout, which is what the filler sees, and records per gap what an
+    // OPEN gap must look like; restoreGapFlanks() applies it after gap filling: the
+    // unitig's first k-1 bases back, and the N-run = joinGap - (k-1), the estimated true
+    // gap. Two flanks may genuinely overlap by fewer than k-1 bases (a dropout of a few
+    // k-mers); an exact suffix/prefix overlap of L >= kMinFlankOverlap bases that the
+    // estimate does not contradict is restored once and the gap is one N. An estimate
+    // <= 0 without such an overlap is one N, or, with T20, an unknown-length gap of
+    // kUnknownGapN Ns. curPath.gaps carries the open-gap count, so for an open gap FASTA,
+    // AGP and the GFA P-line agree (an overlap-case trim of L bases cannot be expressed in
+    // a GFA1 P-line; counted as pLineOverspell).
+    int flankJoin = 0;            // > 0: the next piece follows the gap of port flankPort
+    uint32_t flankPort = 0;
+    int flankOpen = 0;            // Ns an open gap gets
+    size_t flankNStart = 0;       // where the Ns of that gap begin in seq
+    size_t gfGaps = 0, gfKept = 0, gfOverlapGaps = 0, gfOverlapBases = 0, gfFloor1 = 0;
+    size_t gfUnknown = 0, gfOverlapRejected = 0;
+    // T24 (TESSERACT_FIX_COV_CONTRIB, default off): shadow sums of both weightings.
+    double cvRelW = 0, cvConW = 0;
+    size_t cvRelL = 0, cvConL = 0, cvPaths = 0, cvOff10 = 0;
+    auto notePathCov = [&]() {
+        if (cvRelL && cvConL) {
+            const double a = cvRelW / static_cast<double>(cvRelL), b = cvConW / static_cast<double>(cvConL);
+            ++cvPaths;
+            if (a > 0 && b > 0 && std::max(a / b, b / a) > 1.10) ++cvOff10;
+        }
+        cvRelW = cvConW = 0;
+        cvRelL = cvConL = 0;
+    };
+
     ResolvedPath curPath;
+    // PKG-MERGE (GAP x ENDS), build_v3: the overlap bases T03 (TESSERACT_FIX_GAP_FLANK, alias
+    // TESSERACT_GAP_KEEP_FLANK) trims from the first unitig after a gap when restoreGapFlanks()
+    // runs, by curPath index, so endBody() below measures the N-free bases finally emitted.
+    std::vector<std::pair<size_t, size_t>> flankDrops;
     auto renderChain = [&](uint32_t c, bool flipped, std::string& seq,
                            double& covWeighted, size_t& covLen) {
         const size_t sz = chains[c].size();
@@ -1557,10 +2172,67 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             curPath.gaps.push_back(0);
             const uint32_t u = unitigOf(oid);
             const std::string piece = g_.oriented(u, orientOf(oid));
-            if (seq.empty()) seq = piece;
-            else seq += piece.substr(ov);
-            covWeighted += g_.nodes[u].coverage * static_cast<double>(piece.size());
-            covLen += piece.size();
+            size_t added = 0;   // bases of this piece appended to seq (Ns excluded)
+            if (seq.empty()) { seq = piece; added = piece.size(); }
+            else if (flankJoin > 0) {
+                // T03: the first piece after an N-gap (reached only with the fix on). The
+                // A side is seq up to the Ns.
+                size_t L = 0;
+                const size_t lmax = std::min(ov, std::min(flankNStart, piece.size()));
+                for (size_t l = lmax; l > 0; --l)
+                    if (seq.compare(flankNStart - l, l, piece, 0, l) == 0) { L = l; break; }
+                const long dEst = static_cast<long>(joinEst[flankPort]) - static_cast<long>(ov);
+                bool trim = false;
+                if (L >= kMinFlankOverlap) {
+                    // An overlap the estimate does not contradict (3 standard errors, plus
+                    // slack for the release estimator's short bias).
+                    if (static_cast<double>(dEst + static_cast<long>(L)) <= 3.0 * joinSigma[flankPort] + 20.0)
+                        trim = true;
+                    else ++gfOverlapRejected;
+                }
+                int nN = 1;
+                if (trim) {
+                    ++gfOverlapGaps;
+                    gfOverlapBases += L;
+                    // PKG-MERGE GAP x ENDS: after restoreGapFlanks() this piece is emitted less
+                    // its L overlap bases; endBody() below subtracts them (flankDrops).
+                    flankDrops.emplace_back(curPath.oriented.size() - 1, L);
+                }
+                else if (dEst >= 1) nN = static_cast<int>(dEst);
+                else if (fixGapEstimate) { nN = kUnknownGapN; ++gfUnknown; }
+                else ++gfFloor1;
+                const size_t from = trim ? L : 0;
+                GapFlankRecord rec;
+                const size_t lc = std::min(kGapFlankContext, flankNStart);
+                rec.left = seq.substr(flankNStart - lc, lc);
+                rec.nWritten = flankJoin;
+                rec.nOpen = nN;
+                rec.restore = piece.substr(from, ov - from);
+                gapFlank_.push_back(std::move(rec));   // `right` is filled once the chain is rendered
+                // The release layout: the Ns already written stand for this piece's first k-1.
+                seq += piece.substr(ov);
+                added = piece.size() - ov;
+                ++gfGaps;
+                gfKept += ov - from;
+                flankOpen = nN;
+                flankJoin = 0;
+            } else {
+                seq += piece.substr(ov);
+                added = piece.size() - ov;
+            }
+            const double cov = g_.nodes[u].coverage;
+            cvRelW += cov * static_cast<double>(piece.size());
+            cvRelL += piece.size();
+            cvConW += cov * static_cast<double>(added);
+            cvConL += added;
+            // T24 (TESSERACT_FIX_COV_CONTRIB): weight by the bases the piece contributes
+            // (whole first piece, piece-(k-1) after, whole after an N-gap under T03), as
+            // extendByCommonPrefix already does. The release weights by the full length,
+            // so a k-long connector that adds one base carries k bases of weight
+            // (nmeningitidis GCA002073235v2 NODE_98: 668x reported vs 62x contributed).
+            const size_t w = fixCovContrib ? added : piece.size();
+            covWeighted += cov * static_cast<double>(w);
+            covLen += w;
             placed[u] = 1;
         }
         if (sz > 1) stats_.unitigsJoined += sz - 1;
@@ -1576,18 +2248,263 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // genome fraction from 98.83% to 99.02% with the duplication ratio
     // unchanged at 1.000, because the sequence it adds is sequence every
     // candidate continuation agreed on. Set to 0 to disable.
-    static const double kPrefixBudget = [] {
-        const char* e = std::getenv("TESSERACT_COMMON_PREFIX");
-        return e ? std::atof(e) : 3000.0;
-    }();
+    const double kPrefixBudget = env::real("TESSERACT_COMMON_PREFIX", 3000.0);
     // A chain owns each eligible anchor exactly once. Terminal context must
     // not make another copy of that anchor after chain arbitration declined
     // to join it. The owner is computed before any sequence is rendered, so
     // this decision does not depend on output order. Default-off experiment.
-    const bool ownedAnchorPrefix = [] {
-        const char* flag = std::getenv("TESSERACT_OWNED_ANCHOR_PREFIX");
-        return flag && std::string(flag) == "1";
+    const bool ownedAnchorPrefix = env::on("TESSERACT_OWNED_ANCHOR_PREFIX", false);
+    // ---- evidence-backed terminal extension (combo2/ends, 2026-09-24; all default OFF) ----
+    // TESSERACT_PREFIX_MIN_BODY=<bp>|reach  certified starting context: walk an end only when the
+    //   N-free path segment it continues carries at least that many bases ('reach' = the insert
+    //   model's maxPlausible, i.e. the context is long enough to anchor the fragments that would
+    //   vouch for it). Measured on the 250-bp walk: 8 of the 11 Q-clean misassemblies it added
+    //   sit in contigs <= 1.4 kb that the walk lengthened, not in walked sequence.
+    // TESSERACT_CERTIFIED_PREFIX=1  a step into an anchorable unitig is never taken (entering an
+    //   anchor is a join claim arbitration owns and declined), and a step out of a walked unitig
+    //   needs depth(next) >= TESSERACT_CERTIFIED_PREFIX_FLOW (default 0.8) * depth(current): fewer
+    //   copies leaving a repeat than entering it means the other copies' exits are not in the graph.
+    // build_v3: read per call through the envflags table (T16), never cached in a static.
+    const long kPrefixMinBody = [] {           // 0 = off, -1 = fragment reach
+        const char* e = env::text("TESSERACT_PREFIX_MIN_BODY");
+        if (!e) return 0L;
+        if (std::string(e) == "reach") return -1L;
+        return std::strtol(e, nullptr, 10);   // validated: an integer in [0, INT_MAX]
     }();
+    const bool kCertifiedPrefix = env::on("TESSERACT_CERTIFIED_PREFIX", false);
+    const double kCertifiedFlow = env::real("TESSERACT_CERTIFIED_PREFIX_FLOW", 0.8);
+    // TESSERACT_PREFIX_NO_REVISIT=1: a walk never enters a unitig (either orientation) already on this
+    //   contig's path -- re-entering emitted sequence is a hairpin/cycle claim, not a common prefix.
+    const bool kPrefixNoRevisit = env::on("TESSERACT_PREFIX_NO_REVISIT", false);
+    size_t noRevisitStops = 0;
+    const size_t minBodyBp = kPrefixMinBody < 0 ? static_cast<size_t>(reach)
+                                                : static_cast<size_t>(kPrefixMinBody);
+    size_t ctpAnchorStops = 0, ctpFlowStops = 0, minBodySkips = 0, minBodyChecked = 0;
+    // PKG-MERGE self-check, JOIN_TRACE + MIN_BODY only (stderr): endBody(tail) vs the N-free tail of seq.
+    size_t ebTails = 0, ebExact = 0, ebReleaseGapCut = 0, ebOther = 0;
+    size_t pathBeforeTailWalk = 0;
+    // N-free bases of curPath adjacent to one end, before any walk was appended.
+    // PKG-MERGE: the sum counts one element in full and the rest at addedLen. Behind a scaffold gap
+    // that is the N-free length finally emitted when T03 (TESSERACT_FIX_GAP_FLANK, alias
+    // TESSERACT_GAP_KEEP_FLANK) gives the first unitig after the gap its k-1 bases back
+    // (restoreGapFlanks, after gap filling), less the verified overlap T03 trims there
+    // (flankDrops). With the fix off the formula is unchanged, so it still counts the k-1 bases
+    // release drops after a gap, and ENDS alone is byte-identical.
+    auto endBody = [&](bool head) -> size_t {
+        const std::vector<uint64_t>& P = curPath.oriented;
+        const std::vector<int>& Gp = curPath.gaps;
+        const size_t n = std::min(pathBeforeTailWalk, P.size());
+        size_t bp = 0;
+        if (n == 0) return 0;
+        if (!head) {
+            for (size_t i = n; i-- > 0;) {
+                bp += bp == 0 ? g_.nodes[unitigOf(P[i])].seq.size() : addedLen(P[i]);
+                if (Gp[i] > 0) {                          // an N-gap precedes element i
+                    for (const auto& d : flankDrops) if (d.first == i) bp -= d.second;
+                    break;
+                }
+            }
+        } else {
+            for (size_t i = 0; i < n; ++i) {
+                if (i > 0 && Gp[i] > 0) break;
+                bp += bp == 0 ? g_.nodes[unitigOf(P[i])].seq.size() : addedLen(P[i]);
+            }
+        }
+        return bp;
+    };
+    auto bodyAllowsWalk = [&](bool head) {
+        if (kPrefixMinBody == 0 || kPrefixBudget <= 0) return true;
+        ++minBodyChecked;
+        if (endBody(head) >= minBodyBp) return true;
+        ++minBodySkips;
+        return false;
+    };
+    // TESSERACT_PAIR_ANCHORED_PREFIX=<m>|bar : a walk is kept only as far as read pairs vouch for it. A pair
+    //   vouches when one mate is anchored (buildSupport) on a non-repeat unitig of the N-free contig body within
+    //   fragment reach of the end, runs outward, and its mate -- reverse-complemented onto the outward strand --
+    //   matches the body+walk window exactly past the body end, with a plausible fragment length.
+    //   TESSERACT_PAIR_ANCHORED_MODE=node (default): a walked unitig is kept whole iff >= m mates reach into its
+    //   novel bases and every unitig before it was kept (a unitig does not branch inside). =pos: the walk is cut
+    //   at the m-th largest mate end, possibly inside a unitig (that unitig is then left out of the GFA path).
+    const long paSetting = pairAnchoredPrefixSetting();
+    const int paM = paSetting < 0 ? std::max(1, static_cast<int>(std::lround(linkBar)))
+                                  : static_cast<int>(paSetting);
+    const bool paPosMode = [] {
+        const char* e = env::text("TESSERACT_PAIR_ANCHORED_MODE");   // node (default) | pos
+        return e && std::string(e) == "pos";
+    }();
+    std::vector<uint32_t> paStart, paReads;       // CSR: reads anchored on each unitig
+    if (paSetting != 0 && !readAnchors_.empty()) {
+        paStart.assign(n + 1, 0);
+        for (const Anchor& a : readAnchors_) if (a.mapped() && a.unitig < n) ++paStart[a.unitig + 1];
+        for (size_t u = 0; u < n; ++u) paStart[u + 1] += paStart[u];
+        paReads.resize(paStart[n]);
+        std::vector<uint32_t> fill(paStart.begin(), paStart.end() - 1);
+        for (size_t r = 0; r < readAnchors_.size(); ++r) {
+            const Anchor& a = readAnchors_[r];
+            if (a.mapped() && a.unitig < n) paReads[fill[a.unitig]++] = static_cast<uint32_t>(r);
+        }
+    }
+    size_t paEnds = 0, paCapped = 0, paZero = 0, paBpWalk = 0, paBpKept = 0, paMates = 0;
+    // body: outward-oriented N-free body (the last bases are adjacent to the walk); elems: outward oriented
+    // unitigs of that body with their start offset in `body`; novel: the walked bases; cum: cumulative novel
+    // bases per walked unitig. Returns the number of novel bases to keep.
+    auto paKeep = [&](const std::string& body, const std::vector<std::pair<uint64_t, long>>& elems,
+                      const std::string& novel, const std::vector<size_t>& cum) -> size_t {
+        ++paEnds;
+        paBpWalk += novel.size();
+        const long reachL = static_cast<long>(reach);
+        const size_t bw = std::min(body.size(), static_cast<size_t>(reachL) + 200);
+        const long shift = static_cast<long>(body.size() - bw);          // body offset -> window offset
+        const std::string W = body.substr(body.size() - bw) + novel;
+        std::unordered_map<Kmer, int32_t, KmerHasher> wk;
+        {
+            Kmer f = 0; int valid = 0;
+            for (size_t p = 0; p < W.size(); ++p) {
+                const int c = baseCode(W[p]);
+                if (c < 0) { valid = 0; continue; }
+                f = pushBack(f, c, kMap_);
+                if (++valid < kMap_) continue;
+                const int32_t start = static_cast<int32_t>(p + 1 - static_cast<size_t>(kMap_));
+                auto it = wk.find(f);
+                if (it == wk.end()) wk.emplace(f, start); else it->second = -1;
+            }
+        }
+        std::vector<long> ends;
+        std::string mate;
+        for (const auto& el : elems) {
+            const uint32_t u = unitigOf(el.first);
+            if (isRepeat(u) || u + 1 >= paStart.size()) continue;
+            const long uLen = static_cast<long>(g_.nodes[u].seq.size());
+            const long elStartW = el.second - shift;
+            if (elStartW + uLen < 0) continue;
+            for (uint32_t x = paStart[u]; x < paStart[u + 1]; ++x) {
+                const uint32_t r = paReads[x];
+                if (r >= 2 * reads_.pairCount()) continue;
+                const Anchor& a = readAnchors_[r];
+                const int d = orientOf(el.first);
+                if (static_cast<int>(a.orient) != d) continue;            // must run outward
+                const long rl = static_cast<long>(reads_.length(r));
+                const long posOut = d == 0 ? a.pos : uLen - (a.pos + rl);
+                const long aStart = elStartW + posOut;
+                if (aStart < 0 || aStart >= static_cast<long>(bw)) continue;
+                reads_.decode(r ^ 1, mate);
+                const std::string m = reverseComplement(mate);         // outward strand
+                const int ml = static_cast<int>(m.size());
+                if (ml < kMap_) continue;
+                // diagonal vote over spread probes, then exact extension from the last agreeing probe
+                const int span = ml - kMap_;
+                const int probes = std::min(kMaxProbes, span + 1);
+                long bestDiag = 0; int bestVotes = 0, lastProbe = -1;
+                long diags[kMaxProbes]; int votes[kMaxProbes]; int lastp[kMaxProbes]; int nd = 0;
+                for (int t = 0; t < probes; ++t) {
+                    const int rp = probes == 1 ? 0 : span * t / (probes - 1);
+                    Kmer f = 0; bool ok = true;
+                    for (int j = 0; j < kMap_; ++j) {
+                        const int c = baseCode(m[static_cast<size_t>(rp + j)]);
+                        if (c < 0) { ok = false; break; }
+                        f = pushBack(f, c, kMap_);
+                    }
+                    if (!ok) continue;
+                    auto it = wk.find(f);
+                    if (it == wk.end() || it->second < 0) continue;
+                    const long dg = static_cast<long>(it->second) - rp;
+                    int q = 0;
+                    while (q < nd && diags[q] != dg) ++q;
+                    if (q == nd) { diags[nd] = dg; votes[nd] = 0; lastp[nd] = rp; ++nd; }
+                    ++votes[q]; lastp[q] = std::max(lastp[q], rp);
+                    if (votes[q] > bestVotes) { bestVotes = votes[q]; bestDiag = dg; lastProbe = lastp[q]; }
+                }
+                if (bestVotes < kMinVotes) continue;
+                const long frag = bestDiag + ml - aStart;
+                if (insert_.usable && (frag < insert_.minPlausible || frag > insert_.maxPlausible)) continue;
+                long i = lastProbe + kMap_;
+                while (i < ml && bestDiag + i < static_cast<long>(W.size()) &&
+                       m[static_cast<size_t>(i)] == W[static_cast<size_t>(bestDiag + i)]) ++i;
+                const long bEnd = bestDiag + i;
+                if (bEnd <= static_cast<long>(bw)) continue;
+                ends.push_back(bEnd - static_cast<long>(bw));
+                ++paMates;
+            }
+        }
+        std::sort(ends.begin(), ends.end(), std::greater<long>());
+        size_t keep = 0;
+        if (static_cast<int>(ends.size()) >= paM && paM > 0) {
+            if (paPosMode) {
+                keep = std::min(novel.size(), static_cast<size_t>(ends[static_cast<size_t>(paM - 1)]));
+            } else {
+                size_t acc = 0;
+                for (size_t c : cum) {
+                    size_t reachIn = 0;
+                    for (long e : ends) { if (e > static_cast<long>(acc)) ++reachIn; else break; }
+                    if (static_cast<int>(reachIn) < paM) break;
+                    acc = c;
+                }
+                keep = acc;
+            }
+        }
+        if (keep < novel.size()) ++paCapped;
+        if (keep == 0) ++paZero;
+        paBpKept += keep;
+        return keep;
+    };
+    // Truncates a walk that extendByCommonPrefix appended: `ext` holds `novelBefore` bases before the walk,
+    // curPath holds `pathBefore` elements before it.
+    auto paApply = [&](bool head, std::string& ext, size_t novelBefore, size_t pathBefore,
+                       double& covW, size_t& covL, const std::string& scaffold, size_t scaffoldEnd) {
+        if (paSetting == 0 || readAnchors_.empty()) return;
+        if (curPath.oriented.size() <= pathBefore) return;
+        std::vector<uint64_t> walked(curPath.oriented.begin() + static_cast<std::ptrdiff_t>(pathBefore),
+                                     curPath.oriented.end());
+        std::vector<size_t> cum;
+        size_t c = 0;
+        for (uint64_t o : walked) { c += addedLen(o); cum.push_back(c); }
+        const std::string novel = ext.substr(novelBefore);
+        // outward N-free body and its outward-oriented elements with start offsets in it
+        std::string body;
+        std::vector<std::pair<uint64_t, long>> elems;
+        const std::vector<uint64_t>& P = curPath.oriented;
+        const std::vector<int>& Gp = curPath.gaps;
+        if (!head) {
+            size_t lastN = scaffold.find_last_of("Nn", scaffoldEnd ? scaffoldEnd - 1 : 0);
+            const size_t from = (lastN == std::string::npos || scaffoldEnd == 0) ? 0 : lastN + 1;
+            body = scaffold.substr(from, scaffoldEnd - from);
+            long end = static_cast<long>(body.size());
+            for (size_t i = pathBefore; i-- > 0;) {
+                const long len = static_cast<long>(g_.nodes[unitigOf(P[i])].seq.size());
+                elems.push_back({P[i], end - len});
+                end -= len - static_cast<long>(ov);
+                if (Gp[i] > 0 || end - static_cast<long>(ov) < 0) break;
+            }
+        } else {
+            size_t firstN = scaffold.find_first_of("Nn");
+            const size_t to = std::min(firstN == std::string::npos ? scaffold.size() : firstN, scaffoldEnd);
+            body = reverseComplement(scaffold.substr(0, to));
+            long startFwd = 0;
+            for (size_t i = 0; i < pathBefore; ++i) {
+                if (i > 0 && Gp[i] > 0) break;
+                const long len = static_cast<long>(g_.nodes[unitigOf(P[i])].seq.size());
+                if (startFwd + len > static_cast<long>(to)) break;
+                elems.push_back({flip(P[i]), static_cast<long>(to) - (startFwd + len)});
+                startFwd += len - static_cast<long>(ov);
+            }
+        }
+        const size_t keep = paKeep(body, elems, novel, cum);
+        if (keep >= novel.size()) return;
+        // drop the walked unitigs (and their coverage) beyond `keep`; a partial unitig leaves the path
+        size_t acc = 0, keepNodes = 0;
+        for (size_t i = 0; i < walked.size(); ++i) {
+            const size_t add = addedLen(walked[i]);
+            if (acc + add <= keep) { acc += add; keepNodes = i + 1; continue; }
+            const size_t removed = acc + add - std::max(acc, keep);
+            covW -= g_.nodes[unitigOf(walked[i])].coverage * static_cast<double>(removed);
+            covL -= removed;
+            acc += add;
+        }
+        ext.resize(novelBefore + keep);
+        curPath.oriented.resize(pathBefore + keepNodes);
+        curPath.gaps.resize(pathBefore + keepNodes);
+    };
     auto extendByCommonPrefix = [&](uint64_t tail, std::string& seq,
                                     double& covWeighted, size_t& covLen, bool head) {
         if (kPrefixBudget <= 0) return;
@@ -1637,6 +2554,35 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
                 next = {arm[pick], dest[pick]};
                 bubble = true;
             } else break;
+
+            if (kPrefixNoRevisit) {
+                bool again = false;
+                for (uint64_t x : next) {
+                    const uint32_t xu = unitigOf(x);
+                    for (uint64_t y : curPath.oriented) {
+                        if (unitigOf(y) == xu) { again = true; break; }
+                    }
+                    if (again) break;
+                }
+                if (again) { ++noRevisitStops; break; }
+            }
+            if (kCertifiedPrefix) {
+                bool certified = true;
+                uint64_t pred = cur;
+                for (size_t i = 0; i < next.size(); ++i) {
+                    const uint32_t nu = unitigOf(next[i]);
+                    if (anchorable(nu)) { ++ctpAnchorStops; certified = false; break; }
+                    const bool predWalked = step > 0 || i > 0;
+                    if (predWalked &&
+                        g_.nodes[nu].coverage < kCertifiedFlow * g_.nodes[unitigOf(pred)].coverage) {
+                        ++ctpFlowStops;
+                        certified = false;
+                        break;
+                    }
+                    pred = next[i];
+                }
+                if (!certified) break;
+            }
 
             size_t extra = 0;
             bool valid = true;
@@ -1690,6 +2636,10 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         double covWeighted = 0;
         size_t covLen = 0;
         curPath = ResolvedPath();
+        flankJoin = 0;
+        cvRelW = cvConW = 0;
+        cvRelL = cvConL = 0;
+        flankDrops.clear();
         uint32_t cur = c;
         // Entering through the port that has no join leaves the other free to
         // continue; a chain joined only at port 1 is therefore used forward.
@@ -1701,17 +2651,48 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             done[cur] = 1;
             const size_t before = curPath.oriented.size();
             renderChain(cur, inPort == 1, seq, covWeighted, covLen);
+            if (fixGapFlank && pendingGap > 0) {
+                // T03: the path describes the open-gap layout restoreGapFlanks() gives.
+                pendingGap = flankOpen;
+                const size_t rs = flankNStart + static_cast<size_t>(gapFlank_.back().nWritten);
+                gapFlank_.back().right = seq.substr(rs, std::min(kGapFlankContext, seq.size() - rs));
+            }
             if (pendingGap > 0 && before < curPath.gaps.size()) curPath.gaps[before] = pendingGap;
             pendingGap = 0;
             const uint32_t outPort = cur * 2 + (inPort == 0 ? 1 : 0);
             const uint32_t partner = joinTo[outPort];
             if (partner == UINT32_MAX || ++steps > nc) {
-                if (!curPath.oriented.empty())
+                pathBeforeTailWalk = curPath.oriented.size();
+                if (joinTrace_ && kPrefixMinBody != 0 && !curPath.oriented.empty()) {
+                    const size_t lastN = seq.find_last_of("Nn");
+                    size_t actual = lastN == std::string::npos ? seq.size() : seq.size() - lastN - 1;
+                    // T03 keeps the release layout here and restores the flank after gap filling:
+                    // compare against the tail as restoreGapFlanks() will emit it.
+                    if (fixGapFlank && lastN != std::string::npos && !gapFlank_.empty())
+                        actual += gapFlank_.back().restore.size();
+                    const size_t eb = endBody(false);
+                    ++ebTails;
+                    if (eb == actual) ++ebExact;
+                    else if (eb == actual + ov) ++ebReleaseGapCut;   // T03 off, behind a gap
+                    else ++ebOther;
+                }
+                if (!curPath.oriented.empty() && bodyAllowsWalk(false)) {
+                    const size_t seqBefore = seq.size();
+                    const std::string scaffoldCopy = paSetting != 0 ? seq : std::string();
                     extendByCommonPrefix(curPath.oriented.back(), seq, covWeighted, covLen, false);
+                    paApply(false, seq, seqBefore, pathBeforeTailWalk, covWeighted, covLen,
+                            scaffoldCopy, seqBefore);
+                }
                 break;
             }
             const uint32_t nextC = partner / 2;
             if (done[nextC] || chains[nextC].empty()) break;
+            if (fixGapFlank) {
+                // T03: the next chain's first piece records how this gap is restored.
+                flankJoin = joinGap[outPort];
+                flankPort = outPort;
+                flankNStart = seq.size();
+            }
             seq.append(static_cast<size_t>(joinGap[outPort]), 'N');
             stats_.gapBases += static_cast<size_t>(joinGap[outPort]);
             ++stats_.scaffoldJoins;
@@ -1731,7 +2712,10 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             double hCov = 0;
             size_t hLen = 0;
             const size_t beforeHead = curPath.oriented.size();
-            extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen, true);
+            if (bodyAllowsWalk(true)) {
+                extendByCommonPrefix(flip(curPath.oriented.front()), headExt, hCov, hLen, true);
+                paApply(true, headExt, 0, beforeHead, hCov, hLen, seq, seq.size());
+            }
             if (!headExt.empty()) {
                 // extendByCommonPrefix already drops each piece's overlap as it
                 // appends, so headExt is novel sequence only and is prepended
@@ -1760,11 +2744,14 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         }
         contigs.push_back(std::move(seq));
         covs.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0);
+        notePathCov();
         paths_.push_back(curPath);
         ++stats_.pathsBuilt;
     }
 
-    // Chains inside a scaffold cycle have no free port; break them arbitrarily.
+    // Chains inside a scaffold cycle have no free port. Release 1.3.0 renders them here
+    // one by one, dropping every join of the cycle (T13; counted in [scafcycle], and
+    // TESSERACT_FIX_SCAFFOLD_CYCLE breaks each cycle before the walk above instead).
     for (uint32_t c = 0; c < nc; ++c) {
         if (chains[c].empty() || done[c]) continue;
         std::string seq;
@@ -1772,10 +2759,15 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         size_t covLen = 0;
         done[c] = 1;
         curPath = ResolvedPath();
+        flankJoin = 0;
+        cvRelW = cvConW = 0;
+        cvRelL = cvConL = 0;
+        flankDrops.clear();
         renderChain(c, false, seq, covWeighted, covLen);
         if (seq.empty()) continue;
         contigs.push_back(std::move(seq));
         covs.push_back(covLen ? covWeighted / static_cast<double>(covLen) : 0);
+        notePathCov();
         paths_.push_back(curPath);
         ++stats_.pathsBuilt;
     }
@@ -1790,6 +2782,177 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
         solo.gaps.push_back(0);
         paths_.push_back(solo);
     }
+
+    ResolverCounters rc;
+    rc.run = 1;
+    rc.requireSupportSingle = requireSupportSingle_ ? 1 : 0;
+    rc.minFallbackDest = minFallbackDest_;
+    rc.excludeSharedRepeat = excludeSharedRepeatSupport ? 1 : 0;
+    rc.sharedAudit = auditSharedRepeatSupport ? 1 : 0;
+    rc.noUnspannedFallback = noUnspannedFallback_ ? 1 : 0;
+    rc.linkBar = linkBar;
+    rc.tieRatio = tieRatio_;
+    rc.evals = dbgEvals; rc.ok = dbgOk; rc.noCand = dbgNoCand; rc.noPick = dbgLowSupport; rc.tie = dbgTie;
+    rc.midChain = dbgMidChain; rc.byCoverage = dbgCoverage; rc.matched = dbgMatched;
+    rc.shortDest = dbgShortDest; rc.unspanned = dbgUnspanned; rc.loneRepeat = dbgLoneRepeat;
+    rc.sharedExcludedAll = dbgEsrsAllExcluded; rc.esrsChanged = dbgEsrsChanged;
+    rc.truncGuard = fixTruncGuard ? 1 : 0;
+    rc.trSides = trSides; rc.trBudget = trBudget; rc.trMaxNodes = trMaxNodes; rc.trCap = trCap;
+    rc.trLone = trLone; rc.trLoneBelowBar = trLoneBelowBar; rc.trRefused = trRefused;
+    rc.revisitGuard = fixRevisitGuard ? 1 : 0;
+    rc.rvPrunedSides = rvPrunedSides; rc.rvPicked = rvPicked; rc.rvRefused = rvRefused;
+    rc.cycleBreak = fixCycleBreak ? 1 : 0;
+    rc.scCycles = scCycles; rc.scChains = scChains; rc.scJoins = scJoins;
+    rc.scDropped = fixCycleBreak ? scBroken : scJoins; rc.scBases = scBases; rc.scBroken = scBroken;
+    rc.gapEstimate = fixGapEstimate ? 1 : 0;
+    rc.geJoins = geJoins; rc.geEstimated = geEstimated; rc.geChanged = geChanged; rc.geFloor1 = geFloor1;
+    rc.geOverlapEst = geOverlapEst; rc.geSkippedNoMean = geSkippedNoMean;
+    if (!geShift.empty()) {
+        std::nth_element(geShift.begin(), geShift.begin() + static_cast<std::ptrdiff_t>(geShift.size() / 2), geShift.end());
+        rc.geMedianShift = geShift[geShift.size() / 2];
+    }
+    rc.gapFlank = fixGapFlank ? 1 : 0;
+    rc.gfGaps = gfGaps; rc.gfKept = gfKept; rc.gfOverlapGaps = gfOverlapGaps; rc.gfOverlapBases = gfOverlapBases;
+    rc.gfOverlapRejected = gfOverlapRejected; rc.gfFloor1 = gfFloor1; rc.gfUnknown = gfUnknown;
+    rc.covContrib = fixCovContrib ? 1 : 0;
+    rc.cvPaths = cvPaths; rc.cvOff10 = cvOff10;
+    rc.routeOrder = fixRouteOrder ? 1 : 0;
+    rc.roDecisions = roDecisions; rc.roSorted = roSorted;
+    rc.mirrorRoute = fixMirrorRoute ? 1 : 0;
+    rc.mrDisagree = mrDisagree; rc.mrChoseBack = mrChoseBack;
+    printResolverCounters(rc);
+    // build_v3: the ENDS counters are printed on every run, zeros included, with a trailing
+    // enabled= field (OBJECTIVE A2); the leading fields are the package's own.
+    std::fprintf(stderr,
+        "[pairprefix] m=%d mode=%s anchors=%zu ends=%zu capped=%zu zero=%zu bp_walk=%zu bp_kept=%zu mates=%zu "
+        "enabled=%d\n",
+        paSetting != 0 ? paM : 0, paPosMode ? "pos" : "node", readAnchors_.size(), paEnds, paCapped, paZero,
+        paBpWalk, paBpKept, paMates, paSetting != 0 ? 1 : 0);
+    std::fprintf(stderr,
+        "[endext] budget=%.0f min_body=%zu ends_checked=%zu ends_skipped_short_body=%zu "
+        "certified=%d flow=%.2f anchor_stops=%zu flow_stops=%zu no_revisit=%d revisit_stops=%zu enabled=%d\n",
+        kPrefixBudget, kPrefixMinBody != 0 ? minBodyBp : 0, minBodyChecked, minBodySkips,
+        kCertifiedPrefix ? 1 : 0, kCertifiedFlow, ctpAnchorStops, ctpFlowStops,
+        kPrefixNoRevisit ? 1 : 0, noRevisitStops, (kPrefixMinBody != 0 || kCertifiedPrefix || kPrefixNoRevisit) ? 1 : 0);
+    if (joinTrace_ && kPrefixMinBody != 0) {
+        std::fprintf(stderr, "[endbody-check] tails=%zu exact=%zu releaseGapCut=%zu other=%zu\n",
+                     ebTails, ebExact, ebReleaseGapCut, ebOther);
+    }
+}
+
+void restoreGapFlanks(std::vector<std::string>& seqs, const std::vector<GapFlankRecord>& records) {
+    // Key: left|right|nWritten in the resolver's orientation (forward) and the reverse
+    // complement of the whole gap (reverse). A key two records share is ambiguous and
+    // restores nothing.
+    struct Hit { size_t rec; bool reverse; bool ambiguous; };
+    std::unordered_map<std::string, Hit> index;
+    auto add = [&](const std::string& key, size_t r, bool rev) {
+        auto it = index.find(key);
+        if (it == index.end()) index.emplace(key, Hit{r, rev, false});
+        else if (it->second.rec != r || it->second.reverse != rev) it->second.ambiguous = true;
+    };
+    for (size_t r = 0; r < records.size(); ++r) {
+        const GapFlankRecord& g = records[r];
+        if (g.left.size() != kGapFlankContext || g.right.size() != kGapFlankContext) continue;
+        const std::string n = std::to_string(g.nWritten);
+        add(g.left + "|" + g.right + "|" + n, r, false);
+        add(reverseComplement(g.right) + "|" + reverseComplement(g.left) + "|" + n, r, true);
+    }
+    size_t runs = 0, restored = 0, ambiguous = 0, bases = 0;
+    long long nDelta = 0;
+    std::vector<char> used(records.size(), 0);
+    for (std::string& s : seqs) {
+        if (s.find('N') == std::string::npos) continue;
+        std::string out;
+        out.reserve(s.size() + 256);
+        size_t pos = 0;
+        while (pos < s.size()) {
+            if (s[pos] != 'N') { out.push_back(s[pos++]); continue; }
+            size_t e = pos;
+            while (e < s.size() && s[e] == 'N') ++e;
+            ++runs;
+            bool done = false;
+            if (pos >= kGapFlankContext && e + kGapFlankContext <= s.size()) {
+                const std::string key = s.substr(pos - kGapFlankContext, kGapFlankContext) + "|" +
+                                        s.substr(e, kGapFlankContext) + "|" + std::to_string(e - pos);
+                auto it = index.find(key);
+                if (it != index.end() && it->second.ambiguous) ++ambiguous;
+                else if (it != index.end()) {
+                    const GapFlankRecord& g = records[it->second.rec];
+                    if (it->second.reverse) {
+                        out += reverseComplement(g.restore);
+                        out.append(static_cast<size_t>(g.nOpen), 'N');
+                    } else {
+                        out.append(static_cast<size_t>(g.nOpen), 'N');
+                        out += g.restore;
+                    }
+                    ++restored;
+                    used[it->second.rec] = 1;
+                    bases += g.restore.size();
+                    nDelta += static_cast<long long>(g.nOpen) - static_cast<long long>(e - pos);
+                    done = true;
+                }
+            }
+            if (!done) out.append(s, pos, e - pos);
+            pos = e;
+        }
+        s.swap(out);
+    }
+    size_t unmatched = 0;
+    for (char u : used) unmatched += u ? 0 : 1;
+    std::fprintf(stderr,
+        "[gapflank-restore] records=%zu nRuns=%zu restored=%zu restoredBases=%zu nDelta=%lld "
+        "unmatchedRecords=%zu ambiguous=%zu\n",
+        records.size(), runs, restored, bases, nDelta, unmatched, ambiguous);
+}
+
+void printResolverCountersNotRun() {
+    // Same lines as a resolver run, run=0, zero counts; the flag values are the ones the
+    // environment resolves to (release flags parsed as release parses them).
+    ResolverCounters rc;
+    rc.run = 0;
+    rc.requireSupportSingle = env::on("TESSERACT_REQUIRE_SUPPORT_SINGLE", false) ? 1 : 0;
+    rc.minFallbackDest = static_cast<size_t>(env::integer("TESSERACT_MIN_FALLBACK_DEST", 0));
+    rc.excludeSharedRepeat = env::on("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", false) ? 1 : 0;
+    rc.sharedAudit = env::on("TESSERACT_SHARED_SUPPORT_AUDIT", false) ? 1 : 0;
+    rc.noUnspannedFallback = env::on("TESSERACT_NO_UNSPANNED_FALLBACK", false) ? 1 : 0;
+    rc.truncGuard = fixEnabled("TESSERACT_FIX_TRUNC_GUARD") ? 1 : 0;
+    rc.revisitGuard = fixEnabled("TESSERACT_FIX_REVISIT_GUARD") ? 1 : 0;
+    rc.cycleBreak = fixEnabled("TESSERACT_FIX_SCAFFOLD_CYCLE") ? 1 : 0;
+    rc.gapEstimate = fixEnabled("TESSERACT_FIX_GAP_ESTIMATE") ? 1 : 0;
+    rc.gapFlank = fixEnabled("TESSERACT_FIX_GAP_FLANK") ? 1 : 0;
+    rc.covContrib = fixEnabled("TESSERACT_FIX_COV_CONTRIB") ? 1 : 0;
+    rc.routeOrder = fixEnabled("TESSERACT_FIX_ROUTE_ORDER") ? 1 : 0;
+    rc.mirrorRoute = fixEnabled("TESSERACT_FIX_MIRROR_ROUTE") ? 1 : 0;
+    std::fprintf(stderr,
+        "[resolver] run=0 theta=0.0000 repeatThreshold=0.0000 estimator=none legacyMedian=0.0000 population=0\n");
+    printResolverCounters(rc);
+    // build_v3: the package resolver counters, run=0 form (same lines, zeros, flag state).
+    const long long oneSidedLong = env::integer("TESSERACT_ONE_SIDED_TIE_LONG", 2000);
+    const long long singleExitLong = env::integer("TESSERACT_TIE_SINGLE_EXIT_LONG", 0);
+    std::fprintf(stderr,
+        "[onesidedtie] weakNominations=0 weakJoins=0 refusedLongBranching=0 refusedTwoSided=0 "
+        "refusedPartnerNotDecisive=0 threadPreferred=0 long=%lld enabled=%d\n",
+        oneSidedLong, env::on("TESSERACT_ONE_SIDED_TIE", false) ? 1 : 0);
+    std::fprintf(stderr, "[tiesingleexit] exempted=0 refusedLong=0 long=%lld enabled=%d\n", singleExitLong,
+                 env::on("TESSERACT_TIE_SINGLE_EXIT", false) ? 1 : 0);
+    std::fprintf(stderr, "[fallbackmatching] kept=0 refused=0 enabled=%d\n",
+                 env::on("TESSERACT_FALLBACK_MATCHING_ONLY", false) ? 1 : 0);
+    const bool paOn = pairAnchoredPrefixSetting() != 0;
+    const char* paMode = env::text("TESSERACT_PAIR_ANCHORED_MODE");
+    std::fprintf(stderr,
+        "[pairprefix] m=0 mode=%s anchors=0 ends=0 capped=0 zero=0 bp_walk=0 bp_kept=0 mates=0 enabled=%d\n",
+        paMode && std::string(paMode) == "pos" ? "pos" : "node", paOn ? 1 : 0);
+    const bool minBodyOn = env::text("TESSERACT_PREFIX_MIN_BODY") != nullptr &&
+                           std::string(env::text("TESSERACT_PREFIX_MIN_BODY")) != "0";
+    const bool certified = env::on("TESSERACT_CERTIFIED_PREFIX", false);
+    const bool noRevisit = env::on("TESSERACT_PREFIX_NO_REVISIT", false);
+    std::fprintf(stderr,
+        "[endext] budget=%.0f min_body=0 ends_checked=0 ends_skipped_short_body=0 certified=%d flow=%.2f "
+        "anchor_stops=0 flow_stops=0 no_revisit=%d revisit_stops=0 enabled=%d\n",
+        env::real("TESSERACT_COMMON_PREFIX", 3000.0), certified ? 1 : 0,
+        env::real("TESSERACT_CERTIFIED_PREFIX_FLOW", 0.8), noRevisit ? 1 : 0,
+        (minBodyOn || certified || noRevisit) ? 1 : 0);
 }
 
 }  // namespace ts

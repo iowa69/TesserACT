@@ -1,4 +1,5 @@
 #include "replicon.h"
+#include "envflags.h"
 
 #include <algorithm>
 #include <cmath>
@@ -366,9 +367,7 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
     // set by how much sequence a contig needs before its markers mean anything, which is a
     // property of this panel at this sampling rate and is measured, not derived.
     auto envSize = [](const char* name, size_t dflt) -> size_t {
-        const char* e = std::getenv(name);
-        if (!e) return dflt;
-        const long v = std::atol(e);
+        const long long v = env::integer(name, 0);   // unset reads as 0 -> dflt
         return v > 0 ? static_cast<size_t>(v) : dflt;
     };
     const size_t weakMin = envSize("TESSERACT_COMEMBER_WEAK", kMinMarkersWeak);
@@ -418,8 +417,8 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
 
     const bool haveMembership = model.plasmidCount() > 0;
     double panelThreshold = 0.5;
-    if (const char* e = std::getenv("TESSERACT_COMEMBER_MIN")) {
-        const double v = std::atof(e);
+    {
+        const double v = env::real("TESSERACT_COMEMBER_MIN", 0.0);   // unset reads as 0 -> 0.5 kept
         if (v > 0 && v <= 1.0) panelThreshold = v;
     }
     if ((links && links->usable()) || haveMembership) {
@@ -474,14 +473,14 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
 // no-op: whole plasmids delivered in one group 9/65 either way, one contig moved. It stays
 // here, behind a knob, because the mechanism demonstrably fires -- collisions went 0 -> 5 on
 // the first isolate -- and it is the right place to attach a denser panel. It is not on.
-    const char* hubEnv = std::getenv("TESSERACT_HUB_GROUP");
+    const bool hubGroup = env::on("TESSERACT_HUB_GROUP", false);
     // Value, not presence. Every other boolean knob in this tree parses its value, so a
     // sweep harness that exports TESSERACT_HUB_GROUP=0 for its off arm would otherwise turn
     // the pass ON in both arms and report a flat curve as a measured null result.
-    if (haveMembership && hubEnv && std::atoi(hubEnv) != 0) {
+    if (haveMembership && hubGroup) {
         double hubThreshold = panelThreshold;
-        if (const char* e = std::getenv("TESSERACT_HUB_MIN")) {
-            const double v = std::atof(e);
+        {
+            const double v = env::real("TESSERACT_HUB_MIN", 0.0);   // unset reads as 0 -> kept
             if (v > 0 && v <= 1.0) hubThreshold = v;
         }
         // Optional accession -> cluster table, applied at use time rather than baked into
@@ -494,7 +493,7 @@ RepliconAssignment assignReplicons(const std::vector<std::string>& contigs,
         // of near-identical accessions is unique per contig. Clustering is what gives two
         // contigs of one molecule something to agree on.
         std::vector<uint32_t> clusterOf;      // panel index -> cluster id, empty if unused
-        if (const char* cf = std::getenv("TESSERACT_PLASMID_CLUSTERS")) {
+        if (const char* cf = env::text("TESSERACT_PLASMID_CLUSTERS")) {
             std::unordered_map<std::string, uint32_t> byName;
             // Every failure below is announced. Silence here is indistinguishable from
             // "clustering applied and merged nothing", which is precisely the result this

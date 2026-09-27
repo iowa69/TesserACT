@@ -1,4 +1,5 @@
 #include "read_coverage.h"
+#include "test_env.h"
 #include "graph.h"
 #include "seqio.h"
 
@@ -110,6 +111,7 @@ ts::ReadCoverageResult compare(const ts::UnitigGraph& graph, const ts::SequenceS
 } // namespace
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     char pattern[] = "/tmp/tesseract-read-coverage-XXXXXX";
     const char* tmp = mkdtemp(pattern); check(tmp != nullptr, "temporary directory"); directory = tmp;
     for (int k : {21, 33, 127}) {

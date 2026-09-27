@@ -1,4 +1,5 @@
 #include "graph.h"
+#include "envflags.h"
 
 #include "util.h"
 
@@ -153,7 +154,7 @@ UnitigGraph UnitigGraph::build(const KmerTable& solid, int k, int threads) {
     // threads leaves the walk itself sequential, so unitigs come out in exactly
     // the same order and the assembly stays byte-identical.
     util::Timer phaseTimer;
-    const bool phaseDebug = std::getenv("TESSERACT_GRAPH_PHASES") != nullptr;
+    const bool phaseDebug = env::present("TESSERACT_GRAPH_PHASES");
     const double tKeys = phaseTimer.elapsed();
 
     std::vector<uint8_t> startFlag(keys.size() * 2, 0);
@@ -489,7 +490,18 @@ bool UnitigGraph::mergeInto(uint32_t u, int ue) {
     V.ends[1].clear();
 
     for (const Link& fl : vFarLinks) {
-        if (fl.to == v) continue;   // v had a self-loop; it dies with v
+        if (fl.to == v) {
+            // Only a hairpin (v.vFar -> v.vFar) reaches here: a link from v's far end to its
+            // attaching end ve would have made ve a branch point, refused above. v's far end
+            // is now u's end ue, so that is where the hairpin belongs (T28).
+            if (keepHairpins_ && fl.toEnd == vFar) {
+                addLink(u, ue, u, ue);
+                ++hairpinsKept_;
+            } else {
+                ++hairpinsDropped_;   // release behaviour: it dies with v
+            }
+            continue;
+        }
         addLink(u, ue, fl.to, fl.toEnd);
     }
     return true;
@@ -906,6 +918,45 @@ bool lowComplexity(const std::string& s) {
 
 }  // namespace
 
+namespace {
+
+// T36: the number of ordered pairs of live dead ends, on different unitigs, where the
+// (k-1)-mer leaving one equals the (k-1)-mer entering the other. That is a superset of
+// what joinDeadEnds can join (it additionally refuses low-complexity overlaps and uses
+// each end once), so when this is 0 a joinDeadEnds call joins nothing and changes
+// nothing. On a graph from build() it is always 0: build() links every exact (k-1)
+// overlap between solid k-mers, and links only disappear with the node they touch.
+// Costs O(dead ends * k), against joinDeadEnds' copy of every dead-end unitig.
+size_t countExactK1DeadEndPairs(const UnitigGraph& g) {
+    if (g.k() < 2) return 0;
+    const size_t K1 = static_cast<size_t>(g.k() - 1);
+    std::unordered_map<std::string, std::vector<uint32_t>> heads;
+    std::vector<std::pair<uint32_t, std::string>> tails;
+    for (uint32_t u = 0; u < g.nodes.size(); ++u) {
+        const Unitig& U = g.nodes[u];
+        if (U.deleted || U.seq.size() < K1) continue;
+        const size_t L = U.seq.size();
+        for (int e = 0; e < 2; ++e) {
+            if (!U.ends[e].empty()) continue;
+            // Leaving end e: the sequence runs out of end 1 forward, out of end 0 reversed.
+            std::string tail = e == 1 ? U.seq.substr(L - K1) : reverseComplement(U.seq.substr(0, K1));
+            heads[reverseComplement(tail)].push_back(u);   // what arrives at this end
+            tails.emplace_back(u, std::move(tail));
+        }
+    }
+    size_t pairs = 0;
+    for (const auto& t : tails) {
+        auto it = heads.find(t.second);
+        if (it == heads.end()) continue;
+        for (uint32_t h : it->second) {
+            if (h != t.first) ++pairs;
+        }
+    }
+    return pairs;
+}
+
+}  // namespace
+
 size_t UnitigGraph::joinDeadEnds(size_t minOverlap) {
     if (minOverlap < 8) minOverlap = 8;
     const size_t maxOverlap = static_cast<size_t>(k_ - 1);
@@ -1137,22 +1188,20 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
     // long unitigs, and they proliferate at low coverage -- where the measured gap lives.
     // Both bounds are overridable so the trade-off against genome fraction can be
     // measured rather than assumed.
-    static const double kTipLenMult = [] {
+    const double kTipLenMult = [] {
         // Swept against SPAdes' tc_lb 3.5 on low-coverage strains. TesserACT's legacy
         // ceiling of max(2k, readLength) is ~1.7x shorter than SPAdes', and the LENGTH
         // bound -- not the coverage ratio -- is what dominates: on ERR11578724 the ratio
         // change alone gave 24,171 while ratio+length gave 353,308 against a legacy
         // 8,989, a 39x gain, with genome fraction RISING 95.48 -> 95.78.
-        const char* e = std::getenv("TESSERACT_TIP_LEN_MULT");
-        return e ? std::atof(e) : 3.5;
+        return env::real("TESSERACT_TIP_LEN_MULT", 3.5);
     }();
-    static const double kTipRatio = [] {
+    const double kTipRatio = [] {
         // SPAdes uses rctc 2.0. Swept here, 1.0 beat 2.0 on the strain with the largest
         // gain (353,308 vs 173,770), so copying their constant would have left half the
         // improvement behind. Different strains prefer different values, which is the
         // argument for measuring rather than adopting.
-        const char* e = std::getenv("TESSERACT_TIP_RATIO");
-        return e ? std::atof(e) : 1.0;
+        return env::real("TESSERACT_TIP_RATIO", 1.0);
     }();
     size_t tipLen = static_cast<size_t>(std::max(2 * k_, readLength));
     if (kTipLenMult > 0) {
@@ -1161,6 +1210,12 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                                               static_cast<double>(readLength)));
     }
     const size_t bubbleLen = static_cast<size_t>(std::max(3 * k_, 2 * readLength));
+
+    // T29 / T36 counters and the T29 flag, read on every call.
+    const bool countAll = fixflags::fixLevel("TESSERACT_FIX_SIMPLIFY_COUNT_ALL") > 0;
+    size_t hiddenStops = 0, roundsRun = 0;
+    double stoppedAtRamp = 0.0;
+    size_t joinSetting = 0, jdePairs = 0, jdeCalls = 0, jdeSkipped = 0, jdeJoined = 0;
 
     for (int round = 0; round < maxRounds; ++round) {
         // Aggressiveness ramps up across rounds: early passes only remove the
@@ -1181,10 +1236,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // (p=0.001), largest alignment +14.5% (11/3, p=0.038) and 11.4% fewer contigs
         // (16/9, p=0.031), at no structural cost -- misassemblies 3/2, duplication 5/4,
         // mismatches not significant. Set to 0 to restore the relative-only tip rule.
-        static const double kTipAbsMult = [] {
-            const char* e = std::getenv("TESSERACT_TIP_ABS_MULT");
-            return e ? std::atof(e) : 10.0;
-        }();
+        const double kTipAbsMult = env::real("TESSERACT_TIP_ABS_MULT", 10.0);
         size_t tipAbsLen = 0;
         double tipAbsCov = 0.0;
         if (kTipAbsMult > 0) {
@@ -1193,10 +1245,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                 std::max(kTipAbsMult * ecK, static_cast<double>(readLength)));
             // Same bound the erroneous-connection cut uses below, so the two agree on
             // what counts as error-level coverage.
-            static const bool kFittedEcTip = [] {
-                const char* e = std::getenv("TESSERACT_FITTED_EC");
-                return e && std::atoi(e) != 0;
-            }();
+            const bool kFittedEcTip = env::on("TESSERACT_FITTED_EC", false);
             tipAbsCov = (kFittedEcTip && errorThreshold > 0)
                             ? errorThreshold * ramp
                             : std::max(meanCoverage * 0.12, 3.0) * ramp;
@@ -1207,10 +1256,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // split would give, which is what separates it from real divergence.
         st.bubblesPopped = popBubbles(bubbleLen, 0.95, meanCoverage * bubbleCoverageLimit);
         st.merged += compact();
-        static const double chimeraFactor = [] {
-            const char* e = std::getenv("TESSERACT_CHIMERA_FACTOR");
-            return e ? std::atof(e) : 0.12;
-        }();
+        const double chimeraFactor = env::real("TESSERACT_CHIMERA_FACTOR", 0.12);
         // Cutting long low-coverage connectors risks severing real sequence,
         // so the operation stays confined to short ones. Raising this ceiling
         // was measured and cost genome fraction without buying contiguity.
@@ -1225,17 +1271,11 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         //
         // So give it a floor just above the abundance cutoff. Below that the call is a
         // no-op dressed up as a simplification step.
-        static const double chimeraFloor = [] {
-            const char* e = std::getenv("TESSERACT_CHIMERA_FLOOR");
-            return e ? std::atof(e) : 3.0;
-        }();
+        const double chimeraFloor = env::real("TESSERACT_CHIMERA_FLOOR", 3.0);
         // Fitted per rung when available, otherwise the fixed multiple of the mean. A
         // fixed multiple cannot track a threshold that moves across a ladder; the fitted
         // one is read from this rung's own count histogram.
-        static const bool kFittedEc = [] {
-            const char* e = std::getenv("TESSERACT_FITTED_EC");
-            return e && std::atoi(e) != 0;
-        }();
+        const bool kFittedEc = env::on("TESSERACT_FITTED_EC", false);
         const double chimeraCut =
             (kFittedEc && errorThreshold > 0)
                 ? errorThreshold * ramp
@@ -1251,10 +1291,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // the broken gate above, which cut connectors having no alternative path. With a
         // real outdeg/indeg gate the operation can only remove edges whose junctions both
         // survive, which is what makes the longer reach safe.
-        static const double kEcLenMult = [] {
-            const char* e = std::getenv("TESSERACT_EC_LEN_MULT");
-            return e ? std::atof(e) : 5.0;
-        }();
+        const double kEcLenMult = env::real("TESSERACT_EC_LEN_MULT", 5.0);
         const double ecK = std::min<double>(k_, readLength / 2.0);
         const size_t ecLen = static_cast<size_t>(
             2.0 * std::max(kEcLenMult * ecK, static_cast<double>(readLength)) - 1.0);
@@ -1271,10 +1308,7 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // 26, and mismatches 0.14 -> 0.21 against its 0.44 -- the extra
         // sequence recovered is repeat-adjacent and carries more of them.
         // Set TESSERACT_LOCAL_WEAK=0 to turn it off.
-        static const double localWeak = [] {
-            const char* e = std::getenv("TESSERACT_LOCAL_WEAK");
-            return e ? std::atof(e) : 0.10;
-        }();
+        const double localWeak = env::real("TESSERACT_LOCAL_WEAK", 0.10);
         if (localWeak > 0) {
             st.lowDepthRemoved += removeLocallyWeak(localWeak, meanCoverage * 0.25);
             st.merged += compact();
@@ -1289,13 +1323,26 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // strain), and an exact overlap between two loose ends is evidence no decision
         // rule can supply, because there was no edge to decide between. Default it on at
         // a conservative overlap; set 0 to restore the old behaviour.
-        static const size_t joinOverlap = [] {
-            const char* e = std::getenv("TESSERACT_JOIN_DEADENDS");
-            return e ? static_cast<size_t>(std::atoi(e)) : 31u;
-        }();
+        const size_t joinOverlap = static_cast<size_t>(env::integer("TESSERACT_JOIN_DEADENDS", 31));
+        // T36 (build_v3, output-neutral): joinDeadEnds forces its overlap to exactly k-1,
+        // and build() has already linked every exact (k-1) overlap, so on this path it has
+        // never joined anything (0 over 36 panel graphs and 1,516 randomised rounds) while
+        // copying every dead-end unitig each round. It now runs only when the cheap exact
+        // pair count says it could join something; otherwise it and the compact() after it
+        // are skipped. That compact() would have merged nothing the one below does not, so
+        // the graph and st.merged are unchanged.
+        joinSetting = joinOverlap;
         if (joinOverlap > 0) {
-            st.deadEndsJoined = joinDeadEnds(joinOverlap);
-            st.merged += compact();
+            const size_t pairs = countExactK1DeadEndPairs(*this);
+            jdePairs += pairs;
+            if (pairs > 0) {
+                st.deadEndsJoined = joinDeadEnds(joinOverlap);
+                st.merged += compact();
+                ++jdeCalls;
+                jdeJoined += st.deadEndsJoined;
+            } else {
+                ++jdeSkipped;
+            }
         }
         st.merged += compact();
 
@@ -1305,8 +1352,15 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
         // rather than tidying it, which is worth seeing in the report.
         st.deadEnds = totalDeadEnds();
         st.totalLength = totalLength();
-        const size_t changes = st.tipsRemoved + st.bubblesPopped +
-                               st.chimerasRemoved + st.isolatedRemoved;
+        size_t changes = st.tipsRemoved + st.bubblesPopped +
+                         st.chimerasRemoved + st.isolatedRemoved;
+        // T29 (build_v3, TESSERACT_FIX_SIMPLIFY_COUNT_ALL=1, default off): a round whose only
+        // deletions were locally-weak unitigs (or whose only edits were dead-end joins) still
+        // changed the graph, and the tips and connectors it exposed deserve the next,
+        // stronger-ramped round. The legacy rule stopped there.
+        const size_t hidden = st.lowDepthRemoved + st.deadEndsJoined;
+        if (changes == 0 && hidden > 0) ++hiddenStops;
+        if (countAll) changes += hidden;
         if (rounds) rounds->push_back(st);
 
         if (verbose) {
@@ -1318,9 +1372,27 @@ void UnitigGraph::simplify(double meanCoverage, int readLength, bool verbose,
                          st.isolatedRemoved, st.lowDepthRemoved, st.deadEnds,
                          st.unitigs, st.n50);
         }
+        ++roundsRun;
+        stoppedAtRamp = ramp;
         if (changes == 0) break;
     }
 
+    // Counter lines on every call, zeros included (OBJECTIVE amendment A2). stderr only.
+    if (verbose) {
+        std::fprintf(stderr,
+                     "  k=%-3d [simplify_count_all] enabled=%d rounds=%zu stoppedAtRho=%.3f "
+                     "hiddenStops=%zu\n",
+                     k_, countAll ? 1 : 0, roundsRun, stoppedAtRamp, hiddenStops);
+        const size_t K1 = k_ > 0 ? static_cast<size_t>(k_ - 1) : 0;
+        // joinDeadEnds clamps the request to >= 8, returns at once when that exceeds k-1,
+        // and otherwise tests only k-1: `effective` is the overlap it would actually test.
+        const size_t effective =
+            joinSetting == 0 ? 0 : (K1 >= std::max<size_t>(joinSetting, 8) ? K1 : 0);
+        std::fprintf(stderr,
+                     "  k=%-3d [joindeadends] requested=%zu effective=%zu roundsSkipped=%zu "
+                     "pairsFound=%zu calls=%zu joined=%zu\n",
+                     k_, joinSetting, effective, jdeSkipped, jdePairs, jdeCalls, jdeJoined);
+    }
 }
 
 // ---------------------------------------------------------------------------

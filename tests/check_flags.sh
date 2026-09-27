@@ -3,6 +3,9 @@
 # effect. A flag that is documented but silently ignored is worse than one that
 # is missing, because nothing fails.
 set -uo pipefail
+# Release defaults: an exported TESSERACT_* experiment environment must neither fail nor
+# mask these checks.
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^TESSERACT_' || true)
 BIN=${1:-./tesseract-asm}
 MODELBIN=${2:-./tesseract-model}
 TMP=$(mktemp -d)
@@ -60,6 +63,32 @@ for spec in "-k 4" "-k 200" "--mode nonsense" "--map-polish nonsense" "--nosuchf
   if run "$d" $spec; then bad "reject $spec" "accepted an invalid value"; else ok "reject $spec"; fi
 done
 
+# --- 2b. malformed TESSERACT_* values must be rejected ----------------------
+# 1.3.0 read these with atoi/atof and ran: 1e9 became 1 (the guard silently off), true
+# became 0, -1 wrapped to SIZE_MAX, 4294967296 was undefined. Now: exit 2, flag named.
+for e in "TESSERACT_MIN_FALLBACK_DEST=1e9" "TESSERACT_MIN_FALLBACK_DEST=abc" \
+         "TESSERACT_MIN_FALLBACK_DEST=4294967296" "TESSERACT_MIN_FALLBACK_DEST=-1" \
+         "TESSERACT_GAPCLOSE_VOTES=-1" "TESSERACT_JOIN_TRACE=true" "TESSERACT_RC_DOVETAIL=true" \
+         "TESSERACT_ROUTE_DISTANCE=2" "TESSERACT_COMMON_PREFIX=inf" "TESSERACT_JOIN_TRACE="; do
+  d="$TMP/e$(printf '%s' "$e" | tr -c 'A-Za-z0-9' '_')"; mkdir -p "$d"
+  env "$e" "$BIN" -1 "$R1" -2 "$R2" -o "$d" -t 4 > "$d.log" 2>&1; rc=$?
+  if [ "$rc" -ne 2 ]; then bad "reject env $e" "exit $rc, expected 2"
+  elif grep -q "^error: ${e%%=*}='" "$d.log"; then ok "reject env $e"
+  else bad "reject env $e" "exit 2 without naming the flag"; fi
+done
+# ...and a valid configuration (the K2 arm) is accepted and recorded with parsed values.
+mkdir -p "$TMP/k2env"
+if env TESSERACT_COMMON_PREFIX=0 TESSERACT_MIN_FALLBACK_DEST=1000000000 \
+       TESSERACT_REQUIRE_SUPPORT_SINGLE=1 TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=1 \
+       "$BIN" -1 "$R1" -2 "$R2" -o "$TMP/k2env" -t 4 --tie-ratio 2.0 > "$TMP/k2env.log" 2>&1 \
+   && [ -s "$TMP/k2env/contigs.fasta" ] \
+   && grep -qx "\[config\] TESSERACT_MIN_FALLBACK_DEST=1000000000" "$TMP/k2env.log" \
+   && grep -qx "\[config\] TESSERACT_REQUIRE_SUPPORT_SINGLE=1 (on)" "$TMP/k2env.log"; then
+  ok "valid env accepted and logged as [config]"
+else
+  bad "valid env" "run failed or [config] lines missing"
+fi
+
 # --- 3. flags must actually take effect ------------------------------------
 mkdir -p "$TMP/base" "$TMP/minc"
 run "$TMP/base"; run "$TMP/minc" --min-contig 100000
@@ -71,18 +100,29 @@ b=$(grep -c '^>' "$TMP/minc/contigs.fasta" 2>/dev/null); b=${b:-0}
 [ -s "$TMP/base/report.html" ] && ok "HTML report written" || bad "report.html" "missing"
 [ -s "$TMP/base/report.json" ] && ok "JSON report written" || bad "report.json" "missing"
 
+# Every reproducible output, not only contigs.fasta (presence and bytes).
+differs() {
+  local f d=""
+  for f in contigs.fasta scaffolds.fasta scaffolds.agp assembly_graph.gfa; do
+    if [ -e "$1/$f" ] || [ -e "$2/$f" ]; then cmp -s "$1/$f" "$2/$f" || d="$d $f"; fi
+  done
+  printf '%s' "$d"
+}
+
 # determinism
 mkdir -p "$TMP/d1" "$TMP/d2"
 run "$TMP/d1"; run "$TMP/d2"
-cmp -s "$TMP/d1/contigs.fasta" "$TMP/d2/contigs.fasta" \
-  && ok "deterministic across runs" || bad "determinism" "outputs differ"
+dd=$(differs "$TMP/d1" "$TMP/d2")
+[ -s "$TMP/d1/contigs.fasta" ] && [ -z "$dd" ] \
+  && ok "deterministic across runs" || bad "determinism" "outputs differ:$dd"
 
 # thread invariance
 mkdir -p "$TMP/t1" "$TMP/t8"
 "$BIN" -1 "$R1" -2 "$R2" -o "$TMP/t1" -t 1 >/dev/null 2>&1
 "$BIN" -1 "$R1" -2 "$R2" -o "$TMP/t8" -t 8 >/dev/null 2>&1
-cmp -s "$TMP/t1/contigs.fasta" "$TMP/t8/contigs.fasta" \
-  && ok "thread-invariant" || bad "thread invariance" "outputs differ"
+td=$(differs "$TMP/t1" "$TMP/t8")
+[ -s "$TMP/t1/contigs.fasta" ] && [ -z "$td" ] \
+  && ok "thread-invariant" || bad "thread invariance" "outputs differ:$td"
 
 # --- 4. the model path ------------------------------------------------------
 if [ -x "$MODELBIN" ]; then
@@ -111,6 +151,19 @@ PY
       "$TMP"/mdl/*.fasta > "$TMP/excl.log" 2>&1
   grep -q "1 accessions excluded" "$TMP/excl.log" \
     && ok "--exclude is honoured and recorded" || bad "--exclude" "not recorded"
+
+  # --model is an author-only option since 1.3.0 (eb1933e): without TESSERACT_MODEL_AUTHOR it
+  # is refused at the argument. The checks below exercise the author path, so they set it --
+  # they used to pass only in a shell that happened to export it, and failed everywhere else.
+  mkdir -p "$TMP/noauthor"
+  if run "$TMP/noauthor" --organism test --model "$TMP/test.tsm"; then
+    bad "--model without TESSERACT_MODEL_AUTHOR" "accepted"
+  elif grep -q "is not a supported option" "$TMP/noauthor.log"; then
+    ok "--model is refused without TESSERACT_MODEL_AUTHOR"
+  else
+    bad "--model without TESSERACT_MODEL_AUTHOR" "failed without the documented message"
+  fi
+  export TESSERACT_MODEL_AUTHOR=1
 
   mkdir -p "$TMP/withmodel"
   if run "$TMP/withmodel" --organism test --model "$TMP/test.tsm" \

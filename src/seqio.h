@@ -24,6 +24,21 @@ struct QualityTrim {
 // when trimming is off or there is no quality line. Exposed for testing.
 uint32_t qualityTrimmedLength(const char* qual, size_t len, const QualityTrim& qt);
 
+// What load() read, and what it tolerated on the way in. load() prints these as one
+// "[seqio]" line on every successful run, zeros included, so a run log shows whether
+// either tolerance was ever needed.
+struct LoadStats {
+    size_t files = 0;
+    size_t records = 0;
+    // Empty lines skipped in a FASTQ file where a '@' header was due: a trailing blank
+    // line, or one between records. Leading blank lines were always skipped and are
+    // not counted.
+    size_t interRecordBlankLines = 0;
+    // Mate pairs whose names agree only once a trailing '.1' / '.2' is set aside
+    // (fastq-dump --readids writes SRR.spot.1 and SRR.spot.2).
+    size_t dotSuffixMatePairs = 0;
+};
+
 // One input library.
 struct Library {
     std::string r1;
@@ -43,6 +58,9 @@ public:
     // Loads every library. Paired reads are stored adjacently so the mate of
     // read i is always i^1, which keeps pair lookups branch-free.
     bool load(const std::vector<Library>& libs, int threads, std::string& error);
+
+    // Counters of the last successful load() (all zero after a failed one).
+    const LoadStats& loadStats() const { return loadStats_; }
 
     size_t size() const { return offsets_.size() > 0 ? offsets_.size() - 1 : 0; }
     size_t totalBases() const { return totalBases_; }
@@ -145,6 +163,7 @@ private:
     std::vector<uint64_t> originalAmbiguous_;
     std::vector<uint8_t> originalQualities_; // numerical Q0..93;255 unavailable
     bool originalQualitiesRetained_ = false;
+    LoadStats loadStats_;
 };
 
 struct MateRescueStats {

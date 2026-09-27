@@ -1,10 +1,16 @@
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <string>
 #include <thread>
+#include <utility>
+#include <vector>
+
+#include <sys/stat.h>
 
 #include "assembler.h"
+#include "envflags.h"
 #include "version.h"
 #include "kmer.h"
 #include "util.h"
@@ -172,8 +178,22 @@ static double numInRange(const std::string& text, const char* flag, double lo, d
 }
 
 static long long intInRange(const std::string& text, const char* flag, long long lo, long long hi) {
-    return static_cast<long long>(numInRange(text, flag, static_cast<double>(lo),
-                                             static_cast<double>(hi)));
+    const double v = numInRange(text, flag, static_cast<double>(lo), static_cast<double>(hi));
+    // The cast below truncates: "-k 21.9,55" ran k=21 and "-t 4.5" ran 4 threads. A
+    // fractional value for an integer option is a typo, not a request to round.
+    if (v != std::floor(v)) {
+        std::fprintf(stderr, "error: %s expects an integer (got '%s')\n", flag, text.c_str());
+        std::exit(2);
+    }
+    return static_cast<long long>(v);
+}
+
+// True when a and b name the same file (same device and inode), so a symlink or a
+// second spelling of the path cannot slip past a plain string comparison.
+static bool sameFile(const std::string& a, const std::string& b) {
+    struct stat sa, sb;
+    if (::stat(a.c_str(), &sa) != 0 || ::stat(b.c_str(), &sb) != 0) return a == b;
+    return sa.st_dev == sb.st_dev && sa.st_ino == sb.st_ino;
 }
 
 int main(int argc, char** argv) {
@@ -189,6 +209,7 @@ int main(int argc, char** argv) {
     Library lib;
     std::vector<Library> singles;
     bool haveLib = false;
+    bool sawK = false;
 
     if (argc < 2) { usage(); return 1; }
 
@@ -209,9 +230,30 @@ int main(int argc, char** argv) {
             std::printf("TesserACT %s\n%s, %s\n", kVersion, kAuthor, kOrg);
             return 0;
         }
-        else if (a == "-1" || a == "--read1") { lib.r1 = needValue(i, "-1"); haveLib = true; }
-        else if (a == "-2" || a == "--read2") { lib.r2 = needValue(i, "-2"); haveLib = true; }
-        else if (a == "--12") { lib.r1 = needValue(i, "--12"); lib.interleaved = true; haveLib = true; }
+        // One paired library per run, each of its files given once. Each of these used to
+        // overwrite the one before: "-1 R1 -1 R2" assembled R2 alone, unpaired, with exit
+        // 0; "-1 A --12 B" dropped A; and "--12 A -2 B" read A as R1 of a two-file pair.
+        else if (a == "-1" || a == "--read1" || a == "-2" || a == "--read2" || a == "--12") {
+            const bool isR2 = (a == "-2" || a == "--read2");
+            const bool is12 = (a == "--12");
+            const std::string v = needValue(i, a.c_str());
+            const char* clash = nullptr;
+            if (isR2 && lib.interleaved) clash = "--12 already gives both mates";
+            else if (isR2 && !lib.r2.empty()) clash = "-2 was already given";
+            else if (is12 && !lib.r2.empty()) clash = "-2 was already given";
+            else if (!isR2 && lib.interleaved) clash = "--12 was already given";
+            else if (!isR2 && !lib.r1.empty()) clash = "-1 was already given";
+            if (clash) {
+                std::fprintf(stderr,
+                    "error: %s %s: %s. One paired library per run: give -1 and -2 once each, or\n"
+                    "  --12 once on its own. Further single-end files go in with -s, which may repeat.\n",
+                    a.c_str(), v.c_str(), clash);
+                return 2;
+            }
+            if (isR2) lib.r2 = v; else lib.r1 = v;
+            if (is12) lib.interleaved = true;
+            haveLib = true;
+        }
         // A separate library, not an overwrite of -1. Merging overlapping
         // mates yields a set of single-end fragments plus the pairs that did
         // not merge, and both belong in the same assembly; -s may be repeated.
@@ -232,7 +274,7 @@ int main(int argc, char** argv) {
         // models themselves; it does nothing unless TESSERACT_MODEL_AUTHOR is set.
         else if (a == "--model") {
             const std::string mv = needValue(i, "--model");
-            if (std::getenv("TESSERACT_MODEL_AUTHOR")) {
+            if (ts::env::present("TESSERACT_MODEL_AUTHOR")) {
                 opt.organismModelPath = mv;
             } else {
                 std::fprintf(stderr,
@@ -256,6 +298,13 @@ int main(int argc, char** argv) {
         }
         else if (a == "--min-contig") opt.minContigLen = static_cast<size_t>(intInRange(needValue(i, "--min-contig"), "--min-contig", 0, 100000000));
         else if (a == "-k" || a == "--kmers") {
+            // A second -k replaced the first, so "-k 21,33 -k 55" ran k=55 alone.
+            if (sawK) {
+                std::fprintf(stderr, "error: -k/--kmers given more than once; list every k in one "
+                                     "comma-separated value, e.g. -k 21,33,55\n");
+                return 2;
+            }
+            sawK = true;
             opt.kValues.clear();
             for (const std::string& tok : util::split(needValue(i, "-k"), ',')) {
                 // Range-checked before narrowing: atoi() truncates to int, so a
@@ -267,6 +316,16 @@ int main(int argc, char** argv) {
                 if (k % 2 == 0) {
                     std::fprintf(stderr, "error: k must be odd to avoid palindromic k-mers (got %d)\n", k);
                     return 1;
+                }
+                // The ladder runs in the order given and correction uses its first rung, so
+                // "-k 77,21,55" corrected at k=77 and carried contigs downwards, and "-k 21,21"
+                // counted k=21 twice. Sorting silently would change what such a run produces,
+                // so they are refused instead.
+                if (!opt.kValues.empty() && k <= opt.kValues.back()) {
+                    std::fprintf(stderr,
+                                 "error: -k/--kmers values must be strictly increasing (got %d after %d)\n",
+                                 k, opt.kValues.back());
+                    return 2;
                 }
                 opt.kValues.push_back(k);
             }
@@ -326,6 +385,12 @@ int main(int argc, char** argv) {
         }
     }
 
+    // Every TESSERACT_* flag is checked against its declared kind and range before any
+    // work starts, and each one that is set is recorded as "[config] NAME=<parsed value>".
+    // A malformed value (1e9 for an integer, "true" for a switch, -1 for a length) is a
+    // hard error here rather than a silent 0 an hour into the run.
+    if (env::validateEnvironment(stderr) != 0) return 2;
+
     // --organism resolves to a bundled model. This is the only supported way to reach
     // one: the model's value is in how its panel was assembled and what was withheld
     // from it, none of which survives being pointed at an arbitrary file. Resolution
@@ -333,7 +398,7 @@ int main(int argc, char** argv) {
     // the three cannot drift apart.
     if (!opt.organism.empty() && opt.organismModelPath.empty()) {
         std::string dir;
-        if (const char* d = std::getenv("TESSERACT_MODEL_DIR")) {
+        if (const char* d = env::text("TESSERACT_MODEL_DIR")) {
             dir = d;
         } else if (const char* h = std::getenv("HOME")) {
             dir = std::string(h) + "/.tesseract/models";
@@ -369,6 +434,32 @@ int main(int argc, char** argv) {
             if (!f.empty() && !util::fileExists(f)) {
                 std::fprintf(stderr, "error: input file not found: %s\n", f.c_str());
                 return 1;
+            }
+        }
+    }
+    // The same file named twice loads its reads twice. As -1 and -2 every read became its
+    // own mate: the names agree, so the pairing check passed, R2 was never read and each
+    // R1 read counted double, which makes every error k-mer solid. Compared by device and
+    // inode, so a symlink or another spelling of the path is caught as well.
+    {
+        // opt.libraries holds the -1/-2/--12 library first (when there is one), then
+        // every -s library.
+        std::vector<std::pair<const char*, std::string>> inputs;
+        for (size_t li = 0; li < opt.libraries.size(); ++li) {
+            const Library& l = opt.libraries[li];
+            const bool fromPair = (li == 0 && !lib.r1.empty());
+            inputs.emplace_back(!fromPair ? "-s" : (l.interleaved ? "--12" : "-1"), l.r1);
+            if (!l.r2.empty()) inputs.emplace_back("-2", l.r2);
+        }
+        for (size_t x = 0; x < inputs.size(); ++x) {
+            for (size_t y = x + 1; y < inputs.size(); ++y) {
+                if (sameFile(inputs[x].second, inputs[y].second)) {
+                    std::fprintf(stderr, "error: %s %s and %s %s name the same file; its reads would be "
+                                         "loaded twice\n",
+                                 inputs[x].first, inputs[x].second.c_str(),
+                                 inputs[y].first, inputs[y].second.c_str());
+                    return 2;
+                }
             }
         }
     }
@@ -412,8 +503,11 @@ int main(int argc, char** argv) {
                  st.gcPercent);
 
     if (scaffolded) {
+        // build_v3 (T17 hand-off from G-emit): these rows describe the records contigs.fasta
+        // holds -- the scaffolds split at EVERY N-run (report.json scaffold_gaps counts runs of
+        // any length) and after the terminal-overlap trim -- not a 10+ N split.
         std::fprintf(stderr,
-                     "  -- split at the %s scaffold gap%s (runs of 10+ N), which is how QUAST counts:\n"
+                     "  -- as written to contigs.fasta (split at every N-run: %s gap%s; terminal overlaps trimmed):\n"
                      "  contigs      %s\n"
                      "  total length %s bp    (the rest is N)\n"
                      "  largest      %s bp\n"

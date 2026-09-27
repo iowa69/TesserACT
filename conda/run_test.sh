@@ -41,12 +41,12 @@ echo "assembled $n contig(s), $len bp (expected 1 contig, about 6000 bp)"
 
 # Flag checks, from help captured once. A flag that silently disappears is worse than one
 # that was never there: a pipeline built against it breaks with no explanation.
+# --model is not listed: since 1.3.0 it is an author-only option (TESSERACT_MODEL_AUTHOR) and
+# the help documents --organism instead; tesseract-model itself is not packaged.
 tesseract-asm --help > tesseract_help.txt
-tesseract-model --help > model_help.txt
-for f in --organism --model --is-panel --map-polish; do
+for f in --organism --is-panel --map-polish; do
     grep -q -- "$f" tesseract_help.txt || { echo "tesseract-asm --help lost $f" >&2; exit 1; }
 done
-grep -q -- --marker-density model_help.txt || { echo "tesseract-model --help lost --marker-density" >&2; exit 1; }
 echo "help lists every expected flag"
 
 echo "package test passed"

@@ -1,4 +1,5 @@
 #include "gap_evidence.h"
+#include "envflags.h"
 
 #include <algorithm>
 #include <cstdlib>
@@ -182,8 +183,7 @@ std::set<std::pair<uint64_t, uint64_t>> nominateOrientedGapJoins(
     // arbitrate only after exact overlap and complexity eligibility are known.
     // The same flag enables that two-phase path in the assembler; it must not
     // send this expanded set into the legacy greedy closer.
-    const char* sequenceCompetition = std::getenv("TESSERACT_GAP_SEQUENCE_COMPETITION");
-    if (sequenceCompetition && std::strcmp(sequenceCompetition, "1") == 0) {
+    if (env::on("TESSERACT_GAP_SEQUENCE_COMPETITION", false)) {
         for (const auto& vote : votes)
             if (vote.second >= minVotes) out.insert(vote.first);
         return out;

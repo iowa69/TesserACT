@@ -7,6 +7,7 @@
 #include <unordered_map>
 #include <vector>
 
+#include "emit_fixflags.h"
 #include "kmer.h"
 #include "polish_quality.h"
 
@@ -126,6 +127,8 @@ void applyOriginalQuality(std::vector<std::string>& contigs, const SequenceStore
     }
 }
 
+struct NRun { size_t contig, begin, end; };
+
 void logQualitySummary(const QualityPolishStats& s) {
     std::fprintf(stderr, "[qualitypolish] enabled=1 provenance=%d phred_cap=%u score_scale=%.0f original_bytes=%zu placement_bytes=%zu candidate_bytes=%zu candidates=%zu alternate_proposals=%zu extra_changes=%zu informative_fragment_sites=%zu uniform_fragment_sites=%zu max_fragment_depth=%zu eligible_observations=%zu excluded_original_ambiguous=%zu excluded_masked=%zu excluded_net_modified=%zu excluded_missing_quality=%zu uniform_observations=%zu capped_observations=%zu below_depth=%zu one_orientation=%zu below_posterior=%zu ties=%zu overflow=%zu\n",
                  int(s.provenanceAvailable), quality_consensus::kMaxPhred, quality_consensus::kScoreScale,
@@ -138,6 +141,20 @@ void logQualitySummary(const QualityPolishStats& s) {
 
 }  // namespace
 
+void logPolishNCounters(const PolishNStats& s) {
+    std::fprintf(stderr,
+                 "[polish-n] skip_n=%d n_positions_with_votes=%zu would_replace=%zu replaced=%zu "
+                 "n_runs=%zu runs_touched=%zu runs_fully_replaced=%zu\n",
+                 s.skipN ? 1 : 0, s.positionsWithVotes, s.wouldReplace, s.replaced, s.runs,
+                 s.runsTouched, s.runsFullyReplaced);
+}
+
+void logPolishNIdle() {
+    PolishNStats s;
+    s.skipN = emitfix::enabled(emitfix::kPolishSkipN);
+    logPolishNCounters(s);
+}
+
 PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore& reads,
                           int threads, int anchorK, int minDepth, double minFraction) {
     PolishStats stats;
@@ -145,7 +162,15 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
     stats.quality.provenanceAvailable = reads.hasOriginalQualities();
     stats.quality.originalBytes = reads.originalQualityBytes();
     const bool qualityEnabled = stats.quality.enabled && stats.quality.provenanceAvailable;
-    if (contigs.empty() || reads.size() == 0) return stats;
+    // T02: a scaffold N is an adjacency asserted without sequence. A read placed ungapped
+    // across it says nothing about which base, if any, sits there when the gap estimate is
+    // wrong -- and joinGap = max(1, gap) writes every gap <= 1 as a single N, which a read
+    // overhanging by a few bases can overwrite, turning an unverified join into contiguous
+    // sequence. With the fix on, N positions are never voted on; gap closure stays with
+    // the gap filler.
+    const bool skipN = emitfix::enabled(emitfix::kPolishSkipN);
+    stats.nRuns.skipN = skipN;
+    if (contigs.empty() || reads.size() == 0) { logPolishNCounters(stats.nRuns); return stats; }
     if (threads <= 0) threads = 1;
 
     const int k = std::max(15, std::min(anchorK, 31));
@@ -154,7 +179,7 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
     std::vector<size_t> offset(contigs.size() + 1, 0);
     for (size_t i = 0; i < contigs.size(); ++i) offset[i + 1] = offset[i] + contigs[i].size();
     const size_t totalBases = offset.back();
-    if (totalBases == 0) return stats;
+    if (totalBases == 0) { logPolishNCounters(stats.nRuns); return stats; }
 
     std::unordered_map<Kmer, uint64_t, KmerHasher> index;
     index.reserve(totalBases * 2);
@@ -287,6 +312,20 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
     for (int t = 0; t < threads; ++t) pool.emplace_back(worker, t);
     for (auto& th : pool) th.join();
 
+    // N-runs as they stand before the vote is applied; read only by the counter line.
+    std::vector<NRun> nRuns;
+    for (size_t c = 0; c < contigs.size(); ++c) {
+        const std::string& s = contigs[c];
+        for (size_t p = 0; p < s.size();) {
+            if (s[p] != 'N' && s[p] != 'n') { ++p; continue; }
+            size_t e = p;
+            while (e < s.size() && (s[e] == 'N' || s[e] == 'n')) ++e;
+            nRuns.push_back({c, p, e});
+            p = e;
+        }
+    }
+    PolishNStats& ns = stats.nRuns;
+
     size_t changed = 0, covered = 0, lowCov = 0;
     double depthSum = 0;
     for (size_t c = 0; c < contigs.size(); ++c) {
@@ -297,10 +336,12 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
             if (depth == 0) continue;
             ++covered;
             depthSum += depth;
+            const bool isGap = s[p] == 'N' || s[p] == 'n';
+            if (isGap) ++ns.positionsWithVotes;
             // A fragment contributes at most one depth unit, so positions
             // below the existing read-depth floor cannot qualify. Cache only
             // mixed positions where the finalized native pile makes no edit.
-            if (qualityEnabled && static_cast<int>(depth) >= minDepth) {
+            if (qualityEnabled && static_cast<int>(depth) >= minDepth && !(skipN && isGap)) {
                 int best = 0;
                 for (int b = 1; b < 4; ++b) if (q[b] > q[best]) best = b;
                 const double nativeFraction = static_cast<double>(q[best]) / depth;
@@ -321,6 +362,11 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
             // winning fraction has to clear `minFraction`, and at a real error
             // the split is nothing like unanimous.
             const char want = codeBase(bi);
+            if (isGap) {
+                ++ns.wouldReplace;
+                if (skipN) continue;   // gap closure belongs to the gap filler
+                ++ns.replaced;
+            }
             if (s[p] != want) { s[p] = want; ++changed; }
         }
     }
@@ -330,6 +376,15 @@ PolishStats polishContigs(std::vector<std::string>& contigs, const SequenceStore
         changed += stats.quality.extraChanges;
     }
     if (stats.quality.enabled) logQualitySummary(stats.quality);
+    ns.runs = nRuns.size();
+    for (const NRun& r : nRuns) {
+        size_t left = 0;
+        for (size_t p = r.begin; p < r.end; ++p)
+            left += (contigs[r.contig][p] == 'N' || contigs[r.contig][p] == 'n');
+        if (left < r.end - r.begin) ++ns.runsTouched;
+        if (left == 0) ++ns.runsFullyReplaced;
+    }
+    logPolishNCounters(ns);
 
     stats.readsUsed = used.load();
     stats.basesChanged = changed;

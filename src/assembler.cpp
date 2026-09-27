@@ -13,9 +13,14 @@
 #include <unordered_map>
 #include <utility>
 
+#include "carry_gate.h"
 #include "correct.h"
 #include "dev_fork_batch.h"
+#include "emit_fixflags.h"
+#include "emit_post.h"
+#include "dropout_bridge.h"
 #include "counter.h"
+#include "envflags.h"
 #include "gapfill.h"
 #include "gap_evidence.h"
 #include "mappolish.h"
@@ -23,6 +28,7 @@
 #include "pairends.h"
 #include "replicon.h"
 #include "gfa.h"
+#include "graph_fix_flags.h"
 #include "polish.h"
 #include "resolve.h"
 #include "read_coverage.h"
@@ -31,7 +37,6 @@
 
 namespace ts {
 
-static void computeContigStats(const std::vector<std::string>& seqs, AssemblyReport& rep);
 
 
 const char* runModeName(RunMode m) {
@@ -118,14 +123,8 @@ Assembler::Assembler(AssemblyOptions opt) : opt_(std::move(opt)) {
 // entirely and reproduces the previous ladder exactly. That default is deliberate -- it
 // keeps the pre-QC behaviour available as a baseline while the value is swept.
 std::vector<int> Assembler::trimLadderToCoverage(std::vector<int> ladder) const {
-    static const double kMinKmerCov = [] {
-        const char* e = std::getenv("TESSERACT_QC_MIN_KCOV");
-        return e ? std::atof(e) : 0.0;
-    }();
-    static const size_t kMinRungs = [] {
-        const char* e = std::getenv("TESSERACT_QC_MIN_RUNGS");
-        return e ? static_cast<size_t>(std::atoi(e)) : 3u;
-    }();
+    const double kMinKmerCov = env::real("TESSERACT_QC_MIN_KCOV", 0.0);
+    const size_t kMinRungs = static_cast<size_t>(env::integer("TESSERACT_QC_MIN_RUNGS", 3));
     if (kMinKmerCov <= 0 || !qc_.loaded || ladder.size() <= kMinRungs) return ladder;
 
     size_t keep = ladder.size();
@@ -247,8 +246,6 @@ size_t Assembler::rescueLadderContigs(const std::vector<std::string>& reserve,
     return added;
 }
 
-namespace {
-
 // Paired-read nomination for gap closing.
 //
 // SPAdes will not bridge two dead ends on sequence alone. Every join must also be
@@ -260,13 +257,35 @@ namespace {
 //
 // Returns the set of oriented end-pairs with at least `minVotes` supporting pairs, keyed
 // as (min(a,b), max(a,b)) where an oriented end is (unitig << 1) | end.
+//
+// Declared in gap_evidence.h (external linkage since build_v3, so it can be tested).
+//
+// T08 (build_v3, TESSERACT_FIX_GAP_NOMINATOR=1, default off). The legacy walk below has
+// three faults, each of which makes nomination depend on how a unitig happens to be
+// STORED rather than on the graph: (1) it reuses the tip's end `1 - e` for every node,
+// so after a link that flips stored orientation it leaves the predecessor through its
+// tip-facing end, into sibling branches; (2) it tests non-branching on the predecessor's
+// far end instead of its tip-facing end l.toEnd; (3) its k-mer index is strand-blind and
+// first-writer-wins in unordered_map order, so a node in two tips' neighbourhoods (an
+// isolated unitig with both ends dead) credits one of them arbitrarily. With the fix the
+// stack carries the oriented id (node << 1) | tip-facing end, the non-branching test is on
+// l.toEnd (as in SPAdes' OutTipMap and nominateOrientedGapJoins), and a read hit selects
+// the tip its strand points to; a k-mer placed at two node/strand positions is ambiguous.
+// With the flag unset the legacy statements run unchanged.
 std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
                                                          const SequenceStore& reads,
                                                          size_t maxDistToTip, int probeK,
-                                                         uint32_t minVotes, size_t* votedOut) {
-    const char* oriented = std::getenv("TESSERACT_GAP_ORIENTED");
-    if (oriented && std::strcmp(oriented, "1") == 0)
+                                                         uint32_t minVotes, size_t* votedOut,
+                                                         GapNominatorStats* statsOut) {
+    const int nomFix = fixflags::fixLevel("TESSERACT_FIX_GAP_NOMINATOR");
+    GapNominatorStats localStats;
+    GapNominatorStats& ns = statsOut ? *statsOut : localStats;
+    ns = GapNominatorStats();
+    ns.fix = nomFix;
+    if (env::on("TESSERACT_GAP_ORIENTED", false)) {
+        ns.oriented = 1;
         return nominateOrientedGapJoins(g, reads, maxDistToTip, probeK, minVotes, votedOut);
+    }
     std::set<std::pair<uint64_t, uint64_t>> out;
     if (votedOut) *votedOut = 0;
     if (!reads.paired()) return out;
@@ -282,33 +301,68 @@ std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
         for (int e = 0; e < 2; ++e) {
             if (!g.nodes[u].ends[e].empty()) continue;
             const uint64_t tip = (static_cast<uint64_t>(u) << 1) | static_cast<uint64_t>(e);
-            std::vector<std::pair<uint32_t, size_t>> stack{{u, 0}};
+            ++ns.tips;
+            // Oriented id (node << 1) | tip-facing end; the legacy path uses only the node.
+            std::vector<std::pair<uint64_t, size_t>> stack{{tip, 0}};
             tipOf[tip] = tip;
             while (!stack.empty()) {
-                const uint32_t cur = stack.back().first;
+                const uint64_t curO = stack.back().first;
+                const uint32_t cur = static_cast<uint32_t>(curO >> 1);
                 const size_t dist = stack.back().second;
                 stack.pop_back();
-                const int back = 1 - e;
+                const int back = nomFix ? 1 - static_cast<int>(curO & 1) : 1 - e;
                 if (dist > maxDistToTip) continue;
                 for (const Link& l : g.nodes[cur].ends[back]) {
                     if (g.nodes[l.to].deleted) continue;
                     // only follow a path that does not branch on the way to the tip
-                    if (g.nodes[l.to].ends[1 - l.toEnd].size() != 1) continue;
+                    const int testEnd = nomFix ? static_cast<int>(l.toEnd)
+                                               : 1 - static_cast<int>(l.toEnd);
+                    if (g.nodes[l.to].ends[testEnd].size() != 1) continue;
                     const uint64_t oid =
                         (static_cast<uint64_t>(l.to) << 1) | static_cast<uint64_t>(l.toEnd);
                     if (!tipOf.emplace(oid, tip).second) continue;
                     const size_t add = g.nodes[l.to].seq.size() > ov
                                            ? g.nodes[l.to].seq.size() - ov : 0;
-                    stack.push_back({l.to, dist + add});
+                    stack.push_back({oid, dist + add});
                 }
             }
         }
     }
+    ns.walked = tipOf.size();
     if (tipOf.size() < 2) return out;
 
     // A k-mer index over the tip neighbourhood only. A read that lands anywhere else is
     // invisible, which is how SPAdes restricts attention without a filtering pass.
     std::unordered_map<Kmer, uint64_t, KmerHasher> idx;
+    // Fix: the value is a placement (node << 1) | canonical-is-reverse, indexed over the
+    // neighbourhood nodes in node order; a k-mer seen at two placements is ambiguous.
+    constexpr uint64_t kAmbiguous = UINT64_MAX - 1;
+    if (nomFix) {
+        std::vector<uint32_t> nodesSorted;
+        nodesSorted.reserve(tipOf.size());
+        for (const auto& kv : tipOf) nodesSorted.push_back(static_cast<uint32_t>(kv.first >> 1));
+        std::sort(nodesSorted.begin(), nodesSorted.end());
+        nodesSorted.erase(std::unique(nodesSorted.begin(), nodesSorted.end()), nodesSorted.end());
+        for (uint32_t u : nodesSorted) {
+            const std::string& seq = g.nodes[u].seq;
+            if (static_cast<int>(seq.size()) < probeK) continue;
+            Kmer fwd = 0, rc = 0;
+            int valid = 0;
+            for (size_t p = 0; p < seq.size(); ++p) {
+                const int c = baseCode(seq[p]);
+                if (c < 0) { valid = 0; fwd = 0; rc = 0; continue; }
+                fwd = pushBack(fwd, c, probeK);
+                rc = pushFrontRc(rc, c, probeK);
+                if (++valid < probeK || fwd == rc) continue;
+                const uint64_t val = (static_cast<uint64_t>(u) << 1) | (rc < fwd ? 1u : 0u);
+                auto ins = idx.emplace(fwd < rc ? fwd : rc, val);
+                if (!ins.second && ins.first->second != val && ins.first->second != kAmbiguous) {
+                    ins.first->second = kAmbiguous;
+                    ++ns.ambiguousKmers;
+                }
+            }
+        }
+    } else
     for (const auto& kv : tipOf) {
         const uint32_t u = static_cast<uint32_t>(kv.first >> 1);
         const std::string& seq = g.nodes[u].seq;
@@ -324,8 +378,10 @@ std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
             idx.emplace(fwd < rc ? fwd : rc, kv.second);   // first writer wins
         }
     }
+    ns.indexedKmers = idx.size();
     if (idx.empty()) return out;
 
+    size_t strandRejects = 0;
     auto tipForRead = [&](size_t r) -> uint64_t {
         const uint32_t len = reads.length(r);
         if (static_cast<int>(len) < probeK) return UINT64_MAX;
@@ -338,7 +394,16 @@ std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
             rc = pushFrontRc(rc, c, probeK);
             if (++valid < probeK) continue;
             auto it = idx.find(fwd < rc ? fwd : rc);
-            if (it != idx.end()) return it->second;
+            if (it == idx.end()) continue;
+            if (!nomFix) return it->second;
+            if (it->second == kAmbiguous) continue;
+            // The read runs toward the node's 3' end when it agrees with the stored strand;
+            // it may vote only for a tip that end faces.
+            const uint32_t node = static_cast<uint32_t>(it->second >> 1);
+            const bool readReverse = ((rc < fwd) ? 1u : 0u) != (it->second & 1);
+            auto t = tipOf.find((static_cast<uint64_t>(node) << 1) | (readReverse ? 0u : 1u));
+            if (t == tipOf.end()) { ++strandRejects; return UINT64_MAX; }
+            return t->second;
         }
         return UINT64_MAX;
     };
@@ -357,9 +422,11 @@ std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
         if (kv.second >= minVotes) out.insert(kv.first);
     }
     if (votedOut) *votedOut = votes.size();
+    ns.strandRejects = strandRejects;
     return out;
 }
 
+namespace {
 
 // Trim the redundant copy of a repeat carried at the end of two different contigs.
 //
@@ -381,75 +448,8 @@ std::set<std::pair<uint64_t, uint64_t>> nominateGapJoins(const UnitigGraph& g,
 // Only EXACT dovetails longer than `minOverlap` are trimmed, and only from the shorter
 // partner, so the longer contig is never shortened and no sequence disappears from the
 // assembly -- it remains, once, on the contig better placed to carry it.
-struct Dovetail {
-    size_t a = 0, b = 0;        // a's suffix meets b's prefix, in orientation `bRc`
-    size_t len = 0;
-    bool bRc = false;
-    bool aRc = false;           // the match used rc(a)'s suffix, i.e. a's 5' end
-};
-
-std::vector<Dovetail> findTerminalDovetails(const std::vector<std::string>& seqs,
-                                            size_t minOverlap, size_t window) {
-    constexpr size_t kProbe = 32;
-    std::vector<Dovetail> out;
-    if (seqs.size() < 2 || minOverlap < kProbe) return out;
-    auto hash = [](const char* p) {
-        uint64_t h = 1469598103934665603ULL;
-        for (size_t i = 0; i < kProbe; ++i) { h ^= static_cast<unsigned char>(p[i]); h *= 1099511628211ULL; }
-        return h;
-    };
-    // index: hash of a 32-mer inside the PREFIX window of each oriented contig
-    struct Ent { uint32_t idx; uint32_t pos; bool rc; };
-    std::unordered_map<uint64_t, std::vector<Ent>> index;
-    std::vector<std::string> rcs(seqs.size());
-    for (size_t j = 0; j < seqs.size(); ++j) {
-        if (seqs[j].size() < minOverlap) continue;
-        rcs[j] = reverseComplement(seqs[j]);
-        for (int o = 0; o < 2; ++o) {
-            const std::string& t = o ? rcs[j] : seqs[j];
-            const size_t lim = std::min(window, t.size()) - kProbe + 1;
-            for (size_t p = 0; p < lim; ++p)
-                index[hash(t.data() + p)].push_back({static_cast<uint32_t>(j),
-                                                     static_cast<uint32_t>(p), o != 0});
-        }
-    }
-    // The index holds both orientations of every contig's PREFIX window, but the query
-    // below probed only the forward 3' end, so a head-to-head overlap (a's 5' end meeting
-    // b's 5' end) was structurally invisible. Probing rc(a)'s 3' end as well closes that
-    // class.
-    // ON by default since 1.3.0 (duplication LOSS -> tie on 146 isolates).
-    // TESSERACT_RC_DOVETAIL=0 restores the forward-only probe.
-    static const bool rcQuery = [] {
-        const char* e = std::getenv("TESSERACT_RC_DOVETAIL");
-        return !e || std::atoi(e) != 0;
-    }();
-    for (size_t i = 0; i < seqs.size(); ++i) {
-        if (seqs[i].size() < minOverlap) continue;
-        for (int qo = 0; qo < (rcQuery ? 2 : 1); ++qo) {
-            const std::string& a = qo ? rcs[i] : seqs[i];
-            if (a.size() < minOverlap) continue;
-            auto it = index.find(hash(a.data() + a.size() - kProbe));
-            if (it == index.end()) continue;
-            for (const Ent& e : it->second) {
-                if (e.idx == i) continue;
-                const size_t L = static_cast<size_t>(e.pos) + kProbe;
-                if (L <= minOverlap) continue;
-                const std::string& b = e.rc ? rcs[e.idx] : seqs[e.idx];
-                if (L > a.size() || L > b.size()) continue;
-                if (std::memcmp(a.data() + a.size() - L, b.data(), L) != 0) continue;
-                out.push_back({i, e.idx, L, e.rc, qo != 0});
-            }
-        }
-    }
-    std::sort(out.begin(), out.end(), [](const Dovetail& x, const Dovetail& y) {
-        if (x.len != y.len) return x.len > y.len;      // longest first: it decides the end
-        if (x.a != y.a) return x.a < y.a;
-        if (x.b != y.b) return x.b < y.b;
-        if (x.aRc != y.aRc) return !x.aRc;
-        return !x.bRc && y.bRc;                         // total order, so runs reproduce
-    });
-    return out;
-}
+// Dovetail and findTerminalDovetails() live in emit_post.cpp (G-emit), unchanged, beside the
+// trim that consumes them, so the trim can be driven by tests.
 
 }  // namespace
 
@@ -531,10 +531,7 @@ std::vector<int> Assembler::baseKLadder() const {
     // rung inherits a better-consolidated carry-over and therefore builds a smaller graph;
     // under contention that advantage disappears and it runs somewhat slower. Either way
     // the difference is well inside what the contiguity gain is worth.
-    static const int kLadderLevel = [] {
-        const char* e = std::getenv("TESSERACT_DENSE_LADDER");
-        return e ? std::atoi(e) : 3;
-    }();
+    const int kLadderLevel = static_cast<int>(env::integer("TESSERACT_DENSE_LADDER", 3));
     if (rl >= 165) {
         if (kLadderLevel >= 3) return {21, 33, 55, 77, 87, 99, 111, 119, 127};
         if (kLadderLevel >= 2) return {21, 33, 55, 77, 99, 111, 119, 127};
@@ -567,10 +564,7 @@ std::vector<int> Assembler::baseKLadder() const {
     // ones gain.
     // Restores the pre-fix mean-binned ladder, so a factorial experiment can hold this
     // variable while changing others.
-    static const bool kLegacyLadder = [] {
-        const char* e = std::getenv("TESSERACT_LEGACY_LADDER");
-        return e && std::atoi(e) != 0;
-    }();
+    const bool kLegacyLadder = env::on("TESSERACT_LEGACY_LADDER", false);
     if (kLegacyLadder) {
         if (rl >= 140) return {21, 33, 55, 77, 95};
         if (rl >= 100) return {21, 33, 45, 55};
@@ -579,10 +573,7 @@ std::vector<int> Assembler::baseKLadder() const {
         return {15, 21};
     }
     if (rl >= 100) {
-        static const double kMinMass = [] {
-            const char* e = std::getenv("TESSERACT_MIN_KMER_MASS");
-            return e ? std::atof(e) : 0.35;
-        }();
+        const double kMinMass = env::real("TESSERACT_MIN_KMER_MASS", 0.35);
         std::vector<int> ladder = {21, 33, 55, 77, 87, 99, 111, 119, 127};
         if (kLadderLevel == 2) ladder = {21, 33, 55, 77, 99, 111, 119, 127};
         else if (kLadderLevel == 1) ladder = {21, 33, 55, 77, 99, 127};
@@ -641,10 +632,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     //
     // Checked on ERR6293532 (L=251, peak(21)=25.0): predicts 13.5 at k=127
     // against 13.35 observed.
-    static const uint32_t kCarryWeight = [] {
-        const char* e = std::getenv("TESSERACT_CARRY_WEIGHT");
-        return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
-    }();
+    const uint32_t kCarryWeight = static_cast<uint32_t>(env::integer("TESSERACT_CARRY_WEIGHT", 4));
     // Threshold on the PROJECTED peak at the final rung. Calibrated against the two
     // strains that bracket the decision:
     //
@@ -663,10 +651,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // Magnitude in perspective: +265k summed over 45 boosted strains is a refinement.
     // The substantive fix nearby is the peak-detection repair in counter.cpp, worth
     // +202k on a single strain.
-    static const double kCarryBoostBelow = [] {
-        const char* e = std::getenv("TESSERACT_CARRY_BOOST_BELOW");
-        return e ? std::atof(e) : 25.0;
-    }();
+    const double kCarryBoostBelow = env::real("TESSERACT_CARRY_BOOST_BELOW", 25.0);
     // DISABLED (set equal to the ordinary weight). Everything above describes how this
     // boost was calibrated and why it looked like a win; it does not survive being
     // measured against the metric that matters.
@@ -685,10 +670,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // Kept as an environment knob rather than deleted, because the coverage-projection
     // machinery it sits on is sound and worth keeping available: set
     // TESSERACT_CARRY_WEIGHT_LOW=32 to restore the previous behaviour exactly.
-    static const uint32_t kCarryWeightLow = [] {
-        const char* e = std::getenv("TESSERACT_CARRY_WEIGHT_LOW");
-        return e ? static_cast<uint32_t>(std::atoi(e)) : 4u;
-    }();
+    const uint32_t kCarryWeightLow = static_cast<uint32_t>(env::integer("TESSERACT_CARRY_WEIGHT_LOW", 4));
     // Decide ONCE, from the LAST rung, and apply the decision to every rung.
     //
     // Projecting per-rung is too timid: on a library whose final peak is 24, the
@@ -704,10 +686,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // assembler's peak estimate at the first rung -- the same estimate that was silently
     // landing on the error shoulder until recently, and that the carry boost itself
     // perturbs. Reading depth from outside the loop removes both problems at once.
-    static const bool kQcCarry = [] {
-        const char* e = std::getenv("TESSERACT_QC_CARRY");
-        return e && std::atoi(e) != 0;
-    }();
+    const bool kQcCarry = env::on("TESSERACT_QC_CARRY", false);
     double projected = prevPeak;
     if (kQcCarry && qc_.loaded && finalK_ > 0 && qc_.expectedKmerCoverage(finalK_) > 0) {
         projected = qc_.expectedKmerCoverage(finalK_);
@@ -736,10 +715,7 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // unconditionally because it fills coverage from a separate read stream; here the
     // count IS the coverage, so a k-mer admitted at the cutoff reads as error-level to
     // every rule downstream and is pruned. TESSERACT_TRUSTED_CARRY=1 selects it anyway.
-    static const bool kCarryWeighted = [] {
-        const char* e = std::getenv("TESSERACT_TRUSTED_CARRY");
-        return !(e && std::atoi(e) != 0);
-    }();
+    const bool kCarryWeighted = !env::on("TESSERACT_TRUSTED_CARRY", false);
     if (kCarryWeighted) {
         counter.count(reads_, carryOver, carryWeight);
     } else {
@@ -760,6 +736,26 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     KmerTable solid;
     counter.extractSolid(opt_.forcedCutoff, solid);
     const CountingStats& cs = counter.stats();
+    // T01 (build_v3): a junction the previous rung formed across a short word shared by two
+    // loci has no read support at this k and is solid only through the carry weight. Mode 0
+    // (flag unset) is a dry run that changes nothing; see carry_gate.h. The counter line is
+    // printed on every rung, zeros included.
+    {
+        const int gateMode = fixflags::fixLevel("TESSERACT_FIX_CARRY_READ_GATE", 2);
+        CarryGateStats gs;
+        if (kCarryWeighted && carryWeight > 0 && !carryOver.empty()) {
+            gs = gateCarryOnlyJunctions(carryOver, solid, k, carryWeight, cs.cutoff, gateMode);
+        }
+        if (opt_.verbose) {
+            std::fprintf(stderr,
+                         "  k=%-3d [carrygate] enabled=%d mode=%d carriedKmers=%zu readAbsent=%zu "
+                         "runs=%zu runsTooLong=%zu runsNoCompetitor=%zu candidates=%zu "
+                         "runsGated=%zu kmersWithheld=%zu\n",
+                         k, gateMode > 0 ? 1 : 0, gateMode, gs.carriedKmers, gs.readAbsent,
+                         gs.runs, gs.runsTooLong, gs.runsNoCompetitor, gs.candidates,
+                         gs.runsGated, gs.kmersWithheld);
+        }
+    }
     // Trusted carry-over, after the cutoff has been fixed by the reads alone. A k-mer the
     // reads already vouched for keeps its measured depth; one they never produced enters at
     // the cutoff, present but claiming no more depth than the bar it was excused from.
@@ -844,34 +840,53 @@ bool Assembler::iterate(int k, const std::vector<std::string>& carryOver, Unitig
     // flanks' terminal overhangs, so nothing is invented. The paired test asks two read
     // pairs to vouch for that specific pair of ends. Neither alone is sufficient: measured
     // here, sequence alone on a raw graph bridged 37,685 pairs against a ceiling of 804.
-    static const size_t kGapCloseMinInt = [] {
-        const char* e = std::getenv("TESSERACT_GAPCLOSE");
-        return e ? static_cast<size_t>(std::atoi(e)) : 0u;
-    }();
-    static const uint32_t kGapCloseVotes = [] {
-        const char* e = std::getenv("TESSERACT_GAPCLOSE_VOTES");
-        return e ? static_cast<uint32_t>(std::atoi(e)) : 2u;
-    }();
-    const char* gapCompetitionEnv = std::getenv("TESSERACT_GAP_SEQUENCE_COMPETITION");
-    const bool gapSequenceCompetition = gapCompetitionEnv && std::strcmp(gapCompetitionEnv, "1") == 0;
+    const size_t kGapCloseMinInt = static_cast<size_t>(env::integer("TESSERACT_GAPCLOSE", 0));
+    const uint32_t kGapCloseVotes = static_cast<uint32_t>(env::integer("TESSERACT_GAPCLOSE_VOTES", 2));
+    const bool gapSequenceCompetition = env::on("TESSERACT_GAP_SEQUENCE_COMPETITION", false);
+    // T15 (build_v3): the gap closer reports on EVERY rung once it is configured, zeros
+    // included, and says so when it is off -- a rung with nothing to close used to print
+    // nothing, which a log from a binary without the feature cannot be told apart from.
+    // The legacy "gap close:" line keeps its format (its second number is every end-pair
+    // with at least one vote); [gapclose] adds the pairs that actually met the vote floor.
+    // stderr only.
     if (kGapCloseMinInt > 0) {
         util::Timer gt;
-        size_t voted = 0, tested = 0, closed = 0;
+        size_t voted = 0, tested = 0, closed = 0, nominated = 0;
+        GapNominatorStats nomStats;
+        nomStats.fix = fixflags::fixLevel("TESSERACT_FIX_GAP_NOMINATOR");
         if (kGapCloseVotes > 0) {
             const std::set<std::pair<uint64_t, uint64_t>> nom =
-                nominateGapJoins(graph, reads_, 5000, 31, kGapCloseVotes, &voted);
+                nominateGapJoins(graph, reads_, 5000, 31, kGapCloseVotes, &voted, &nomStats);
+            nominated = nom.size();
             closed = graph.closeGapsByOverlap(kGapCloseMinInt, &nom, &tested, gapSequenceCompetition);
         } else {
             closed = graph.closeGapsByOverlap(kGapCloseMinInt, nullptr, &tested, gapSequenceCompetition);
         }
         if (closed) graph.compact();
         it.gapsClosed = closed;
-        if (opt_.verbose && (closed || voted)) {
+        if (opt_.verbose) {
             std::fprintf(stderr,
                          "  k=%-3d gap close: %zu bridged from %zu nominated end-pairs "
                          "(%zu overlaps tested), %.1fs\n",
                          k, closed, voted, tested, gt.elapsed());
+            const bool orientedOn = env::on("TESSERACT_GAP_ORIENTED", false);
+            std::fprintf(stderr,
+                         "  k=%-3d [gapclose] minInt=%zu votes=%u oriented=%d competition=%d "
+                         "nominatorFix=%d voted=%zu nominated=%zu tested=%zu bridged=%zu "
+                         "tips=%zu walked=%zu ambiguousKmers=%zu strandRejects=%zu\n",
+                         k, kGapCloseMinInt, kGapCloseVotes, orientedOn ? 1 : 0,
+                         gapSequenceCompetition ? 1 : 0, nomStats.fix, voted, nominated, tested,
+                         closed, nomStats.tips, nomStats.walked, nomStats.ambiguousKmers,
+                         nomStats.strandRejects);
         }
+    } else if (opt_.verbose) {
+        std::fprintf(stderr, "  k=%-3d [gapclose] off nominatorFix=%d\n", k,
+                     fixflags::fixLevel("TESSERACT_FIX_GAP_NOMINATOR"));
+    }
+    // T28 (build_v3): hairpin links kept or dropped by compaction on this rung's graph.
+    if (opt_.verbose) {
+        std::fprintf(stderr, "  k=%-3d [hairpin_keep] enabled=%d kept=%zu dropped=%zu\n", k,
+                     graph.keepHairpins() ? 1 : 0, graph.hairpinsKept(), graph.hairpinsDropped());
     }
     it.unitigsFinal = graph.liveCount();
     it.lengthFinal = graph.totalLength();
@@ -901,6 +916,9 @@ bool Assembler::run(std::string& error) {
         if (!l.r1.empty()) report_.inputFiles.push_back(l.r1);
         if (!l.r2.empty()) report_.inputFiles.push_back(l.r2);
     }
+    // G-emit fix switches: a malformed value would otherwise run as a silent null arm.
+    if (!emitfix::validate(error)) return false;
+    emitfix::logSummary();
 
     // Check the output directory is usable before spending the run on it. This
     // is checked here rather than at the final stage, so a run that cannot
@@ -968,6 +986,13 @@ bool Assembler::run(std::string& error) {
     report_.maxReadLength = reads_.maxReadLength();
     report_.paired = reads_.paired();
     report_.qualityTrimmedBases = reads_.trimmedBases();
+    // T27: which reads held a non-ACGT base in the input. Taken now, before correction masks
+    // anything, because afterwards an ambiguity bit no longer says where it came from. Only
+    // built when TESSERACT_FIX_GAPFILL_SKIP_INPUT_N is on.
+    std::vector<uint8_t> inputAmbiguousReads;
+    if (emitfix::enabled(emitfix::kGapfillSkipInputN)) {
+        inputAmbiguousReads = readsWithInputAmbiguity(reads_, opt_.threads);
+    }
     if (opt_.verbose) {
         std::fprintf(stderr, "      %s reads, %s bases, max length %u%s  [mode: %s]\n",
                      util::commify(static_cast<long long>(reads_.size())).c_str(),
@@ -1034,8 +1059,7 @@ bool Assembler::run(std::string& error) {
         cc.extractSolid(opt_.trustCutoff, trusted);
         // Default-off experiment: preserve pairing and rescue only retained
         // ACGT bases independently corroborated by the overlapping mate.
-        const char* rescueEnv = std::getenv("TESSERACT_MATE_RESCUE");
-        const bool mateRescue = rescueEnv && std::strcmp(rescueEnv, "1") == 0;
+        const bool mateRescue = env::on("TESSERACT_MATE_RESCUE", false);
         std::vector<uint32_t> maskedReadIds;
         report_.correction = correctReads(reads_, trusted, kc, opt_.threads, opt_.minMaskRun,
                                           mateRescue ? &maskedReadIds : nullptr);
@@ -1074,6 +1098,12 @@ bool Assembler::run(std::string& error) {
                                  static_cast<double>(reads_.totalBases()));
             }
         }
+    } else {
+        // build_v3 (A2): the T30 counter correctReads() prints on every call, idle form for a
+        // run without read correction (--no-correct), so the flag's line is on every run.
+        std::fprintf(stderr, "  [ec_cap_mask] enabled=%d capTruncatedWalks=0 capStops=0 "
+                             "basesMaskedAtCap=0\n",
+                     fixflags::fixLevel("TESSERACT_FIX_EC_CAP_MASK") > 0 ? 1 : 0);
     }
 
     // If no rung is shorter than the longest read, every iteration below is
@@ -1162,8 +1192,7 @@ bool Assembler::run(std::string& error) {
     // Experimental measurement only: no graph admission, sequence or link edits.
     // This is after the optional diagnostic fork so shared preprocessing remains
     // unchanged; its audited flag may vary independently between diagnostic arms.
-    const char* observedCoverage = std::getenv("TESSERACT_OBSERVED_GRAPH_COVERAGE");
-    if (observedCoverage && std::strcmp(observedCoverage, "1") == 0) {
+    if (env::on("TESSERACT_OBSERVED_GRAPH_COVERAGE", false)) {
         const long long resident = util::currentMemoryBytes();
         if (resident <= 0 || opt_.maxMemoryBytes <= resident) {
             error = "observed coverage cannot reserve additional memory within --max-memory";
@@ -1191,6 +1220,28 @@ bool Assembler::run(std::string& error) {
             s.noValidKmerNodes, s.allocationBytes, measurementTime.elapsed());
     }
 
+    // TESSERACT_DROPOUT_BRIDGE=1 (default OFF; combo2 PKG-BRIDGE): bridge facing dead ends
+    // across read-coverage dropouts from reads that span them, once, on the final-rung
+    // simplified graph, before the resolver. See dropout_bridge.h. build_v3: both flags are
+    // strict table flags (a malformed value stops the run at startup with exit 2, instead of
+    // the package's own "disabled" line), and the counter line is printed on every run, with
+    // enabled=0 and zeros when the bridge is off (OBJECTIVE A2).
+    {
+        const uint32_t minReads =
+            static_cast<uint32_t>(env::integer("TESSERACT_DROPOUT_BRIDGE_MIN_READS", 2));
+        if (env::on("TESSERACT_DROPOUT_BRIDGE", false)) {
+            const bool bridgeTrace = env::on("TESSERACT_JOIN_TRACE", false);
+            const DropoutBridgeStats bs = bridgeDropouts(graph, reads_, opt_.threads, minReads, bridgeTrace);
+            std::fprintf(stderr, "%s\n", formatDropoutBridgeStats(bs).c_str());
+            if (!bs.error.empty()) { error = bs.error; return false; }
+        } else {
+            DropoutBridgeStats idle;
+            idle.k = graph.k();
+            idle.minReads = minReads;
+            std::fprintf(stderr, "%s\n", formatDropoutBridgeStats(idle).c_str());
+        }
+    }
+
     const int finalK = graph.k();
     const size_t minLen = opt_.minContigLen ? opt_.minContigLen : static_cast<size_t>(2 * finalK);
 
@@ -1201,6 +1252,9 @@ bool Assembler::run(std::string& error) {
     // here because the classification that consumes it runs much later, after gap
     // closing and polishing have had their turn at the sequences.
     std::vector<char> layoutMembers;
+    // T03 (G-resolve): what each scaffold gap must look like if it is still open after gap
+    // filling; applied by restoreGapFlanks() below. Empty unless TESSERACT_FIX_GAP_FLANK.
+    std::vector<GapFlankRecord> gapFlankRecords;
 
     if (opt_.resolveRepeats && reads_.paired()) {
         if (opt_.verbose) std::fprintf(stderr, "[4/7] paired-end repeat resolution\n");
@@ -1252,10 +1306,7 @@ bool Assembler::run(std::string& error) {
         //
         // Kept behind the flag rather than deleted: the lower bound is measured honestly
         // (short fragments all overlap) and may still be worth something on its own.
-        static const bool kQcInsert = [] {
-            const char* e = std::getenv("TESSERACT_QC_INSERT");
-            return e && std::atoi(e) != 0;
-        }();
+        const bool kQcInsert = env::on("TESSERACT_QC_INSERT", false);
         if (kQcInsert && qc_.loaded && qc_.insertUsable) {
             resolver.setInsertBounds(qc_.insertP1, qc_.insertP99);
             if (opt_.verbose) {
@@ -1283,6 +1334,7 @@ bool Assembler::run(std::string& error) {
                          util::commify(static_cast<long long>(rs.distinctLinks)).c_str());
         }
         resolver.resolve(seqs, covs);
+        gapFlankRecords = resolver.gapFlankRecords();
         report_.resolve = resolver.stats();
         report_.resolveSeconds = t.elapsed();
         report_.resolveRun = true;
@@ -1321,6 +1373,8 @@ bool Assembler::run(std::string& error) {
     } else {
         if (opt_.verbose) std::fprintf(stderr, "[4/7] collecting contigs\n");
         graph.toContigs(minLen, seqs, covs);
+        // The resolver's counter lines, run=0, so they appear on every run (A2).
+        printResolverCountersNotRun();
     }
 
     if (opt_.ladderUnion && !ladderReserve.empty()) {
@@ -1464,7 +1518,8 @@ bool Assembler::run(std::string& error) {
     // that come back are polished with everything else.
     if (opt_.gapFill && !seqs.empty()) {
         if (opt_.verbose) std::fprintf(stderr, "[5/7] scaffold gap closing\n");
-        const GapFillStats gs = closeGaps(seqs, reads_, opt_.threads, 31, 300);
+        const GapFillStats gs = closeGaps(seqs, reads_, opt_.threads, 31, 300,
+                                          inputAmbiguousReads.empty() ? nullptr : &inputAmbiguousReads);
         report_.gapFill = gs;
         report_.gapFillRun = true;
         if (opt_.verbose && gs.gapsSeen) {
@@ -1481,7 +1536,13 @@ bool Assembler::run(std::string& error) {
                          gs.seedBelowFloor, gs.targetBelowFloor, gs.meanLocalDepth, gs.meanFloor);
         }
     }
+    // Counter lines of the gap-filler fixes, on every run (OBJECTIVE amendment A2).
+    logGapFillCounters(report_.gapFillRun ? report_.gapFill : gapFillIdleStats());
 
+    // T03 (G-resolve): gaps the filler left open get back the k-1 bases the resolver's
+    // layout left out -- after gap filling, before polishing. Called on every run: it
+    // prints its counter line even with no records.
+    restoreGapFlanks(seqs, gapFlankRecords);
     // How much of the pileup has to back a base before it replaces what the
     // graph produced.
     //
@@ -1501,9 +1562,7 @@ bool Assembler::run(std::string& error) {
     // So polishing is a guard, not a corrector: it earns its 3 seconds by
     // confirming the graph consensus already matches the reads, and it should
     // stay silent. Tunable for experiments; do not lower it on this evidence.
-    const double kPolishFraction = std::getenv("TESSERACT_POLISH_FRACTION")
-                                       ? std::atof(std::getenv("TESSERACT_POLISH_FRACTION"))
-                                       : 0.90;
+    const double kPolishFraction = env::real("TESSERACT_POLISH_FRACTION", 0.90);
 
     if (opt_.polish && !seqs.empty()) {
         if (opt_.verbose) std::fprintf(stderr, "[6/7] consensus polishing\n");
@@ -1527,6 +1586,9 @@ bool Assembler::run(std::string& error) {
         report_.polishSeconds = t.elapsed();
         report_.polishRun = true;
     }
+    // polishContigs prints the T02 [polish-n] line on every call; a run that never calls it
+    // prints the zero line here, so the counter is present on every run.
+    if (!(opt_.polish && !seqs.empty() && opt_.polishPasses > 0)) logPolishNIdle();
 
     if (opt_.mapPolisher != Mapper::None) util::makeDirs(opt_.outDir);
     // The k-mer polisher is blind wherever a base is wrong consistently across
@@ -1673,50 +1735,32 @@ bool Assembler::run(std::string& error) {
     // substring test and not a k-mer containment test.
     std::vector<char> contained(seqs.size(), 0);
     size_t containedN = 0, containedBases = 0;
+    DedupStats dedup;
     if (opt_.dedupContained && seqs.size() > 1) {
         util::Timer dt;
-        std::vector<size_t> byLen(seqs.size());
-        for (size_t i = 0; i < byLen.size(); ++i) byLen[i] = i;
-        std::sort(byLen.begin(), byLen.end(), [&](size_t a, size_t b) {
-            if (seqs[a].size() != seqs[b].size()) return seqs[a].size() > seqs[b].size();
-            return seqs[a] < seqs[b];          // total order, so the result is reproducible
-        });
-        size_t total = 0;
-        for (const std::string& s : seqs) total += s.size();
-        std::string text;                       // the contigs kept so far, longest first
-        text.reserve(total + seqs.size() + 1);
-        for (size_t idx : byLen) {
-            const std::string& s = seqs[idx];
-            // A plasmid call, and a contig whose own two ends the pairs joined, are
-            // results and not merely sequence. Deleting one because its bases also appear
-            // inside the chromosome would remove a finding from the report, so these are
-            // never dropped however redundant their sequence is.
-            const bool protectedCall =
+        // A plasmid call, and a contig whose own two ends the pairs joined, are results and not
+        // merely sequence. Deleting one because its bases also appear inside the chromosome
+        // would remove a finding from the report, so these are never dropped however redundant
+        // their sequence is.
+        std::vector<char> protectedCall(seqs.size(), 0);
+        for (size_t idx = 0; idx < seqs.size(); ++idx) {
+            protectedCall[idx] =
                 idx < replicons.calls.size() &&
                 (replicons.calls[idx].cls == RepliconClass::Plasmid || replicons.calls[idx].circular);
-            bool hit = false;
-            if (!s.empty() && !text.empty() && !protectedCall) {
-                hit = text.find(s) != std::string::npos;
-                if (!hit) {
-                    const std::string r = reverseComplement(s);
-                    hit = text.find(r) != std::string::npos;
-                }
-            }
-            if (hit) {
-                contained[idx] = 1;
-                ++containedN;
-                containedBases += s.size();
-            } else {
-                text.push_back('\x01');        // a separator no base can match across
-                text.append(s);
-            }
         }
+        // T37: the release longest-first substring test, unchanged in every decision, with an
+        // exact negative prefilter in front of each find (up to 180 s on one isolate before).
+        contained = markContained(seqs, protectedCall, nullptr, &dedup);
+        containedN = dedup.dropped;
+        containedBases = dedup.droppedBases;
         if (opt_.verbose && containedN) {
             std::fprintf(stderr,
                          "      %zu contigs (%zu bp) dropped as exact substrings of a longer contig, %.1fs\n",
                          containedN, containedBases, dt.elapsed());
         }
     }
+    std::fprintf(stderr, "[dedup] queried=%zu exact_searches=%zu dropped=%zu dropped_bp=%zu\n",
+                 dedup.queried, dedup.exactSearches, dedup.dropped, dedup.droppedBases);
 
     std::vector<std::string> outSeqs, outNames;
     // Kept beside each scaffold so the gap split at the write can rebuild a name in the
@@ -1726,6 +1770,10 @@ bool Assembler::run(std::string& error) {
     std::vector<std::string> outTags;
     std::vector<double> outCovs;
     std::vector<GfaPath> outPaths;
+    // Per written scaffold: its walk (empty when it has none) and whether it is a protected
+    // call (plasmid or circular). Read by the G-emit split post-processing and AGP/GFA v2.
+    std::vector<GfaPath> outPathOf;
+    std::vector<char> outProtected;
     outSeqs.reserve(order.size());
     outNames.reserve(order.size());
     for (size_t rank = 0; rank < order.size(); ++rank) {
@@ -1779,11 +1827,13 @@ bool Assembler::run(std::string& error) {
             gp.name = name;
             outPaths.push_back(std::move(gp));
         }
+        outPathOf.push_back(i < gfaPaths.size() ? gfaPaths[i] : GfaPath());
+        outProtected.push_back(i < replicons.calls.size() &&
+                               (replicons.calls[i].cls == RepliconClass::Plasmid || replicons.calls[i].circular));
         outSeqs.push_back(std::move(seqs[i]));
     }
     report_.command = opt_.commandLine;
     report_.finalize();
-    computeContigStats(outSeqs, report_);
 
     // ---- write outputs --------------------------------------------------
     if (!util::makeDirs(opt_.outDir)) {
@@ -1791,6 +1841,21 @@ bool Assembler::run(std::string& error) {
         return false;
     }
     if (opt_.verbose) std::fprintf(stderr, "[7/7] writing output\n");
+    // T34: an output this run does not write must not survive from an earlier run into the
+    // same directory -- a gap-free run would otherwise sit beside another assembly's
+    // scaffolds.fasta/.agp. Every optional name goes; the ones this run writes are rewritten.
+    {
+        size_t staleRemoved = 0;
+        for (const char* nm : {"scaffolds.fasta", "scaffolds.agp", "unitigs.fasta",
+                               "assembly_graph.gfa", "report.html"}) {
+            const std::string p = opt_.outDir + "/" + nm;
+            if (std::remove(p.c_str()) == 0) ++staleRemoved;
+        }
+        std::fprintf(stderr, "[outputs] stale_removed=%zu\n", staleRemoved);
+    }
+    const bool agpGfaV2 = emitfix::enabled(emitfix::kAgpGfaV2);
+    AgpGfaStats agpStats;
+    agpStats.enabled = agpGfaV2;
 
     // A gap is an assertion of adjacency with no sequence behind it. Emitting it as N
     // inside contigs.fasta states in the delivered file something the reads never showed,
@@ -1819,7 +1884,7 @@ bool Assembler::run(std::string& error) {
         if (opt_.verbose) std::fprintf(stderr, "      %s\n", scafPath.c_str());
 
         const std::string agpPath = opt_.outDir + "/scaffolds.agp";
-        std::FILE* agp = std::fopen(agpPath.c_str(), "w");
+        std::FILE* agp = agpGfaV2 ? nullptr : std::fopen(agpPath.c_str(), "w");
         if (agp) {
             std::fprintf(agp, "##agp-version\t2.1\n");
             std::fprintf(agp, "# TesserACT -- order and orientation of contigs.fasta.\n");
@@ -1853,26 +1918,17 @@ bool Assembler::run(std::string& error) {
         }
     }
 
-    std::vector<std::string> splitSeqs, splitNames;
-    std::vector<std::string> splitTags;
-    std::vector<double> splitCovs;
-    splitSeqs.reserve(outSeqs.size());
-    splitNames.reserve(outSeqs.size());
-    for (size_t i = 0; i < outSeqs.size(); ++i) {
-        const std::string& sq = outSeqs[i];
-        const std::string tag = i < outTags.size() ? outTags[i] : std::string();
-        const double cov = i < outCovs.size() ? outCovs[i] : 0.0;
-        size_t pos = 0;
-        while (pos < sq.size()) {
-            while (pos < sq.size() && (sq[pos] == 'N' || sq[pos] == 'n')) ++pos;
-            if (pos >= sq.size()) break;
-            size_t e = pos;
-            while (e < sq.size() && sq[e] != 'N' && sq[e] != 'n') ++e;
-            splitSeqs.emplace_back(sq.substr(pos, e - pos));
-            splitTags.push_back(tag);
-            splitCovs.push_back(cov);
-            pos = e;
-        }
+    // ---- split at every gap -------------------------------------------------
+    std::vector<EmitPiece> pieces = splitAtGaps(outSeqs, outTags, outCovs);
+
+    // T25 (TESSERACT_FIX_SPLIT_POSTPROCESS): a piece is a record too. Its coverage comes from
+    // its own stretch of the walk, a multi-piece scaffold's _circular tag is not the piece's,
+    // and the length floor and exact-containment test every whole record met apply to it.
+    {
+        SplitPostStats sp;
+        sp.enabled = emitfix::enabled(emitfix::kSplitPostprocess);
+        splitPostprocess(pieces, outSeqs, outPathOf, &graph, outProtected, minLen, sp);
+        logSplitPost(sp);
     }
 
     // ---- trim the second copy of a repeat shared by two contig ends ----------
@@ -1880,53 +1936,61 @@ bool Assembler::run(std::string& error) {
     // uses. The overlap is removed from the SHORTER partner only, so the longer contig --
     // the one with more context around the repeat -- keeps it, and the assembly still
     // contains every base it did before, once.
+    // T10 (TESSERACT_FIX_BOUNDARY_SAFE_TRIM): that last claim was false -- the victim lost
+    // its k-1 flank-to-overlap k-mers, and equal-length partners were both cut. T22
+    // (TESSERACT_FIX_TRIM_COPY_GUARD): the victim was chosen by length, blind to how many
+    // copies the segment has; see trimTerminalOverlaps().
+    std::vector<size_t> live;
+    for (size_t i = 0; i < pieces.size(); ++i) if (!pieces[i].drop) live.push_back(i);
+    std::vector<std::string> splitSeqs;
+    splitSeqs.reserve(live.size());
+    for (size_t i : live) splitSeqs.push_back(pieces[i].seq);
     size_t trimmedN = 0, trimmedBases = 0;
+    TrimConfig trimCfg;
+    trimCfg.minOverlap = std::max<size_t>(opt_.trimTerminalOverlap, static_cast<size_t>(finalK));
+    trimCfg.k = finalK;
+    trimCfg.boundarySafe = emitfix::enabled(emitfix::kBoundarySafeTrim);
+    trimCfg.copyGuard = emitfix::enabled(emitfix::kTrimCopyGuard);
+    TrimStats trimStats;
     if (opt_.trimTerminalOverlap > 0 && splitSeqs.size() > 1) {
         util::Timer tt;
-        const size_t minOv = std::max<size_t>(opt_.trimTerminalOverlap,
-                                              static_cast<size_t>(finalK));
-        const std::vector<Dovetail> dv = findTerminalDovetails(splitSeqs, minOv, 8000);
-        std::vector<size_t> cutFront(splitSeqs.size(), 0), cutBack(splitSeqs.size(), 0);
-        std::vector<char> frontSet(splitSeqs.size(), 0), backSet(splitSeqs.size(), 0);
-        for (const Dovetail& d : dv) {
-            // Longest dovetails first, and an end already decided is not revisited: two
-            // overlaps sharing an end would otherwise cut the same bases twice.
-            const bool aLonger = splitSeqs[d.a].size() >= splitSeqs[d.b].size();
-            const size_t victim = aLonger ? d.b : d.a;
-            // a's SUFFIX meets b's PREFIX in b's own orientation; if b was matched
-            // reverse-complemented, its prefix there is its suffix here.
-            const bool cutAtFront = aLonger ? !d.bRc : d.aRc;
-            std::vector<char>& set = cutAtFront ? frontSet : backSet;
-            std::vector<size_t>& cut = cutAtFront ? cutFront : cutBack;
-            if (set[victim]) continue;
-            // Never leave a stub: a contig that is mostly overlap is the wholly-contained
-            // case, which --dedup-contained handles by removing it outright.
-            const size_t other = cutAtFront ? cutBack[victim] : cutFront[victim];
-            if (d.len + other + 200 >= splitSeqs[victim].size()) continue;
-            set[victim] = 1;
-            cut[victim] = d.len;
-            ++trimmedN;
-            trimmedBases += d.len;
-        }
-        for (size_t i = 0; i < splitSeqs.size(); ++i) {
-            if (!cutFront[i] && !cutBack[i]) continue;
-            splitSeqs[i] = splitSeqs[i].substr(cutFront[i],
-                                              splitSeqs[i].size() - cutFront[i] - cutBack[i]);
+        const std::vector<std::string> preTrim = trimCfg.copyGuard ? splitSeqs : std::vector<std::string>();
+        const EndEvidenceFn evidence = [&](const std::vector<EndQuery>& q) {
+            return gatherEndEvidence(preTrim, q, reads_, report_.resolve.insert, opt_.threads);
+        };
+        std::vector<size_t> cutFront, cutBack;
+        trimStats = trimTerminalOverlaps(splitSeqs, trimCfg, cutFront, cutBack,
+                                         trimCfg.copyGuard ? &evidence : nullptr);
+        trimmedN = trimStats.trimmed;
+        trimmedBases = trimStats.trimmedBases;
+        for (size_t j = 0; j < live.size(); ++j) {
+            EmitPiece& p = pieces[live[j]];
+            p.cutFrontSeq = p.seq.substr(0, cutFront[j]);
+            p.cutBackSeq = p.seq.substr(p.seq.size() - cutBack[j]);
+            p.seq = splitSeqs[j];
         }
         if (opt_.verbose && trimmedN) {
             std::fprintf(stderr,
                          "      %zu terminal repeat overlaps trimmed (%zu bp, min %zu), %.1fs\n",
-                         trimmedN, trimmedBases, minOv, tt.elapsed());
+                         trimmedN, trimmedBases, trimCfg.minOverlap, tt.elapsed());
         }
     }
+    logTrimCounters(trimCfg, trimStats);
+    report_.trimmedOverlaps = trimmedN;
+    report_.trimmedOverlapBases = trimmedBases;
 
+    std::vector<std::string> splitNames;
     splitNames.reserve(splitSeqs.size());
-    for (size_t i = 0; i < splitSeqs.size(); ++i) {
+    for (size_t j = 0; j < live.size(); ++j) {
+        EmitPiece& p = pieces[live[j]];
         char nm[256];
         std::snprintf(nm, sizeof(nm), "NODE_%zu_length_%zu_cov_%.4f%s",
-                      i + 1, splitSeqs[i].size(), splitCovs[i], splitTags[i].c_str());
+                      j + 1, p.seq.size(), p.cov, p.tag.c_str());
+        p.name = nm;
         splitNames.emplace_back(nm);
     }
+    // T17: the contig statistics describe the records contigs.fasta holds.
+    computeContigStats(splitSeqs, outSeqs, report_);
 
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
     if (!writeFasta(contigPath, splitSeqs, splitNames, 80, error)) return false;
@@ -1958,9 +2022,27 @@ bool Assembler::run(std::string& error) {
         if (opt_.verbose) std::fprintf(stderr, "      %s\n", up.c_str());
     }
 
+    // T26 (TESSERACT_FIX_AGP_GFA_V2): the AGP names the records contigs.fasta holds, with
+    // their final coordinates, and tiles every base the trim or dedup took from a piece with
+    // the record still holding it. Every N in these runs comes from the read-pair scaffolder
+    // unless a model joined or laid out contigs, whose gaps are not told apart here.
+    if (agpGfaV2 && gapBasesTotal > 0) {
+        const std::string agpPath = opt_.outDir + "/scaffolds.agp";
+        const bool modelGaps = report_.organismRun || report_.layout.run;
+        if (!writeAgpV2(agpPath, outSeqs, outNames, pieces, modelGaps ? "unspecified" : "paired-ends",
+                        agpStats, error)) {
+            return false;
+        }
+        if (opt_.verbose) std::fprintf(stderr, "      %s\n", agpPath.c_str());
+    }
     if (opt_.emitGfa) {
         const std::string gp = opt_.outDir + "/assembly_graph.gfa";
-        if (!writeGfa(gp, graph, outPaths, report_.gfaSegments, report_.gfaLinks, error)) {
+        // T26: one P-line per written contig whose own gap-free walk spells it exactly, named
+        // as in contigs.fasta; the release wrote scaffold walks under scaffold names, with
+        // gap steps the gap filler had since closed.
+        const std::vector<GfaPath> pathsV2 =
+            agpGfaV2 ? contigPathsV2(outSeqs, outPathOf, graph, pieces, agpStats) : std::vector<GfaPath>();
+        if (!writeGfa(gp, graph, agpGfaV2 ? pathsV2 : outPaths, report_.gfaSegments, report_.gfaLinks, error)) {
             return false;
         }
         if (opt_.verbose) {
@@ -1969,6 +2051,8 @@ bool Assembler::run(std::string& error) {
                          util::commify(static_cast<long long>(report_.gfaLinks)).c_str());
         }
     }
+
+    logAgpGfa(agpStats);
 
     stats_.contigs = outSeqs.size();
     stats_.totalLength = report_.totalLength;
@@ -2001,45 +2085,6 @@ bool Assembler::run(std::string& error) {
     }
     if (!diagnosticBatch.finishChild(stats_.seconds, error)) return false;
     return true;
-}
-
-// Contig-level statistics: the assembly as it is counted once split at scaffold gaps.
-// A run of 10 or more N is the conventional threshold and the one QUAST uses; a shorter run
-// is an ambiguous base inside a contig, not an asserted join, so it stays in the piece.
-static void computeContigStats(const std::vector<std::string>& seqs, AssemblyReport& rep) {
-    auto isN = [](char c) { return c == 'N' || c == 'n'; };
-    std::vector<size_t> lens;
-    rep.scaffoldGaps = 0;
-    for (const std::string& s : seqs) {
-        size_t pieceLen = 0;
-        for (size_t i = 0; i < s.size();) {
-            if (!isN(s[i])) { ++pieceLen; ++i; continue; }
-            size_t j = i;
-            while (j < s.size() && isN(s[j])) ++j;
-            if (j - i >= 10) {
-                ++rep.scaffoldGaps;
-                if (pieceLen) { lens.push_back(pieceLen); pieceLen = 0; }
-            } else {
-                pieceLen += j - i;
-            }
-            i = j;
-        }
-        if (pieceLen) lens.push_back(pieceLen);
-    }
-    rep.contigPieces = lens.size();
-    rep.contigTotal = 0;
-    rep.contigLargest = 0;
-    for (size_t l : lens) {
-        rep.contigTotal += l;
-        rep.contigLargest = std::max(rep.contigLargest, l);
-    }
-    std::sort(lens.begin(), lens.end(), std::greater<size_t>());
-    size_t acc = 0;
-    rep.contigN50 = 0;
-    for (size_t l : lens) {
-        acc += l;
-        if (acc * 2 >= rep.contigTotal) { rep.contigN50 = l; break; }
-    }
 }
 
 void AssemblyReport::finalize() {

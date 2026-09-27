@@ -1,4 +1,5 @@
 #include "organism_layout.h"
+#include "envflags.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -223,10 +224,7 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
         // ON by default: a wrong sequence is worse than a missing one for anything that
         // gets reported clinically, and the residual is meant to be a work list rather
         // than a guess. TESSERACT_PLASMID_COMPLETE=1 takes the other side.
-        const bool keepPlasmidsOff = [] {
-            const char* e = std::getenv("TESSERACT_PLASMID_COMPLETE");
-            return !(e && *e && *e != '0');
-        }();
+        const bool keepPlasmidsOff = !env::on("TESSERACT_PLASMID_COMPLETE", false);
         if (keepPlasmidsOff) {
             for (size_t c = 0; c < contigs.size(); ++c) {
                 if (plsV[c] >= 4 && plsV[c] >= chrV[c] * 3) {
@@ -309,7 +307,7 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
               [](const Placement& a, const Placement& b) { return a.start < b.start; });
     st.placed = chosen.size();
 
-    if (std::getenv("TESSERACT_DEBUG_LAYOUT")) {
+    if (env::present("TESSERACT_DEBUG_LAYOUT")) {
         for (size_t i = 0; i < chosen.size(); ++i) {
             const Placement& p = chosen[i];
             std::fprintf(stderr,

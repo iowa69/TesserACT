@@ -11,6 +11,11 @@
 
 set -u
 
+# Start from release defaults: drop every ambient TESSERACT_* so an exported experiment
+# environment (an arm's COMMON_PREFIX=0, MIN_FALLBACK_DEST=..., ...) can neither fail nor
+# mask the checks below. A test that needs a flag sets it on that one command line.
+while IFS= read -r v; do unset "$v"; done < <(compgen -e | grep '^TESSERACT_' || true)
+
 # The model tests exercise the author path: building a model and assembling against
 # it. --model only accepts a path under TESSERACT_MODEL_AUTHOR, because a model is
 # a curated artifact and --organism selects a bundled one for everybody else.
@@ -36,9 +41,50 @@ LOG="$TMP/tesseract.log"
 
 PASSED=0
 FAILED=0
+SKIPPED=0
+XFAILED=0
 
 pass() { printf 'PASS  %-46s %s\n' "$1" "${2:-}"; PASSED=$((PASSED + 1)); }
 fail() { printf 'FAIL  %-46s %s\n' "$1" "${2:-}"; FAILED=$((FAILED + 1)); }
+# A test that could not run is reported as such, never as a pass.
+skip() { printf 'SKIP  %-46s %s\n' "$1" "${2:-}"; SKIPPED=$((SKIPPED + 1)); }
+
+# known NAME DEFECT CONDITION_EXIT_STATUS DETAIL -- a check of the corrected behaviour for a
+# tracked, still-open defect. It passes once the fix is in the binary (fixes are default-off
+# and enabled together by TESSERACT_FIXES=1, which the caller sets on that command line);
+# until then it prints XFAIL and does not fail the suite. RUN_TESTS_STRICT_XFAIL=1 makes an
+# XFAIL a failure, for the build in which every fix is expected to have landed.
+known() {
+    if [ "$3" -eq 0 ]; then
+        pass "$1" "[$2 fixed] ${4:-}"
+    elif [ "${RUN_TESTS_STRICT_XFAIL:-0}" = 1 ]; then
+        fail "$1" "[$2 open] ${4:-}"
+    else
+        printf 'XFAIL %-46s %s\n' "$1" "[$2 open] ${4:-}"; XFAILED=$((XFAILED + 1))
+    fi
+}
+
+# same_outputs DIR_A DIR_B -- prints the written outputs that differ between two runs (by
+# presence or by a single byte), nothing when they agree. Every file a run writes that
+# should be reproducible, not only contigs.fasta: a thread-dependent scaffold, AGP or graph
+# tie-break leaves contigs.fasta alone.
+same_outputs() {
+    local f diff=""
+    for f in contigs.fasta scaffolds.fasta scaffolds.agp assembly_graph.gfa; do
+        if [ -e "$1/$f" ] || [ -e "$2/$f" ]; then
+            cmp -s "$1/$f" "$2/$f" || diff="$diff $f"
+        fi
+    done
+    printf '%s' "$diff"
+}
+# present_outputs DIR -- which of those files a run wrote (so a pass shows what it covered).
+present_outputs() {
+    local f out=""
+    for f in contigs.fasta scaffolds.fasta scaffolds.agp assembly_graph.gfa; do
+        [ -e "$1/$f" ] && out="$out${out:+,}${f}"
+    done
+    printf '%s' "$out"
+}
 
 # check NAME CONDITION_EXIT_STATUS DETAIL
 check() {
@@ -369,43 +415,237 @@ def cmd_format(a):
         sys.exit(1)
 
 
+def n50_of(lens):
+    total = sum(lens)
+    acc = 0
+    for l in sorted(lens, reverse=True):
+        acc += l
+        if acc * 2 >= total:
+            return l
+    return 0
+
+
+def contigstats_verdict(out, report_path=None):
+    """(detail line, list of mismatches) for one output directory; see cmd_contigstats."""
+    import os
+    rep = json.load(open(report_path or os.path.join(out, "report.json")))["assembly"]
+    recs = [s for _, s in read_fasta(os.path.join(out, "contigs.fasta"))]
+    lens = [len(s) for s in recs]
+    n_in_contigs = sum(s.upper().count("N") for s in recs)
+    sp = os.path.join(out, "scaffolds.fasta")
+    runs = [len(m.group(0)) for _, s in (read_fasta(sp) if os.path.exists(sp) else [])
+            for m in re.finditer("[Nn]+", s)]
+    agp = os.path.join(out, "scaffolds.agp")
+    agp_n = 0
+    if os.path.exists(agp):
+        with open(agp) as fh:
+            agp_n = sum(1 for l in fh if not l.startswith("#") and l.split("\t")[4:5] == ["N"])
+    n50 = n50_of(lens)
+    want = {"scaffold_gaps": len(runs), "contig_count": len(lens),
+            "contig_total_length": sum(lens), "contig_n50": n50,
+            "contig_largest": max(lens, default=0)}
+    bad = [k for k, v in want.items() if rep.get(k) != v]
+    notes = ["  %s: report says %s, the files say %s" % (k, rep.get(k), want[k]) for k in bad]
+    if n_in_contigs:
+        bad.append("N_in_contigs.fasta")
+        notes.append("  contigs.fasta carries %d N bases" % n_in_contigs)
+    if agp_n != len(runs):
+        bad.append("agp_N_rows")
+        notes.append("  scaffolds.agp has %d N rows for %d N runs" % (agp_n, len(runs)))
+    detail = ("gaps=%d short_gaps=%d contigs=%d contig_n50=%d scaffold_n50=%d mismatched=%s"
+              % (len(runs), sum(1 for r in runs if r < 10), len(lens), n50, rep.get("n50", 0),
+                 ",".join(bad) if bad else "none"))
+    return detail, bad, notes
+
+
 def cmd_contigstats(a):
-    """contigstats CONTIGS REPORT_JSON -- report.json's contig_* fields must match the FASTA.
+    """contigstats OUTDIR [REPORT_JSON] -- report.json describes the files actually written.
 
     The scaffold figures (n50, largest) are raised by asserting an order across a gap, which
     assembles no additional base; the contig figures are what QUAST and every published
     comparison report. Quoting the first as if it were the second has already misled a
-    comparison in this project, so the invariant is pinned here: whatever the assembler says
-    the contig statistics are, splitting its own contigs.fasta at runs of 10+ N must agree.
+    comparison in this project, so the invariant is pinned here against the files:
+      contig_count / contig_total_length / contig_n50 / contig_largest == the records of
+        contigs.fasta, taken as written. Since 1.3.0 that file is split at every N run and
+        then trimmed, so it is never re-split here: the earlier form of this check split it
+        at runs of 10+ N, found none, and so compared nothing (and failed every correct
+        report of a gapped assembly, which is why no fixture had a gap).
+      scaffold_gaps == the number of N runs of any length in scaffolds.fasta (0 without it);
+      contigs.fasta carries no N, and scaffolds.agp has one N row per N run.
+    The detail line prints gaps=, so a run that produced no gap is visible as gaps=0.
     """
-    seqs = [s for _, s in read_fasta(a[0])]
-    rep = json.load(open(a[1]))["assembly"]
-    gaps = sum(1 for s in seqs for _ in re.finditer("[Nn]{10,}", s))
-    pieces = [p for s in seqs for p in re.split("[Nn]{10,}", s) if p]
-    total = sum(len(p) for p in pieces)
-    acc, n50 = 0, 0
-    for l in sorted((len(p) for p in pieces), reverse=True):
-        acc += l
-        if acc * 2 >= total:
-            n50 = l
-            break
-    want = {"scaffold_gaps": gaps, "contig_count": len(pieces),
-            "contig_total_length": total, "contig_n50": n50,
-            "contig_largest": max((len(p) for p in pieces), default=0)}
-    bad = [k for k, v in want.items() if rep.get(k) != v]
-    print("gaps=%d contigs=%d contig_n50=%d scaffold_n50=%d mismatched=%s"
-          % (gaps, len(pieces), n50, rep.get("n50", 0), ",".join(bad) if bad else "none"))
+    detail, bad, notes = contigstats_verdict(a[0], a[1] if len(a) > 1 else None)
+    print(detail)
     if bad:
-        for k in bad:
-            print("  %s: report says %s, contigs.fasta says %s" % (k, rep.get(k), want[k]))
+        for n in notes:
+            print(n)
         sys.exit(1)
+
+
+def cmd_contigstats_selftest(a):
+    """contigstats_selftest DIR -- the contigstats check itself, on hand-written output dirs.
+
+    Every case is a directory a run could write, with a report that either describes it
+    (the check must pass) or is stale in the way report.json has been stale (it must fail):
+    a 1-N gap counted by a >=10-N rule, a gap the polisher overwrote, a terminal trim that
+    the totals still include, an N left in contigs.fasta, an AGP that disagrees.
+    """
+    import os
+    rng = random.Random(4242)
+    A, B, C = rand_seq(rng, 1200), rand_seq(rng, 900), rand_seq(rng, 700)
+
+    def stats(lens, gaps):
+        return {"assembly": {"contig_count": len(lens), "contig_total_length": sum(lens),
+                             "contig_n50": n50_of(lens), "contig_largest": max(lens, default=0),
+                             "scaffold_gaps": gaps, "n50": n50_of(lens)}}
+
+    def agp_rows(scaffolds):
+        rows = []
+        for name, s in scaffolds:
+            pos, part = 1, 1
+            for m in re.finditer("[ACGT]+|N+", s):
+                L = len(m.group(0))
+                if m.group(0)[0] == "N":
+                    rows.append("%s\t%d\t%d\t%d\tN\t%d\tscaffold\tyes\tpaired-ends"
+                                % (name, pos, pos + L - 1, part, L))
+                else:
+                    rows.append("%s\t%d\t%d\t%d\tW\t%s_%d\t1\t%d\t+"
+                                % (name, pos, pos + L - 1, part, name, part, L))
+                pos += L
+                part += 1
+        return rows
+
+    def case(name, contigs, scaffolds, report, agp=None):
+        d = os.path.join(a[0], name)
+        os.makedirs(d, exist_ok=True)
+        write_fasta(os.path.join(d, "contigs.fasta"),
+                    [("NODE_%d" % (i + 1), s) for i, s in enumerate(contigs)])
+        if scaffolds is not None:
+            recs = [("SCAF_%d" % (i + 1), s) for i, s in enumerate(scaffolds)]
+            write_fasta(os.path.join(d, "scaffolds.fasta"), recs)
+            with open(os.path.join(d, "scaffolds.agp"), "w") as fh:
+                fh.write("##agp-version\t2.1\n")
+                for r in (agp if agp is not None else agp_rows(recs)):
+                    fh.write(r + "\n")
+        json.dump(report, open(os.path.join(d, "report.json"), "w"))
+        return d
+
+    L = lambda *xs: [len(x) for x in xs]
+    trimmed = C[:-30]
+    cases = [
+        # name, contigs.fasta, scaffolds.fasta, report, expected verdict (0 = consistent)
+        ("no_gap", [A, B, C], None, stats(L(A, B, C), 0), 0),
+        ("gap_12N", [A, B, C], [A + "N" * 12 + B, C], stats(L(A, B, C), 1), 0),
+        ("gap_1N", [A, B, C], [A + "N" + B, C], stats(L(A, B, C), 1), 0),
+        # The release report: pre-split scaffolds under a >=10-N rule, so the 1-N join is
+        # one contig of len(A)+1+len(B) and no gap.
+        ("gap_1N_stale_10N_rule", [A, B, C], [A + "N" + B, C],
+         stats([len(A) + 1 + len(B), len(C)], 0), 1),
+        # Contig figures right, but the short run not counted as a scaffold gap.
+        ("gap_2N_stale_gap_count", [A, B, C], [A + "NN" + B, C], stats(L(A, B, C), 0), 1),
+        # Polisher overwrote the gap with read bases: one record, no N run anywhere.
+        ("polished_over_N", [A + "G" * 5 + B, C], [A + "G" * 5 + B, C],
+         stats(L(A + "G" * 5 + B, C), 0), 0),
+        ("polished_over_N_stale", [A + "G" * 5 + B, C], [A + "G" * 5 + B, C],
+         stats(L(A, B, C), 1), 1),
+        # Terminal-overlap trim removed 30 bp after the statistics were taken.
+        ("trimmed", [A, B, trimmed], None, stats(L(A, B, trimmed), 0), 0),
+        ("trimmed_stale", [A, B, trimmed], None, stats(L(A, B, C), 0), 1),
+        ("N_in_contigs", [A + "N" * 12 + B, C], None, stats(L(A + "N" * 12 + B, C), 0), 1),
+        ("agp_missing_N_row", [A, B, C], [A + "N" * 12 + B, C], stats(L(A, B, C), 1), 1),
+    ]
+    wrong = []
+    for name, contigs, scaffolds, report, expect in cases:
+        agp = None
+        if name == "agp_missing_N_row":
+            agp = [r for r in agp_rows([("SCAF_1", scaffolds[0]), ("SCAF_2", scaffolds[1])])
+                   if "\tN\t" not in r]
+        d = case(name, contigs, scaffolds, report, agp)
+        _, bad, _ = contigstats_verdict(d)
+        got = 1 if bad else 0
+        if got != expect:
+            wrong.append("%s(expected %s, got %s)" % (name, "fail" if expect else "pass",
+                                                       "fail" if got else "pass"))
+    print("cases=%d misjudged=%d%s" % (len(cases), len(wrong),
+                                        (" " + ",".join(wrong)) if wrong else ""))
+    if wrong:
+        sys.exit(1)
+
+
+def cmd_holereads(a):
+    """holereads GENOME PREFIX COV READLEN INSERT SD SEED HOLE_LO HOLE_HI
+
+    Error-free pairs as `reads ... paired fastq gz`, except that no READ overlaps
+    [HOLE_LO, HOLE_HI): fragments may still span it, with both mates outside. A coverage
+    dropout that pairs bridge is the one situation that makes the assembler write a scaffold
+    gap, which none of the other fixtures produce.
+    """
+    gpath, prefix = a[0], a[1]
+    cov, rlen, ins, sd = float(a[2]), int(a[3]), float(a[4]), float(a[5])
+    seed, hlo, hhi = int(a[6]), int(a[7]), int(a[8])
+    rng = random.Random(seed)
+    pairs = []
+    for _, seq in read_fasta(gpath):
+        L = len(seq)
+        want = int(cov * L / (2.0 * rlen))
+        made = guard = 0
+        while made < want and guard < want * 40:
+            guard += 1
+            frag = int(rng.gauss(ins, sd))
+            if frag < rlen + 20:
+                continue
+            s = rng.randint(-(frag - 1), L - 1)
+            lo, hi = max(0, s), min(L, s + frag)
+            if hi - lo < rlen + 20:
+                continue
+            if any(x < hhi and y > hlo for x, y in ((lo, lo + rlen), (hi - rlen, hi))):
+                continue
+            f = seq[lo:hi]
+            pairs.append((f[:rlen], rc(f[-rlen:])))
+            made += 1
+    rng.shuffle(pairs)
+    with gzip.open(prefix + "_1.fq.gz", "wt") as f1, gzip.open(prefix + "_2.fq.gz", "wt") as f2:
+        for i, (r1, r2) in enumerate(pairs):
+            f1.write("@r%d/1\n%s\n+\n%s\n" % (i, r1, "I" * len(r1)))
+            f2.write("@r%d/2\n%s\n+\n%s\n" % (i, r2, "I" * len(r2)))
+    print("pairs=%d" % len(pairs))
+
+
+def cmd_truncgz(a):
+    """truncgz IN_FQ_GZ OUT KEEP_RECORDS -- a gzip stream cut after KEEP_RECORDS records.
+
+    The deflate stream is flushed at a record boundary and then simply stops: no final
+    block, no CRC/ISIZE trailer -- a download that died mid-file. `gzip -t` rejects it, and
+    everything it does contain decompresses to whole FASTQ records.
+    """
+    import zlib
+    with gzip.open(a[0], "rt") as fh:
+        lines = fh.read().split("\n")
+    keep = int(a[2]) * 4
+    body = ("\n".join(lines[:keep]) + "\n").encode()
+    z = zlib.compressobj(6, zlib.DEFLATED, 31)
+    data = z.compress(body) + z.flush(zlib.Z_SYNC_FLUSH)
+    with open(a[1], "wb") as out:
+        out.write(data)
+    print("records=%d bytes=%d" % (keep // 4, len(data)))
+
+
+def cmd_dotnames(a):
+    """dotnames IN_FQ OUT_FQ MATE -- rename '@rN/M' to '@SRR1.N.M' (fastq-dump --readids)."""
+    with open(a[0]) as src, open(a[1], "w") as dst:
+        for i, line in enumerate(src):
+            if i % 4 == 0:
+                line = re.sub(r"^@r(\d+)/\d", r"@SRR1.\1." + a[2], line)
+            dst.write(line)
 
 
 if __name__ == "__main__":
     table = {"genome": cmd_genome, "repeat_genome": cmd_repeat_genome, "reads": cmd_reads,
              "tiny": cmd_tiny, "stats": cmd_stats, "exact": cmd_exact, "substr": cmd_substr,
              "kmercheck": cmd_kmercheck, "identity": cmd_identity, "sameset": cmd_sameset,
-             "format": cmd_format, "contigstats": cmd_contigstats}
+             "format": cmd_format, "contigstats": cmd_contigstats,
+             "contigstats_selftest": cmd_contigstats_selftest, "holereads": cmd_holereads,
+             "truncgz": cmd_truncgz, "dotnames": cmd_dotnames}
     table[sys.argv[1]](sys.argv[2:])
 PYEOF
 
@@ -542,10 +782,11 @@ fi
 
 # 9. gzipped vs plain
 if [ $paired_rc -eq 0 ] && asm "$D/plain" -1 "$D/p_1.fq" -2 "$D/p_2.fq" -t 4; then
-    if cmp -s "$D/paired/contigs.fasta" "$D/plain/contigs.fasta"; then
-        pass "gzipped and plain input identical" "byte-identical contigs.fasta"
+    diffs=$(same_outputs "$D/paired" "$D/plain")
+    if [ -z "$diffs" ]; then
+        pass "gzipped and plain input identical" "byte-identical $(present_outputs "$D/plain")"
     else
-        fail "gzipped and plain input identical" "outputs differ"
+        fail "gzipped and plain input identical" "outputs differ:$diffs"
     fi
 else
     fail "gzipped and plain input identical" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
@@ -571,12 +812,12 @@ kbad "k < 5 (-k 3)" 3
 
 # The boundary value the cap allows must still assemble. k-mers are packed into
 # four 64-bit words, so 127 is the largest odd k the representation holds.
-if asm "$TMP/t10ok" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" -k 95 -t 4; then
+if asm "$TMP/t10ok" -1 "$TMP/t6/r_1.fq.gz" -2 "$TMP/t6/r_2.fq.gz" -k 127 -t 4; then
     eval "$(gen stats "$TMP/t10ok/contigs.fasta")"
-    check "largest legal k (-k 95) accepted" $([ "$n" -ge 1 ] && echo 0 || echo 1) \
+    check "largest legal k (-k 127) accepted" $([ "$n" -ge 1 ] && echo 0 || echo 1) \
           "contigs=$n total=$total"
 else
-    fail "largest legal k (-k 95) accepted" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
+    fail "largest legal k (-k 127) accepted" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
 fi
 
 # ---------------------------------------------------------------------------
@@ -622,10 +863,11 @@ check "--min-contig filters output" $rc \
 rc=0
 asm "$D/det1" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4 || rc=1
 asm "$D/det2" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4 || rc=1
-if [ $rc -eq 0 ] && cmp -s "$D/det1/contigs.fasta" "$D/det2/contigs.fasta"; then
-    pass "determinism (same threads, two runs)" "byte-identical contigs.fasta"
+if [ $rc -eq 0 ] && [ -z "$(same_outputs "$D/det1" "$D/det2")" ]; then
+    pass "determinism (same threads, two runs)" "byte-identical $(present_outputs "$D/det1")"
 else
-    fail "determinism (same threads, two runs)" "outputs differ or run failed"
+    fail "determinism (same threads, two runs)" \
+         "run failed or outputs differ:$(same_outputs "$D/det1" "$D/det2")"
 fi
 
 # 14. Thread invariance
@@ -641,17 +883,21 @@ if [ $rc -eq 0 ]; then
     # left this test green while the "(byte-identical)" note it prints quietly disappeared.
     # A run that reorders its own output by thread count is not thread-invariant, and this is
     # the test that is supposed to say so.
-    if cmp -s "$D/th1/contigs.fasta" "$D/th8/contigs.fasta"; then
-        pass "thread invariance (-t 1 vs -t 8)" "total=$t1_total n50=$t1_n50 (byte-identical)"
+    # Every written output, not only contigs.fasta, and -t 4 (det1 above) as well as -t 8.
+    th_diff="$(same_outputs "$D/th1" "$D/th8")"
+    [ "$rc" -eq 0 ] && [ -d "$D/det1" ] && th_diff="$th_diff$(same_outputs "$D/th1" "$D/det1" | sed 's/ / t4:/g')"
+    if [ -z "$th_diff" ]; then
+        pass "thread invariance (-t 1 vs -t 4 vs -t 8)" \
+             "total=$t1_total n50=$t1_n50 (byte-identical $(present_outputs "$D/th1"))"
     elif [ "$t1_total" -eq "$t8_total" ] && [ "$t1_n50" -eq "$t8_n50" ]; then
-        fail "thread invariance (-t 1 vs -t 8)" \
-             "same total ($t1_total) and n50 ($t1_n50) but the files differ byte for byte"
+        fail "thread invariance (-t 1 vs -t 4 vs -t 8)" \
+             "same total ($t1_total) and n50 ($t1_n50) but differ byte for byte:$th_diff"
     else
-        fail "thread invariance (-t 1 vs -t 8)" \
+        fail "thread invariance (-t 1 vs -t 4 vs -t 8)" \
              "t1: total=$t1_total n50=$t1_n50 / t8: total=$t8_total n50=$t8_n50"
     fi
 else
-    fail "thread invariance (-t 1 vs -t 8)" "a run exited non-zero"
+    fail "thread invariance (-t 1 vs -t 4 vs -t 8)" "a run exited non-zero"
 fi
 
 # 15. Output format
@@ -666,7 +912,7 @@ check "contigs.fasta header format and order" $rc "$detail"
 # a 35x gap, and next to it "0 joins spanning 97,073 N bases" -- a join count taken from one
 # stage while the N came from another. Both numbers are now derived from the sequences, and
 # this pins them to the file so they cannot drift apart again.
-detail=$(gen contigstats "$D/out/contigs.fasta" "$D/out/report.json"); rc=$?
+detail=$(gen contigstats "$D/out"); rc=$?
 check "report.json contig stats match contigs.fasta" $rc "$detail"
 
 # ---------------------------------------------------------------------------
@@ -735,12 +981,54 @@ PYGFA
     # Same invariant as 15b, but on the run that goes through layout -- the only stage that
     # scaffolds, so the only one that can produce the gaps the contig figures exist to expose.
     # The detail line prints the gap count, so a run where layout happened to join nothing is
-    # visible as gaps=0 rather than passing as if the gap arithmetic had been exercised.
-    detail=$(gen contigstats "$D/out/contigs.fasta" "$D/out/report.json"); rc=$?
+    # visible as gaps=0 rather than passing as if the gap arithmetic had been exercised. (It
+    # does print gaps=0 here; test 15d below is the fixture that actually writes a gap.)
+    detail=$(gen contigstats "$D/out"); rc=$?
     check "contig stats match after layout" $rc "$detail"
 else
     fail "assembly_graph.gfa well formed, P records kept" "tesseract-asm exited $?"
 fi
+
+# ---------------------------------------------------------------------------
+# 15d. A scaffold gap: report.json, scaffolds.fasta/.agp and thread invariance
+#
+# No other fixture writes a gap (every contigstats line above says gaps=0), so the gap
+# arithmetic of report.json, the N rows of the AGP and the thread invariance of
+# scaffolds.fasta/.agp were never exercised. Here no read covers a 200 bp window of a 40 kb
+# genome while 600 bp fragments span it: the pairs bridge the dropout and the assembler
+# writes one scaffold gap (293 N from release 1.3.0).
+# ---------------------------------------------------------------------------
+D=$TMP/t15d; mkdir -p "$D"
+gen genome "$D/g.fa" 7 40000 >/dev/null
+gen holereads "$D/g.fa" "$D/r" 60 150 600 40 1007 20000 20200 >/dev/null
+if asm "$D/out" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4; then
+    detail=$(gen contigstats "$D/out"); rc=$?
+    # The fixture is only worth something while it produces a gap.
+    case "$detail" in gaps=0\ *) rc=1; detail="$detail (fixture produced no gap)";; esac
+    sub=$(gen substr "$D/out/contigs.fasta" "$D/g.fa") || rc=1
+    check "gapped scaffold: stats, AGP and pieces" $rc "$detail $sub"
+    if asm "$D/th1" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 1; then
+        diffs=$(same_outputs "$D/out" "$D/th1")
+        if [ -z "$diffs" ]; then
+            pass "gapped scaffold thread invariance (-t 1/-t 4)" \
+                 "byte-identical $(present_outputs "$D/th1")"
+        else
+            fail "gapped scaffold thread invariance (-t 1/-t 4)" "differ:$diffs"
+        fi
+    else
+        fail "gapped scaffold thread invariance (-t 1/-t 4)" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
+    fi
+else
+    fail "gapped scaffold: stats, AGP and pieces" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
+fi
+
+# 15e. The contigstats check itself: hand-written output directories covering what reads
+# cannot easily force -- a 1-N and a 12-N gap, a gap the polisher overwrote, a terminal
+# trim, an N left in contigs.fasta, an AGP without its N row -- each with a report that
+# describes it (must pass) or a stale one (must fail).
+mkdir -p "$TMP/t15e"
+detail=$(gen contigstats_selftest "$TMP/t15e"); rc=$?
+check "contigstats check judges stale reports" $rc "$detail"
 
 # ---------------------------------------------------------------------------
 # 15b. Model marker density round-trips through the file
@@ -764,9 +1052,10 @@ if [ -x "$MODELBIN" ]; then
         # density in the file rather than compiling it in.
         gen reads "$TMP/m.fa" "$TMP/mr" 50 150 350 30 0 1015 paired fastq gz >/dev/null
         ok512=0; ok64=0
-        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_512" \
+        # -t as everywhere else: without it these two ran on every core of the machine.
+        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_512" -t 4 \
             --organism testus --model "$TMP/m512.tsm" >/dev/null 2>&1 && ok512=1
-        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_64" \
+        $TIMEOUT "$TESSERACT" -1 "$TMP/mr_1.fq.gz" -2 "$TMP/mr_2.fq.gz" -o "$TMP/t15b_64" -t 4 \
             --organism testus --model "$TMP/m64.tsm" >/dev/null 2>&1 && ok64=1
         if [ "$ok512" -eq 1 ] && [ "$ok64" -eq 1 ]; then
             pass "model marker density round-trips" \
@@ -780,7 +1069,7 @@ if [ -x "$MODELBIN" ]; then
              "markers 1/512=${m512:-none} 1/64=${m64:-none} (denser must yield more)"
     fi
 else
-    pass "model marker density round-trips" "skipped: no tesseract-model built"
+    skip "model marker density round-trips" "no tesseract-model built (make test builds it)"
 fi
 
 # ---------------------------------------------------------------------------
@@ -796,7 +1085,7 @@ else
 fi
 
 gen tiny "$TMP/tiny.fq" >/dev/null
-err=$($TIMEOUT "$TESSERACT" -s "$TMP/tiny.fq" -o "$TMP/t16b" 2>&1 >/dev/null)
+err=$($TIMEOUT "$TESSERACT" -s "$TMP/tiny.fq" -o "$TMP/t16b" -t 4 2>&1 >/dev/null)
 status=$?
 if [ $status -ne 0 ] && [ $status -ne 124 ] && [ -n "$err" ]; then
     pass "tiny input rejected cleanly" "exit=$status \"$(printf '%s' "$err" | tail -1)\""
@@ -804,8 +1093,60 @@ else
     fail "tiny input rejected cleanly" "exit=$status stderr=\"$err\""
 fi
 
+# ---------------------------------------------------------------------------
+# 17. Input handling of tracked open defects (XFAIL until fixed)
+#
+# Each runs with TESSERACT_FIXES=1, which enables every default-off fix, and checks the
+# corrected behaviour; the owning group turns its XFAIL into a PASS when the fix lands.
+# T18 truncated gzip accepted; T32 conflicting read options / bad -k lists accepted;
+# T33 benign FASTQ variants rejected; T34 a reused -o keeps stale outputs.
+# ---------------------------------------------------------------------------
+D=$TMP/t17; mkdir -p "$D"
+S6=$TMP/t6
+# fixed ASM_ARGS... -- run with the fixes enabled; status in $?, stderr in $LOG
+fixed() { TESSERACT_FIXES=1 $TIMEOUT "$TESSERACT" "$@" -q >"$LOG" 2>&1; }
+
+gen truncgz "$S6/s_s.fq.gz" "$D/trunc.fq.gz" 4000 >/dev/null
+rm -rf "$D/o1"; fixed -s "$D/trunc.fq.gz" -o "$D/o1" -t 4; st=$?
+known "truncated gzip rejected" T18 $([ $st -ne 0 ] && [ $st -ne 124 ] && echo 0 || echo 1) \
+      "exit=$st $(tail -1 "$LOG" | cut -c1-80)"
+
+rejects() { # rejects LABEL ASM_ARGS... -- the option combination must be refused
+    local label=$1; shift
+    rm -rf "$D/o2"; fixed "$@" -o "$D/o2" -t 4; local st=$?
+    known "$label" T32 $([ $st -ne 0 ] && [ $st -ne 124 ] && [ -s "$LOG" ] && echo 0 || echo 1) \
+          "exit=$st $(tail -1 "$LOG" | cut -c1-80)"
+}
+rejects "reject repeated -1" -1 "$S6/r_1.fq.gz" -1 "$S6/r_2.fq.gz"
+rejects "reject the same file as -1 and -2" -1 "$S6/r_1.fq.gz" -2 "$S6/r_1.fq.gz"
+# (mates of one file each, so the release run is not stopped by an unrelated name mismatch)
+rejects "reject --12 together with -2" --12 "$S6/r_1.fq.gz" -2 "$S6/r_2.fq.gz"
+rejects "reject unsorted -k (77,21,55)" -1 "$S6/r_1.fq.gz" -2 "$S6/r_2.fq.gz" -k 77,21,55
+rejects "reject duplicate -k (21,21)" -1 "$S6/r_1.fq.gz" -2 "$S6/r_2.fq.gz" -k 21,21
+rejects "reject fractional -k (21.9,55)" -1 "$S6/r_1.fq.gz" -2 "$S6/r_2.fq.gz" -k 21.9,55
+
+cp "$S6/p_1.fq" "$D/b_1.fq"; cp "$S6/p_2.fq" "$D/b_2.fq"; echo >> "$D/b_1.fq"; echo >> "$D/b_2.fq"
+rm -rf "$D/o3"; fixed -1 "$D/b_1.fq" -2 "$D/b_2.fq" -o "$D/o3" -t 4; st=$?
+rc=1; [ $st -eq 0 ] && gen sameset "$S6/paired/contigs.fasta" "$D/o3/contigs.fasta" >/dev/null && rc=0
+known "FASTQ with a trailing blank line accepted" T33 $rc "exit=$st $(tail -1 "$LOG" | cut -c1-80)"
+
+gen dotnames "$S6/p_1.fq" "$D/d_1.fq" 1 >/dev/null; gen dotnames "$S6/p_2.fq" "$D/d_2.fq" 2 >/dev/null
+rm -rf "$D/o4"; fixed -1 "$D/d_1.fq" -2 "$D/d_2.fq" -o "$D/o4" -t 4; st=$?
+rc=1; [ $st -eq 0 ] && gen sameset "$S6/paired/contigs.fasta" "$D/o4/contigs.fasta" >/dev/null && rc=0
+known "'.1'/'.2' mate suffixes accepted" T33 $rc "exit=$st $(tail -1 "$LOG" | cut -c1-80)"
+
+# A gap-free run into a directory holding an earlier run's optional outputs: none of them
+# may survive into the new result (deleted or rewritten).
+rm -rf "$D/o5"; mkdir -p "$D/o5"
+for f in scaffolds.fasta scaffolds.agp unitigs.fasta; do printf '>stale\nACGT\n' > "$D/o5/$f"; done
+fixed -1 "$S6/r_1.fq.gz" -2 "$S6/r_2.fq.gz" -o "$D/o5" -t 4; st=$?
+stale=$(grep -l '^>stale' "$D/o5/scaffolds.fasta" "$D/o5/scaffolds.agp" "$D/o5/unitigs.fasta" 2>/dev/null | xargs -r -n1 basename | tr '\n' ' ')
+known "reused -o leaves no stale outputs" T34 $([ $st -eq 0 ] && [ -z "$stale" ] && echo 0 || echo 1) \
+      "exit=$st stale=[${stale% }]"
+
 echo
 echo "-----------------------------------------------------------------------"
-printf '%d passed, %d failed\n' "$PASSED" "$FAILED"
+printf '%d passed, %d failed, %d known open defects (XFAIL), %d skipped\n' \
+       "$PASSED" "$FAILED" "$XFAILED" "$SKIPPED"
 [ "$FAILED" -eq 0 ] || exit 1
 exit 0

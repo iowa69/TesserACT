@@ -7,6 +7,7 @@
 // Build and run with `make unittest`.
 
 #include <cmath>
+#include "test_env.h"
 #include <cstdint>
 #include <cstdio>
 #include <random>
@@ -495,11 +496,10 @@ void testGraphInvariants() {
     expectValid(g, "popBubbles");
     g.compact();
     expectValid(g, "compact after bubbles");
-    // Not asserted: on this graph -- a textbook two-path bubble differing by one
-    // substitution -- popBubbles returns 0. See "Known issues" in README.md.
-    if (bubbles == 0) {
-        std::printf("  note  popBubbles found 0 bubbles in a graph that contains one\n");
-    }
+    // A textbook two-path bubble differing by one substitution: it must be popped. This was
+    // once only a printed note (popBubbles returned 0 here), which left a popBubbles that
+    // pops nothing green in `make check`.
+    CHECK_NOTE(bubbles > 0, "expected the synthetic one-substitution bubble to be popped");
 
     const size_t ec = g.removeErroneousConnections(10.0, 200);
     expectValid(g, "removeErroneousConnections");
@@ -575,6 +575,7 @@ void testUnitigReconstruction() {
 }  // namespace
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     std::printf("TesserACT unit tests\n");
     testKmerRoundTrip();
     testReverseComplement();

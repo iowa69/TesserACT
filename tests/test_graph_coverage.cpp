@@ -1,4 +1,5 @@
 #include "graph_coverage.h"
+#include "test_env.h"
 
 #include <algorithm>
 #include <cmath>
@@ -15,6 +16,7 @@ void add(ts::UnitigGraph& graph,size_t mass,double coverage,bool deleted=false){
 }
 }
 int main(){
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     ts::UnitigGraph graph;graph.setK(127);
     check(ts::graphLengthWeightedMedianCoverage(graph)==0,"empty graph");
     add(graph,4000,30);add(graph,500,90);add(graph,500,4);

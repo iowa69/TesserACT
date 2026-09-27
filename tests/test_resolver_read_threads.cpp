@@ -2,8 +2,10 @@
 #define main helper_unit_main_not_called
 #include "test_read_thread_evidence.cpp"
 #undef main
+#include "test_env.h"
 #include "resolve.h"
 #include <cstring>
+#include "env_reject.h"
 namespace {
 struct Resolved {
  std::vector<std::string> contigs;std::vector<ts::ResolvedPath> paths;
@@ -40,6 +42,7 @@ Fixture interiorFixture(){
 }
 }
 int main(int argc,char** argv){
+ testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
  setenv("TESSERACT_COMMON_PREFIX","0",1);setenv("TESSERACT_JOIN_TRACE","1",1);
  for(auto flag:{"TESSERACT_ROUTE_DISTANCE","TESSERACT_WEIGHTED_RESOLVER_COVERAGE","TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE","TESSERACT_PREFIX_SNP_BUBBLES","TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT","TESSERACT_SHARED_SUPPORT_AUDIT","TESSERACT_REQUIRE_SUPPORT_SINGLE"})unsetenv(flag);
  if(argc==2&&std::string(argv[1])=="--dump-control"){
@@ -57,10 +60,16 @@ int main(int argc,char** argv){
  }
  for(int length:{251,301}){
   Fixture f;auto pair=f.pair(length);auto input=reads({pair,pair});
-  auto baseline=resolve(f.graph,input,nullptr),off=resolve(f.graph,input,"0"),nonnumeric=resolve(f.graph,input,"true"),candidate=resolve(f.graph,input,"1");
-  // 1.3.0: exact threads are ON unless TESSERACT_EXACT_READ_THREADS=0.
-  check(baseline.contigs==candidate.contigs&&baseline.contigs==nonnumeric.contigs,"default-on: unset and nonzero flag identity");
-  check(baseline.log==candidate.log&&baseline.log==nonnumeric.log,"default-on trace identity");
+  auto baseline=resolve(f.graph,input,nullptr),off=resolve(f.graph,input,"0"),candidate=resolve(f.graph,input,"1");
+  // 1.3.0: exact threads are ON unless TESSERACT_EXACT_READ_THREADS=0. 1.3.0 also read
+  // "true" as on; since build_v3 any value but 0 or 1 is a hard error (exit 2).
+  check(baseline.contigs==candidate.contigs,"default-on: unset and =1 identity");
+  check(baseline.log==candidate.log,"default-on trace identity");
+  check(exitsWithEnvError("TESSERACT_EXACT_READ_THREADS",[&]{
+            setenv("TESSERACT_EXACT_READ_THREADS","true",1);
+            ts::PairedResolver r(f.graph,input,1,2,1.02,0.0);r.buildSupport();
+            std::vector<std::string> c;std::vector<double> v;r.resolve(c,v);}),
+        "non-numeric flag value is rejected, not read as on");
   check(off.stats.pairsLinking==0,"fixture loses all legacy inter-unitig pair support");
   auto reversedGraph=f.graph;for(auto& node:reversedGraph.nodes){node.seq=ts::reverseComplement(node.seq);std::swap(node.ends[0],node.ends[1]);for(auto& links:node.ends)for(auto& link:links)link.toEnd^=1;}
   check(reversedGraph.validate().empty(),"reverse represented resolver graph");

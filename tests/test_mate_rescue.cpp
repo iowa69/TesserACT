@@ -1,5 +1,6 @@
 // Standalone targeted regression test; see work/agent_extension.md for build.
 #include "correct.h"
+#include "test_env.h"
 #include "seqio.h"
 
 #include <algorithm>
@@ -52,6 +53,7 @@ size_t kmers(const ts::SequenceStore& reads, size_t r, int k) {
 }
 
 int main() {
+    testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     char templ[] = "/tmp/tesseract-mate-rescue-XXXXXX";
     const char* tmp = mkdtemp(templ);
     check(tmp != nullptr, "temporary directory"); directory = tmp;

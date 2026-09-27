@@ -177,6 +177,15 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("unitigs_joined", rep.resolve.unitigsJoined);
     w.uint("scaffold_joins", rep.resolve.scaffoldJoins);
     w.uint("gap_bases", rep.resolve.gapBases);
+    // build_v3 (T35 hand-off from G-resolve): the single-copy depth every repeat decision is
+    // taken against (theta), the repeat threshold derived from it and how theta was
+    // estimated. iterations[].median_coverage is the unweighted node median, a different
+    // number (the resolver has used the length-weighted median since 1.3.0).
+    w.num("resolver_theta", rep.resolve.theta);
+    w.num("repeat_threshold", rep.resolve.repeatThreshold);
+    w.str("theta_estimator", rep.resolve.thetaEstimator ? rep.resolve.thetaEstimator : "none");
+    w.num("legacy_unweighted_median", rep.resolve.legacyMedian);
+    w.uint("theta_population", rep.resolve.thetaPopulation);
     w.num("seconds", rep.resolveSeconds);
     w.openObj("insert_size");
     w.boolean("usable", rep.resolve.insert.usable);
@@ -187,6 +196,32 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.uint("max_plausible", static_cast<unsigned long long>(rep.resolve.insert.maxPlausible));
     w.close('}');
     w.arrOfNumbers("insert_histogram", rep.insertHistogram, 2000);
+    w.close('}');
+
+    // Scaffold gap closing: what was attempted and why the rest stayed N. Until G-emit T17 this
+    // was only on the verbose stderr line, so a --quiet run kept no record of it.
+    w.openObj("gap_fill");
+    w.boolean("run", rep.gapFillRun);
+    w.uint("gaps_seen", rep.gapFill.gapsSeen);
+    w.uint("gaps_closed", rep.gapFill.gapsClosed);
+    w.uint("gaps_ambiguous", rep.gapFill.gapsAmbiguous);
+    w.uint("gaps_no_path", rep.gapFill.gapsNoPath);
+    w.uint("gaps_thin_pool", rep.gapFill.gapsThinPool);
+    w.uint("gaps_out_of_budget", rep.gapFill.gapsOutOfBudget);
+    w.uint("seed_below_floor", rep.gapFill.seedBelowFloor);
+    w.uint("target_below_floor", rep.gapFill.targetBelowFloor);
+    w.uint("reads_recruited", rep.gapFill.readsRecruited);
+    w.uint("n_bases_removed", rep.gapFill.nBasesRemoved);
+    w.uint("bases_inserted", rep.gapFill.basesInserted);
+    w.num("mean_local_depth", rep.gapFill.meanLocalDepth);
+    w.num("mean_floor", rep.gapFill.meanFloor);
+    w.uint("searches_truncated", rep.gapFill.gapsTruncated);
+    w.uint("truncated_accepted", rep.gapFill.gapsTruncatedAccepted);
+    w.uint("truncated_refused", rep.gapFill.gapsTruncatedRefused);
+    w.uint("searches_capped", rep.gapFill.gapsCapped);
+    w.uint("closed_after_backoff", rep.gapFill.closedAfterBackoff);
+    w.uint("backoff_trimmed_bases", rep.gapFill.trimmedBp);
+    w.num("seconds", rep.gapFill.seconds);
     w.close('}');
 
     w.openObj("organism_model");
@@ -254,11 +289,16 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     // The contig-level figures, so a script reading this never has to re-derive them by
     // splitting the FASTA itself -- and never quotes the scaffold n50 by accident because it
     // was the only one here. The keys above describe scaffolds whenever scaffold_gaps > 0.
+    // contig_* describe the records of contigs.fasta and scaffold_gaps counts N-runs of any
+    // length (schema change in the G-emit T17 fix; release 1.3.0 counted runs of 10+ N in the
+    // untrimmed scaffolds).
     w.uint("scaffold_gaps", rep.scaffoldGaps);
     w.uint("contig_count", rep.contigPieces);
     w.uint("contig_total_length", rep.contigTotal);
     w.uint("contig_largest", rep.contigLargest);
     w.uint("contig_n50", rep.contigN50);
+    w.uint("trimmed_overlaps", rep.trimmedOverlaps);
+    w.uint("trimmed_overlap_bases", rep.trimmedOverlapBases);
     w.uint("gfa_segments", rep.gfaSegments);
     w.uint("gfa_links", rep.gfaLinks);
     w.openArr("contig_table");
