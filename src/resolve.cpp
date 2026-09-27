@@ -1,4 +1,5 @@
 #include "resolve.h"
+#include "emit_fixflags.h"
 #include "envflags.h"
 #include "graph_coverage.h"
 #include "resolve_evidence.h"
@@ -189,6 +190,17 @@ long pairAnchoredPrefixSetting() {
 }
 
 }  // namespace
+
+bool gapFlankFixEnabled() { return fixEnabled("TESSERACT_FIX_GAP_FLANK"); }
+
+int checkFixCoupling(std::FILE* log) {
+    if (gapFlankFixEnabled() && !emitfix::enabled(emitfix::kPolishSkipN)) {
+        std::fprintf(log, "error: TESSERACT_FIX_GAP_FLANK needs TESSERACT_FIX_POLISH_SKIP_N "
+                          "(see DEFECTS.md T02/T03)\n");
+        return 2;
+    }
+    return 0;
+}
 
 PairedResolver::PairedResolver(const UnitigGraph& graph, const SequenceStore& reads, int threads,
                                int minLinkSupport, double tieRatio, double linkSupportPerX,

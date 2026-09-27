@@ -8,6 +8,7 @@
 #pragma once
 
 #include <cstdint>
+#include <cstdio>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -94,6 +95,18 @@ void restoreGapFlanks(std::vector<std::string>& seqs, const std::vector<GapFlank
 // zero counts. For runs in which the paired resolver is not constructed (single-end input,
 // --no-resolve), so that each line appears on every run (OBJECTIVE amendment A2).
 void printResolverCountersNotRun();
+
+// Effective state of T03 (combo3 DEFECTS.md): TESSERACT_FIX_GAP_FLANK, else its package alias
+// TESSERACT_GAP_KEEP_FLANK, else the umbrella TESSERACT_FIXES. The resolver reads the same rule.
+bool gapFlankFixEnabled();
+
+// N9 (combo3 DEFECTS.md; RELEASE_PLAN 1.4.0 step 2). T03 restores the k-1 bases after each
+// open N-gap and writes the estimated gap length; T02 (TESSERACT_FIX_POLISH_SKIP_N) keeps the
+// polisher from overwriting those N-runs. T03 with T02 off is a combination nobody measured
+// (the polisher may turn an asserted-only join into contiguous sequence), so it is refused:
+// prints one error line to `log` and returns 2; returns 0 for every other combination.
+// main() calls it right after validateEnvironment().
+int checkFixCoupling(std::FILE* log);
 
 class PairedResolver {
 public:

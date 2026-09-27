@@ -116,7 +116,9 @@ COMPBINS  := $(patsubst tests/%.cpp,$(BUILDDIR)/%,$(COMPSRC))
 $(BUILDDIR)/test_%: tests/test_%.cpp $(UNITOBJS) | $(BUILDDIR)
 	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $< $(UNITOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
-componenttest: $(COMPBINS)
+# $(BIN) too (N14): test_v3_io_cli and test_v3_rel_coupling drive the built binary, and without
+# it a fresh `make unittest componenttest` let test_v3_io_cli SKIP.
+componenttest: $(BIN) $(COMPBINS)
 	@set -e; for t in $(COMPBINS); do $(TESTENV) $$t; done
 
 # Hostile-environment guard: every unit and component test, run directly (no TESTENV), must

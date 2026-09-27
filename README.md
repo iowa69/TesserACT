@@ -442,6 +442,14 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
   (1–2.5 kb). Raising k further does not help — 99.7 % of the genome is already unique at
   k=99, and the rest is far longer than any k a 250 bp read can support.
 * **Bacterial isolates.** Metagenomes and eukaryotes are untested.
+* **Gap fills from a search that hit its solution cap (defect N8, open).** When the gap
+  filler's search stops at its cap of 24 candidate fills, a fill can still be accepted by
+  dominance, although the search did not see every alternative. This is the sibling of the
+  expansion-budget case that `TESSERACT_FIX_GAPFILL_STRICT_BUDGET` (T09) refuses. It is rare
+  but can emit unverified sequence. Measured on the development panels: 5 such fills in 248
+  isolates with the configuration that 1.4.0 makes the default (6 isolates were affected
+  across the configurations measured). Every run reports the count as `cappedAccepted=` on
+  the `[gapfill-budget]` line of its log. A fix will first get its own default-off flag.
 
 ## Licence
 

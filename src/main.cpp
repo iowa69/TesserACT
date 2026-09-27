@@ -11,6 +11,7 @@
 
 #include "assembler.h"
 #include "envflags.h"
+#include "resolve.h"
 #include "version.h"
 #include "kmer.h"
 #include "util.h"
@@ -390,6 +391,8 @@ int main(int argc, char** argv) {
     // A malformed value (1e9 for an integer, "true" for a switch, -1 for a length) is a
     // hard error here rather than a silent 0 an hour into the run.
     if (env::validateEnvironment(stderr) != 0) return 2;
+    // N9: the gap-flank restore (T03) is only defined together with the polisher's N-skip (T02).
+    if (checkFixCoupling(stderr) != 0) return 2;
 
     // --organism resolves to a bundled model. This is the only supported way to reach
     // one: the model's value is in how its panel was assembled and what was withheld

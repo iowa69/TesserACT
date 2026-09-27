@@ -2,8 +2,8 @@
 // truncated gzip input (T18). It drives the built binary, because main() owns the parser.
 //
 // The binary is $TESSERACT_ASM_BIN, else ./tesseract-asm (make runs tests from the tree root).
-// `make componenttest` does not build it, so when it is missing the test says SKIP and exits 0;
-// build it first (make tesseract-asm) for the checks to run.
+// `make componenttest` builds it first (N14); run by hand without it, the test says SKIP and
+// exits 0 -- build it first (make tesseract-asm) for the checks to run.
 //
 // Release 1.3.0 exited 0 on every "refused" case below: it truncated fractional integers, ran a
 // -k ladder in the order given (correcting at its first rung), let a second -1/-2/--12 or -k
