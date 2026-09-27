@@ -26,7 +26,7 @@ struct Out { bool joined = false; std::string line; };
 Out budgetCase(size_t Lr, const char* guard, const char* umbrella) {
     releaseDefaults();
     setFlag("TESSERACT_FIX_TRUNC_GUARD", guard);
-    setFlag("TESSERACT_FIXES", umbrella);
+    setFlag("TESSERACT_FIXES", umbrella ? umbrella : "0");   // 1.4.0: unset would follow the default umbrella (on)
     const int k = 31;
     const size_t ov = k - 1;
     const std::string U = dna(5000, 1), Anew = dna(5000, 2), Rnew = dna(Lr, 3), Dnew = dna(5000, 4);

@@ -50,6 +50,8 @@ void clearEnv() {
                           "TESSERACT_FIX_GAPFILL_BACKOFF", "TESSERACT_FIX_GAPFILL_SKIP_INPUT_N",
                           "TESSERACT_GF_DEBUG"})
         unsetenv(v);
+    // 1.4.0: an unset umbrella is on (src/defaults.h); the release 1.3.0 state is TESSERACT_FIXES=0.
+    setenv("TESSERACT_FIXES", "0", 1);
 }
 
 std::string scratch() {

@@ -10,6 +10,7 @@
 #include <sys/stat.h>
 
 #include "assembler.h"
+#include "defaults.h"
 #include "envflags.h"
 #include "resolve.h"
 #include "version.h"
@@ -108,7 +109,10 @@ void usage() {
         "      --mode NAME         fast | standard (default) | careful | aggressive\n"
         "                          fast       fewer k values, no polishing\n"
         "                          standard   balanced; what the benchmarks use\n"
-        "                          careful    denser k ladder, stricter joins, 2 polish passes\n"
+        "                          careful    denser k ladder, more simplification, 2 polish\n"
+        "                                     passes; its tie ratio (1.4) is below the 1.4.0\n"
+        "                                     standard default (3.0), so it is no longer the\n"
+        "                                     stricter mode on that knob\n"
         "                          aggressive collapse diverged repeats for maximum contiguity\n"
         "\n"
         "OUTPUT FILES\n"
@@ -121,7 +125,8 @@ void usage() {
         "                          (default: chosen from the read length; max 127)\n"
         "  -c, --cutoff N          k-mer abundance cutoff (default: auto-detect)\n"
         "      --min-link N        paired reads needed to trust a join (default: 2)\n"
-        "      --tie-ratio F       winning branch must beat the runner-up by F (default: 1.02)\n"
+        "      --tie-ratio F       winning branch must beat the runner-up by F (default: %.1f;\n"
+        "                          1.3.0 used 1.02)\n"
         "      --link-per-x F      paired support required per unit of median coverage\n"
         "                          before a contested join is taken (default: 0.02)\n"
         "      --bubble-coverage F a bubble branch below this fraction of its twin's\n"
@@ -150,10 +155,35 @@ void usage() {
         "  -v, --version           print version\n"
         "  -h, --help              print this message\n"
         "\n"
+        "DEFAULTS (1.4.0)\n"
+        "  1.4.0 makes the misassembly-first configuration of the combo3 campaign (F2) the\n"
+        "  default. Relative to 1.3.0: --tie-ratio 3.0 (was 1.02); the common-prefix walk at\n"
+        "  chain ends is 250 bp (was 3000) and starts only from ends whose body reaches the\n"
+        "  insert size; the three fallback joins are withdrawn; a lone join candidate needs\n"
+        "  pair support; a repeat that supports every destination loses its votes; the\n"
+        "  coverage-dropout bridge is on; and the 21 output-changing defect fixes are on\n"
+        "  (TESSERACT_FIXES), among them the carry-read gate (T01) and the revisit guard (T07).\n"
+        "  Every run prints the values in force on one [defaults] line of its log.\n"
+        "  The cost, measured against the campaign's previous best settings (K2) on two fresh\n"
+        "  panels: more contigs (+3.3 per isolate on 140 ESKAPEE isolates; +9.7 mean, +3\n"
+        "  median on 82 isolates of 28 other species) and a lower NGA50 (geometric mean\n"
+        "  x0.94 and x0.93). The revisit guard (T07) alone costs NGA50 x0.96 on the\n"
+        "  development panel and removes no extensive misassembly. On a low-coverage library\n"
+        "  the carry-read gate (T01) can cost genome fraction: -2.6 points on one\n"
+        "  S. maltophilia isolate (k-mer depth 25), where it removed 15 of 18 misassemblies.\n"
+        "\n"
+        "REPRODUCING 1.3.0\n"
+        "  TESSERACT_FIXES=0 TESSERACT_COMMON_PREFIX=3000 TESSERACT_PREFIX_MIN_BODY=0 \\\n"
+        "  TESSERACT_MIN_FALLBACK_DEST=0 TESSERACT_REQUIRE_SUPPORT_SINGLE=0 \\\n"
+        "  TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=0 TESSERACT_DROPOUT_BRIDGE=0 \\\n"
+        "    tesseract-asm --tie-ratio 1.02 ...\n"
+        "  One fix alone is turned off with TESSERACT_FIX_<NAME>=0, for example\n"
+        "  TESSERACT_FIX_REVISIT_GUARD=0 (T07) or TESSERACT_FIX_CARRY_READ_GATE=0 (T01).\n"
+        "\n"
         "EXAMPLES\n"
         "  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o asm -t 16\n"
         "  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o asm -k 21,33,55 --min-contig 500\n",
-        kVersion, kAuthor, kOrg);
+        kVersion, kAuthor, kOrg, ts::defaults::kDefaultTieRatio);
 }
 
 
@@ -393,6 +423,13 @@ int main(int argc, char** argv) {
     if (env::validateEnvironment(stderr) != 0) return 2;
     // N9: the gap-flank restore (T03) is only defined together with the polisher's N-skip (T02).
     if (checkFixCoupling(stderr) != 0) return 2;
+    // 1.4.0 (RELEASE_PLAN step 3.3): the eight settings whose default changed, as this run
+    // resolves them -- defaults, environment and command line, --mode applied -- on every run.
+    {
+        AssemblyOptions effective = opt;
+        effective.applyMode();
+        std::fprintf(stderr, "%s\n", defaults::line(effective.tieRatio).c_str());
+    }
 
     // --organism resolves to a bundled model. This is the only supported way to reach
     // one: the model's value is in how its panel was assembled and what was withheld

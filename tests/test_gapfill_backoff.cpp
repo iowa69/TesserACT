@@ -445,6 +445,8 @@ void testBackoffParsing() {
 
 int main() {
     testenv::clearTesseractEnv();
+    // 1.4.0: an unset umbrella is on (src/defaults.h); the release 1.3.0 state is TESSERACT_FIXES=0.
+    setenv("TESSERACT_FIXES", "0", 1);
     testKeepFlank();
     testTaperedErrorTip();
     testTrueTaper();

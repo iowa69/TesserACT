@@ -37,6 +37,7 @@ int main() {
     for (auto flag : {"TESSERACT_WEIGHTED_RESOLVER_COVERAGE", "TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE",
                       "TESSERACT_PREFIX_SNP_BUBBLES", "TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT",
                       "TESSERACT_SHARED_SUPPORT_AUDIT"}) unsetenv(flag);
+    testenv::pinRelease130Flags();  // 1.4.0: the 1.3.0 resolver defaults, pinned
     int checks = 0, cases = 0;
     auto check = [&](bool good, const char* why) { ++checks; if (!good) throw std::runtime_error(why); };
     auto scenario = [&](bool correctLong, bool sameLength, bool reorder, bool reverse, int training, bool forcedWindow = true, int comparablePairs = 41) {

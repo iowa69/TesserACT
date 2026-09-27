@@ -78,6 +78,8 @@ void clearEnv() {
     unsetenv("TESSERACT_FIXES");
     unsetenv("TESSERACT_FIX_POLISH_SKIP_N");
     unsetenv("TESSERACT_POLISH_ORIGINAL_QUALITY");
+    // 1.4.0: an unset umbrella is on (src/defaults.h); the release 1.3.0 state is TESSERACT_FIXES=0.
+    setenv("TESSERACT_FIXES", "0", 1);
 }
 
 struct Fixture { std::string contig; ts::SequenceStore reads; };

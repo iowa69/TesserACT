@@ -41,4 +41,16 @@ inline size_t clearTesseractEnv() {
     return names.size();
 }
 
+// 1.4.0 changed eight defaults (src/defaults.h), six of them environment flags. A test written
+// against the release 1.3.0 resolver pins their 1.3.0 values with this, after clearing the
+// environment; the common-prefix walk budget and the tie ratio stay each test's own choice.
+inline void pinRelease130Flags() {
+    setenv("TESSERACT_FIXES", "0", 1);
+    setenv("TESSERACT_PREFIX_MIN_BODY", "0", 1);
+    setenv("TESSERACT_MIN_FALLBACK_DEST", "0", 1);
+    setenv("TESSERACT_REQUIRE_SUPPORT_SINGLE", "0", 1);
+    setenv("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", "0", 1);
+    setenv("TESSERACT_DROPOUT_BRIDGE", "0", 1);
+}
+
 }  // namespace testenv

@@ -165,10 +165,14 @@ int main() {
     writeCircularLibrary();
 
     struct Config { std::string tag; std::vector<std::pair<const char*, const char*>> env; };
+    // 1.4.0: the umbrella TESSERACT_FIXES is on by default (src/defaults.h), so "unset" now
+    // reports the fixes on; "release" (TESSERACT_FIXES=0) is the 1.3.0 state the other
+    // configurations pin.
     const std::vector<Config> configs = {
         {"unset", {}},
-        {"gapclose_legacy", {{"TESSERACT_GAPCLOSE", "10"}}},
-        {"gapclose_oriented", {{"TESSERACT_GAPCLOSE", "10"}, {"TESSERACT_GAP_ORIENTED", "1"}}},
+        {"release", {{"TESSERACT_FIXES", "0"}}},
+        {"gapclose_legacy", {{"TESSERACT_FIXES", "0"}, {"TESSERACT_GAPCLOSE", "10"}}},
+        {"gapclose_oriented", {{"TESSERACT_FIXES", "0"}, {"TESSERACT_GAPCLOSE", "10"}, {"TESSERACT_GAP_ORIENTED", "1"}}},
         {"fixes", {{"TESSERACT_FIXES", "1"}, {"TESSERACT_GAPCLOSE", "10"}}},
     };
     for (const Config& c : configs) {
@@ -185,15 +189,15 @@ int main() {
         check(count(r.log, "[ec_cap_mask] enabled=") == 1, c.tag + ": [ec_cap_mask] once per run");
         const std::string cg = firstLine(r.log, "k=21  [carrygate]");
         check(cg.find("carriedKmers=0 ") != std::string::npos, c.tag + ": first rung carries nothing");
-        const bool fixes = c.tag == "fixes";
+        const bool fixes = c.tag == "fixes" || c.tag == "unset";
         const std::string want = fixes ? "enabled=1" : "enabled=0";
         check(firstLine(r.log, "[carrygate]").find(want) != std::string::npos &&
                   firstLine(r.log, "[hairpin_keep]").find(want) != std::string::npos &&
                   firstLine(r.log, "[simplify_count_all]").find(want) != std::string::npos &&
                   firstLine(r.log, "[ec_cap_mask]").find(want) != std::string::npos,
               c.tag + ": fixes report " + want);
-        if (c.tag == "unset") {
-            perRung(r, c.tag, "[gapclose] off nominatorFix=0", rungs);
+        if (c.tag == "unset" || c.tag == "release") {
+            perRung(r, c.tag, fixes ? "[gapclose] off nominatorFix=1" : "[gapclose] off nominatorFix=0", rungs);
             check(count(r.log, "gap close:") == 0, c.tag + ": no legacy gap-close line when off");
         } else {
             perRung(r, c.tag, "gap close:", rungs);

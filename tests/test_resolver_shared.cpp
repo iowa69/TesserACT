@@ -38,6 +38,7 @@ int main() {
     setenv("TESSERACT_COMMON_PREFIX", "0", 1);
     unsetenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");
     unsetenv("TESSERACT_PREFIX_SNP_BUBBLES");
+    testenv::pinRelease130Flags();  // 1.4.0: the 1.3.0 resolver defaults, pinned
     ts::UnitigGraph g;
     g.setK(31);
     g.nodes.resize(9);

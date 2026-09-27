@@ -61,7 +61,7 @@ int main() {
                          Mode{"0", "1", false}}) {
         releaseDefaults();
         setFlag("TESSERACT_FIX_COV_CONTRIB", m.fix);
-        setFlag("TESSERACT_FIXES", m.umbrella);
+        setFlag("TESSERACT_FIXES", m.umbrella ? m.umbrella : "0");   // 1.4.0: unset would follow the default umbrella (on)
         const Out o = run(g, reads);
         size_t idx = o.seqs.size();
         for (size_t i = 0; i < o.seqs.size(); ++i) if (o.seqs[i] == G || o.seqs[i] == rc(G)) idx = i;

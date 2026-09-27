@@ -1,5 +1,5 @@
-// Bridging facing dead ends across read-coverage dropouts (TESSERACT_DROPOUT_BRIDGE=1,
-// default OFF; combo2 PKG-BRIDGE).
+// Bridging facing dead ends across read-coverage dropouts (TESSERACT_DROPOUT_BRIDGE; default
+// OFF in build_v3, ON since 1.4.0 -- src/defaults.h; =0 turns it off; combo2 PKG-BRIDGE).
 //
 // A de Bruijn graph breaks wherever the reads are too thin for the k-mers to pass the
 // solidity cutoff, even though individual reads still run straight across the thin

@@ -45,6 +45,7 @@ int main(int argc,char** argv){
  testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
  setenv("TESSERACT_COMMON_PREFIX","0",1);setenv("TESSERACT_JOIN_TRACE","1",1);
  for(auto flag:{"TESSERACT_ROUTE_DISTANCE","TESSERACT_WEIGHTED_RESOLVER_COVERAGE","TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE","TESSERACT_PREFIX_SNP_BUBBLES","TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT","TESSERACT_SHARED_SUPPORT_AUDIT","TESSERACT_REQUIRE_SUPPORT_SINGLE"})unsetenv(flag);
+ testenv::pinRelease130Flags();  // 1.4.0: the 1.3.0 resolver defaults, pinned
  if(argc==2&&std::string(argv[1])=="--dump-control"){
   for(int length:{251,301}){
    Fixture f;auto pair=f.pair(length),alternative=f.pair(length,true);

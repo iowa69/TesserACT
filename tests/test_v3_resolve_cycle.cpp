@@ -30,7 +30,7 @@ struct Out {
 Out run(const ts::UnitigGraph& g, const ts::SequenceStore& reads, const char* fix, const char* umbrella) {
     releaseDefaults();
     setFlag("TESSERACT_FIX_SCAFFOLD_CYCLE", fix);
-    setFlag("TESSERACT_FIXES", umbrella);
+    setFlag("TESSERACT_FIXES", umbrella ? umbrella : "0");   // 1.4.0: unset would follow the default umbrella (on)
     StderrCapture cap;
     cap.start();
     ts::PairedResolver r(g, reads, 1, 2, 2.0, 0.10);

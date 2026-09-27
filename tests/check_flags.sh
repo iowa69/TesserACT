@@ -77,9 +77,12 @@ for e in "TESSERACT_MIN_FALLBACK_DEST=1e9" "TESSERACT_MIN_FALLBACK_DEST=abc" \
   else bad "reject env $e" "exit 2 without naming the flag"; fi
 done
 # ...and a valid configuration (the K2 arm) is accepted and recorded with parsed values.
+# 1.4.0: FIXES, PREFIX_MIN_BODY and DROPOUT_BRIDGE are on by default, so the K2 arm now also
+# names their 1.3.0 values (RELEASE_PLAN 1.4.0 step 4d).
 mkdir -p "$TMP/k2env"
 if env TESSERACT_COMMON_PREFIX=0 TESSERACT_MIN_FALLBACK_DEST=1000000000 \
        TESSERACT_REQUIRE_SUPPORT_SINGLE=1 TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=1 \
+       TESSERACT_FIXES=0 TESSERACT_PREFIX_MIN_BODY=0 TESSERACT_DROPOUT_BRIDGE=0 \
        "$BIN" -1 "$R1" -2 "$R2" -o "$TMP/k2env" -t 4 --tie-ratio 2.0 > "$TMP/k2env.log" 2>&1 \
    && [ -s "$TMP/k2env/contigs.fasta" ] \
    && grep -qx "\[config\] TESSERACT_MIN_FALLBACK_DEST=1000000000" "$TMP/k2env.log" \

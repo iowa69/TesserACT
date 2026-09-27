@@ -108,7 +108,9 @@ void setMode(const Mode& m) {
     unsetenv("TESSERACT_FIXES");
     unsetenv("TESSERACT_GAP_ORIENTED");
     if (m.fix) setenv("TESSERACT_FIX_GAP_NOMINATOR", m.fix, 1);
-    if (m.umbrella) setenv("TESSERACT_FIXES", m.umbrella, 1);
+    // 1.4.0: an unset umbrella is on (src/defaults.h); a mode that names none means the
+    // release 1.3.0 state, TESSERACT_FIXES=0.
+    setenv("TESSERACT_FIXES", m.umbrella ? m.umbrella : "0", 1);
     if (m.oriented) setenv("TESSERACT_GAP_ORIENTED", m.oriented, 1);
 }
 

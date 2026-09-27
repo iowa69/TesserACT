@@ -1220,7 +1220,8 @@ bool Assembler::run(std::string& error) {
             s.noValidKmerNodes, s.allocationBytes, measurementTime.elapsed());
     }
 
-    // TESSERACT_DROPOUT_BRIDGE=1 (default OFF; combo2 PKG-BRIDGE): bridge facing dead ends
+    // TESSERACT_DROPOUT_BRIDGE (default ON since 1.4.0, src/defaults.h; =0 turns it off; combo2
+    // PKG-BRIDGE): bridge facing dead ends
     // across read-coverage dropouts from reads that span them, once, on the final-rung
     // simplified graph, before the resolver. See dropout_bridge.h. build_v3: both flags are
     // strict table flags (a malformed value stops the run at startup with exit 2, instead of
@@ -1229,7 +1230,7 @@ bool Assembler::run(std::string& error) {
     {
         const uint32_t minReads =
             static_cast<uint32_t>(env::integer("TESSERACT_DROPOUT_BRIDGE_MIN_READS", 2));
-        if (env::on("TESSERACT_DROPOUT_BRIDGE", false)) {
+        if (defaults::dropoutBridge()) {
             const bool bridgeTrace = env::on("TESSERACT_JOIN_TRACE", false);
             const DropoutBridgeStats bs = bridgeDropouts(graph, reads_, opt_.threads, minReads, bridgeTrace);
             std::fprintf(stderr, "%s\n", formatDropoutBridgeStats(bs).c_str());

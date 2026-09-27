@@ -42,7 +42,7 @@ struct Result { Verdict v = Verdict::Other; std::string log; };
 Result runCase(const std::string& which, const char* guard, const char* umbrella) {
     releaseDefaults();
     setFlag("TESSERACT_FIX_REVISIT_GUARD", guard);
-    setFlag("TESSERACT_FIXES", umbrella);
+    setFlag("TESSERACT_FIXES", umbrella ? umbrella : "0");   // 1.4.0: unset would follow the default umbrella (on)
     const int k = 31;
     const size_t ov = k - 1;
     size_t rlen = 100, fmin = 400, fmax = 600, copies = 2, flank = 6000;

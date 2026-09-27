@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 
+#include "defaults.h"
 #include "graph.h"
 #include "libqc.h"
 #include "mappolish.h"
@@ -80,7 +81,9 @@ struct AssemblyOptions {
     // 0.00/1.00 buys one more contiguity win and gives back misassemblies for it, so the
     // knob is set one notch short of its limit rather than at it.
     double linkSupportPerX = 0.02;
-    double tieRatio = 1.02;          // winning branch must beat the runner-up by this
+    // Winning branch must beat the runner-up by this. 1.4.0: 3.0 (the combo3 F2 default,
+    // src/defaults.h); 1.3.0 shipped the 1.02 tuned above (--tie-ratio 1.02 restores it).
+    double tieRatio = defaults::kDefaultTieRatio;
     double bubbleCoverageLimit = 0.35;   // see UnitigGraph::simplify
     int simplifyRounds = 12;
     int polishPasses = 1;

@@ -1,4 +1,6 @@
-// Default-OFF switches for the G-emit defect fixes (combo3, 2026-09-25).
+// Switches for the G-emit defect fixes (combo3, 2026-09-25). Default OFF in build_v3; since
+// 1.4.0 the umbrella TESSERACT_FIXES is ON by default (src/defaults.h), so every fix below is
+// on unless TESSERACT_FIXES=0 or its own TESSERACT_FIX_<NAME>=0.
 //
 // Each output-changing fix is behind its own TESSERACT_FIX_<NAME> and all of them are
 // switched on together by the umbrella TESSERACT_FIXES=1. An explicit per-fix value wins
@@ -27,6 +29,7 @@
 #include <cstring>
 #include <string>
 
+#include "defaults.h"
 #include "envflags.h"
 
 namespace ts {
@@ -53,7 +56,7 @@ constexpr const char* kBinarySwitches[] = {kPolishSkipN, kGapfillStrict, kGapfil
 constexpr int kDefaultBackoff = 60;
 constexpr int kMaxBackoff = 200;
 
-inline bool umbrella() { return env::on(kUmbrella, false); }
+inline bool umbrella() { return defaults::fixesUmbrella(); }   // kUmbrella, default ON (1.4.0)
 
 // The package alias of a switch, or nullptr.
 inline const char* aliasOf(const char* name) {

@@ -110,6 +110,7 @@ int main() {
     unsetenv("TESSERACT_PREFIX_SNP_BUBBLES"); unsetenv("TESSERACT_EXACT_READ_THREADS");
     unsetenv("TESSERACT_ROUTE_DISTANCE"); unsetenv("TESSERACT_WEIGHTED_ELIGIBLE_COVERAGE");
     unsetenv("TESSERACT_WEIGHTED_RESOLVER_COVERAGE");
+    testenv::pinRelease130Flags();  // 1.4.0: the other 1.3.0 resolver defaults, pinned
     for(bool reverse:{false,true}) for(bool chain:{false,true}) {
         auto g=graph(false,chain,reverse); check(g.validate().empty(),"invalid fixture");
         auto off=resolve(g,false),on=resolve(g,true);

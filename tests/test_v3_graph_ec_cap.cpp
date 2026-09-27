@@ -110,6 +110,9 @@ Four runAll(const std::string& truth, const ts::KmerTable& solid, int k) {
 
 int main() {
     clearTesseractEnv();
+    // 1.4.0: the umbrella is on by default (src/defaults.h); "flags unset" below means the
+    // release 1.3.0 state, so the umbrella is pinned off until a check turns it on.
+    setenv("TESSERACT_FIXES", "0", 1);
     char tmpl[] = "/tmp/tess_v3_eccap.XXXXXX";
     const char* d = mkdtemp(tmpl);
     if (!d) return 2;

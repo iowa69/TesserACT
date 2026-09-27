@@ -110,8 +110,9 @@ inline long long field(const std::string& line, const std::string& key, long lon
     return std::atoll(line.c_str() + p + pat.size());
 }
 
-// Unset every flag that changes resolver decisions, so each test starts from the
-// release-default resolver. Function-local statics in resolve.cpp (JOIN_TRACE,
+// Unset every flag that changes resolver decisions, then pin the release 1.3.0 values of the
+// flags whose default 1.4.0 changed, so each test starts from the release-1.3.0 resolver.
+// Function-local statics in resolve.cpp (JOIN_TRACE,
 // REQUIRE_SUPPORT_SINGLE, MIN_FALLBACK_DEST, COMMON_PREFIX, ...) cache the value seen by
 // the FIRST resolve() call of the process, so tests set them once, here, before any run.
 inline void releaseDefaults() {
@@ -131,6 +132,14 @@ inline void releaseDefaults() {
                           "TESSERACT_FIX_ROUTE_ORDER", "TESSERACT_FIX_MIRROR_ROUTE"})
         unsetenv(f);
     if (keepTrace && trace) setenv("TESSERACT_JOIN_TRACE", traceValue.c_str(), 1);
+    // 1.4.0 changed eight defaults (src/defaults.h). Unset no longer means release 1.3.0, so
+    // the 1.3.0 values these fixtures were written against are pinned explicitly.
+    setenv("TESSERACT_FIXES", "0", 1);
+    setenv("TESSERACT_REQUIRE_SUPPORT_SINGLE", "0", 1);
+    setenv("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", "0", 1);
+    setenv("TESSERACT_MIN_FALLBACK_DEST", "0", 1);
+    setenv("TESSERACT_PREFIX_MIN_BODY", "0", 1);
+    setenv("TESSERACT_DROPOUT_BRIDGE", "0", 1);
 }
 inline void setFlag(const char* name, const char* value) {
     if (value) setenv(name, value, 1); else unsetenv(name);

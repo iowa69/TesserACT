@@ -534,7 +534,7 @@ void testStats() {
 
 int main() {
     testenv::clearTesseractEnv();
-    unsetenv("TESSERACT_FIXES");
+    setenv("TESSERACT_FIXES", "0", 1);   // 1.4.0: unset would follow the default umbrella (on)
     testDedup();
     testBoundarySafe();
     testCopyGuard();

@@ -1,0 +1,13 @@
+# Release 1.3.0 outputs on the tests/run_tests.sh section-18 fixtures (t5: unspanned 5 kb repeat;
+# t15d: 40 kb genome with a 200 bp read dropout, one scaffold gap). Written once by
+# work/tesseract-1.3.0 (md5 4af92d1fadb61d30c0d890dd71f7a2b8), -t 4, empty environment, on
+# 2026-09-27. The 1.4.0 opt-out list plus --tie-ratio 1.02 must reproduce every line.
+# fixture file md5|absent
+t5 contigs.fasta a846d95e51560ca7aaf3fbbb2f91e3fb
+t5 scaffolds.fasta absent
+t5 assembly_graph.gfa a30b1afe86d617bf585e5d061a098ae0
+t5 scaffolds.agp absent
+t15d contigs.fasta 307007dd6bedc17ef995c7013c0a12e7
+t15d scaffolds.fasta 4db431a48a3ff2be3a07762110836dcb
+t15d assembly_graph.gfa 291c4d86d27408286f73ba60c7d1325a
+t15d scaffolds.agp 06defc14ee53734c85111b413971af09

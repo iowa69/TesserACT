@@ -119,6 +119,8 @@ void clearEnv() {
                           "TESSERACT_FIX_BOUNDARY_SAFE_TRIM", "TESSERACT_FIX_TRIM_COPY_GUARD",
                           "TESSERACT_FIX_SPLIT_POSTPROCESS", "TESSERACT_FIX_AGP_GFA_V2"})
         unsetenv(v);
+    // 1.4.0: an unset umbrella is on (src/defaults.h); the release 1.3.0 state is TESSERACT_FIXES=0.
+    setenv("TESSERACT_FIXES", "0", 1);
 }
 
 // stderr of the process is captured into a file for the counter-line checks.

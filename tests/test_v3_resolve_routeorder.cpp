@@ -90,10 +90,10 @@ int main() {
     const int threadCounts[] = {1, 2, 3, 4, 8};
     for (int mode = 0; mode < 3; ++mode) {
         unsetenv("TESSERACT_FIX_ROUTE_ORDER");
-        unsetenv("TESSERACT_FIXES");
+        setenv("TESSERACT_FIXES", "0", 1);   // 1.4.0: unset would follow the default umbrella (on)
         if (mode == 1) setenv("TESSERACT_FIX_ROUTE_ORDER", "1", 1);
         if (mode == 2) setenv("TESSERACT_FIXES", "1", 1);
-        std::printf("[%s]\n", mode == 0 ? "flag unset" : mode == 1 ? "TESSERACT_FIX_ROUTE_ORDER=1" : "TESSERACT_FIXES=1");
+        std::printf("[%s]\n", mode == 0 ? "flag unset, TESSERACT_FIXES=0" : mode == 1 ? "TESSERACT_FIX_ROUTE_ORDER=1" : "TESSERACT_FIXES=1");
         std::vector<std::string> ref;
         size_t differ = 0;
         bool anyDecision = true;

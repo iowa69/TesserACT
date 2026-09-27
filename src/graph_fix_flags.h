@@ -7,8 +7,9 @@
 //     included (build_v3: the envflags table contract), must be exactly 0 or 1 (or an
 //     integer in [0, 2] for the carry gate), or the process exits with status 2 and names
 //     the variable -- a typo must never silently mean "off";
-//   * every output-changing fix is default OFF behind TESSERACT_FIX_<NAME>, and the
-//     umbrella TESSERACT_FIXES=1 turns on every fix whose own variable is unset.
+//   * every output-changing fix is behind TESSERACT_FIX_<NAME>, and the umbrella
+//     TESSERACT_FIXES turns on every fix whose own variable is unset. Since 1.4.0 the
+//     umbrella is ON by default (src/defaults.h); TESSERACT_FIXES=0 restores 1.3.0.
 //     TESSERACT_FIX_<NAME>=0 keeps that one fix off even under the umbrella.
 //
 // Callers pass the full literal variable name so that the name is present in the binary
@@ -19,17 +20,18 @@
 // status 2 naming the variable, the release T16 contract).
 #pragma once
 
+#include "defaults.h"
 #include "envflags.h"
 
 namespace ts {
 namespace fixflags {
 
 // The umbrella: TESSERACT_FIXES=1 turns on every fix whose own variable is unset.
-inline bool umbrella() { return env::on("TESSERACT_FIXES", false); }
+inline bool umbrella() { return defaults::fixesUmbrella(); }
 
 // Level of an output-changing defect fix: the fix's own variable when set (a Binary flag
 // when maxLevel is 1, an Integer flag in [0, maxLevel] otherwise), else 1 under the
-// umbrella, else 0 (release behaviour).
+// umbrella (on by default since 1.4.0), else 0 (release 1.3.0 behaviour).
 inline int fixLevel(const char* name, int maxLevel = 1) {
     if (env::isSet(name)) {
         if (maxLevel <= 1) return env::on(name, false) ? 1 : 0;

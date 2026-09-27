@@ -138,15 +138,22 @@ void resolverNoCaching() {
     clearTesseractEnvironment();
     ::setenv("TESSERACT_COMMON_PREFIX", "0", 1);   // isolate chain arbitration
     ::setenv("TESSERACT_DEBUG_RESOLVE", "1", 1);   // prints the short-dest counter
+    // 1.4.0: the other resolver flags whose default changed are pinned at their 1.3.0 values, so
+    // the explicit rows below are still the release results this mechanism was checked against.
+    ::setenv("TESSERACT_FIXES", "0", 1);
+    ::setenv("TESSERACT_REQUIRE_SUPPORT_SINGLE", "0", 1);
+    ::setenv("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", "0", 1);
 
-    // Valid values give the release results (repro_output.txt, verify/T16).
+    // Valid values give the release results (repro_output.txt, verify/T16). Unset is the
+    // default: 0 (fallbacks on) in 1.3.0, 1000000000 (fallbacks withdrawn) since 1.4.0.
     struct V { const char* value; bool joined; long long shortDest; };
-    for (const V& v : std::vector<V>{{nullptr, true, 0}, {"0", true, 0}, {"250", true, 0},
+    for (const V& v : std::vector<V>{{nullptr, false, 4}, {"0", true, 0}, {"250", true, 0},
                                      {"301", false, 4}, {"1000000000", false, 4}}) {
         setOrUnset("TESSERACT_MIN_FALLBACK_DEST", v.value);
         const Result r = resolveFixture();
         check(r.joined == v.joined && r.shortDest == v.shortDest,
-              std::string("MIN_FALLBACK_DEST=") + (v.value ? v.value : "(unset)") + " gives the release result");
+              std::string("MIN_FALLBACK_DEST=") + (v.value ? v.value : "(unset)") +
+                  (v.value ? " gives the release result" : " gives the 1.4.0 default (1000000000) result"));
     }
 
     // Changing the value between two resolves in ONE process takes effect (release: the
@@ -159,7 +166,9 @@ void resolverNoCaching() {
     setOrUnset("TESSERACT_MIN_FALLBACK_DEST", "1000000000");
     const Result a3 = resolveFixture();
     check(!a3.joined && a3.shortDest == 4, "guard off then on in one process");
-    setOrUnset("TESSERACT_MIN_FALLBACK_DEST", nullptr);
+    // The trace check below counts the lines of the release 1.3.0 resolve, fallbacks on (0);
+    // unset is 1000000000 since 1.4.0.
+    setOrUnset("TESSERACT_MIN_FALLBACK_DEST", "0");
 
     setOrUnset("TESSERACT_JOIN_TRACE", nullptr);
     const Result t1 = resolveFixture();

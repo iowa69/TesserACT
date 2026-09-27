@@ -111,6 +111,9 @@ void show(const char* tag, const Outcome& o) {
 
 int main() {
     clearTesseractEnv();
+    // 1.4.0: the umbrella is on by default (src/defaults.h); "flags unset" below means the
+    // release 1.3.0 state, so the umbrella is pinned off until a check turns it on.
+    setenv("TESSERACT_FIXES", "0", 1);
     const Outcome off = run();
     show("flags unset", off);
     check(off.valid && off.rounds == 1 && off.tipSurvives && off.live == 6,

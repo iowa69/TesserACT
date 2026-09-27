@@ -1,7 +1,8 @@
 // Emission-stage post-processing, factored out of Assembler::run so it can be tested:
 // exact-containment dedup, the split of scaffolds into contigs at every N, the terminal
 // dovetail trim, and the auxiliary AGP / GFA path records. With every TESSERACT_FIX_* switch
-// unset each function reproduces the release 1.3.0 behaviour exactly.
+// off (TESSERACT_FIXES=0; since 1.4.0 the umbrella is on when unset) each function reproduces
+// the release 1.3.0 behaviour exactly.
 //
 // G-emit fixes in here (combo3, 2026-09-25):
 //   T37  dedup prefilter (output-neutral, unconditional)

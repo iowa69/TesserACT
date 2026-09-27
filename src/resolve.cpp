@@ -1,4 +1,5 @@
 #include "resolve.h"
+#include "defaults.h"
 #include "emit_fixflags.h"
 #include "envflags.h"
 #include "graph_coverage.h"
@@ -22,10 +23,11 @@ namespace ts {
 namespace {
 
 // ---- build_v3 G-resolve fixes ----------------------------------------------------------
-// Every output-changing fix below is default OFF and is read per resolve() call, never
-// cached in a function-local static, so a driver that runs several configurations in one
-// process sees each one. Resolution: TESSERACT_FIX_<NAME>=1 on, =0 off; unset follows the
-// umbrella TESSERACT_FIXES (=1 on, =0 off); both unset = off = release 1.3.0 behaviour.
+// Every output-changing fix below is read per resolve() call, never cached in a
+// function-local static, so a driver that runs several configurations in one process sees
+// each one. Resolution: TESSERACT_FIX_<NAME>=1 on, =0 off; unset follows the umbrella
+// TESSERACT_FIXES (=1 on, =0 off), which is ON when unset since 1.4.0 (src/defaults.h).
+// TESSERACT_FIXES=0 with no TESSERACT_FIX_* set is release 1.3.0 behaviour.
 // Any other value is an error (exit status 2), never a silent default: a flag that is set
 // but mis-typed must not look like an arm that ran.
 // build_v3: the values are read through the envflags table (T16), whose Binary kind is
@@ -37,7 +39,7 @@ bool fixEnabled(const char* name) {
     if (env::isSet(name)) return env::on(name, false);
     if (std::strcmp(name, "TESSERACT_FIX_GAP_FLANK") == 0 && env::isSet("TESSERACT_GAP_KEEP_FLANK"))
         return env::on("TESSERACT_GAP_KEEP_FLANK", false);
-    return env::on("TESSERACT_FIXES", false);
+    return defaults::fixesUmbrella();
 }
 
 // The resolver's repeat test: a unitig deeper than this multiple of the single-copy depth
@@ -1060,16 +1062,17 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // R6 housekeeping (always printed): mutual legacy joins whose two ends chose different
     // interior routes.
     long long mrDisagree = 0, mrChoseBack = 0;
-    const bool requireSupportSingle_ = env::on("TESSERACT_REQUIRE_SUPPORT_SINGLE", false);
+    const bool requireSupportSingle_ = defaults::requireSupportSingle();   // 1.4.0 default on
     const bool joinTrace_ = env::on("TESSERACT_JOIN_TRACE", false);
     const bool noUnspannedFallback_ = env::on("TESSERACT_NO_UNSPANNED_FALLBACK", false);
     long long dbgTieBest = 0, dbgTieSecond = 0;
 
     // Withdraw the fallbacks when the continuation they would take lands on a unitig
-    // shorter than this. 0 disables, which is the shipped behaviour until measured.
-    const size_t minFallbackDest_ = static_cast<size_t>(env::integer("TESSERACT_MIN_FALLBACK_DEST", 0));
+    // shorter than this. 0 disables (the 1.3.0 default); 1.4.0 defaults to 1000000000, which
+    // withdraws all three (src/defaults.h).
+    const size_t minFallbackDest_ = defaults::minFallbackDest();
 
-    const bool excludeSharedRepeatSupport = env::on("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", false);
+    const bool excludeSharedRepeatSupport = defaults::excludeSharedRepeatSupport();   // 1.4.0 default on
     const bool auditSharedRepeatSupport = env::on("TESSERACT_SHARED_SUPPORT_AUDIT", false);
 
     // Default-off experiment (combo2/joinrule, L4): a near-tied pick is nominated
@@ -2259,14 +2262,17 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     // On by default: measured over 37 closed-reference isolates this raises
     // genome fraction from 98.83% to 99.02% with the duplication ratio
     // unchanged at 1.000, because the sequence it adds is sequence every
-    // candidate continuation agreed on. Set to 0 to disable.
-    const double kPrefixBudget = env::real("TESSERACT_COMMON_PREFIX", 3000.0);
+    // candidate continuation agreed on. Set to 0 to disable. 1.3.0 walked up to 3000 bp;
+    // 1.4.0 walks 250 bp, from chain ends whose body reaches the insert size (ENDS-A,
+    // PREFIX_MIN_BODY=reach below; src/defaults.h).
+    const double kPrefixBudget = defaults::commonPrefix();
     // A chain owns each eligible anchor exactly once. Terminal context must
     // not make another copy of that anchor after chain arbitration declined
     // to join it. The owner is computed before any sequence is rendered, so
     // this decision does not depend on output order. Default-off experiment.
     const bool ownedAnchorPrefix = env::on("TESSERACT_OWNED_ANCHOR_PREFIX", false);
-    // ---- evidence-backed terminal extension (combo2/ends, 2026-09-24; all default OFF) ----
+    // ---- evidence-backed terminal extension (combo2/ends, 2026-09-24; default OFF except
+    //      PREFIX_MIN_BODY, which is reach by default since 1.4.0) ----
     // TESSERACT_PREFIX_MIN_BODY=<bp>|reach  certified starting context: walk an end only when the
     //   N-free path segment it continues carries at least that many bases ('reach' = the insert
     //   model's maxPlausible, i.e. the context is long enough to anchor the fragments that would
@@ -2277,12 +2283,8 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
     //   needs depth(next) >= TESSERACT_CERTIFIED_PREFIX_FLOW (default 0.8) * depth(current): fewer
     //   copies leaving a repeat than entering it means the other copies' exits are not in the graph.
     // build_v3: read per call through the envflags table (T16), never cached in a static.
-    const long kPrefixMinBody = [] {           // 0 = off, -1 = fragment reach
-        const char* e = env::text("TESSERACT_PREFIX_MIN_BODY");
-        if (!e) return 0L;
-        if (std::string(e) == "reach") return -1L;
-        return std::strtol(e, nullptr, 10);   // validated: an integer in [0, INT_MAX]
-    }();
+    // 1.4.0: PREFIX_MIN_BODY defaults to reach (src/defaults.h); =0 turns it off (1.3.0).
+    const long kPrefixMinBody = defaults::prefixMinBody();   // 0 = off, -1 = fragment reach
     const bool kCertifiedPrefix = env::on("TESSERACT_CERTIFIED_PREFIX", false);
     const double kCertifiedFlow = env::real("TESSERACT_CERTIFIED_PREFIX_FLOW", 0.8);
     // TESSERACT_PREFIX_NO_REVISIT=1: a walk never enters a unitig (either orientation) already on this
@@ -2923,9 +2925,9 @@ void printResolverCountersNotRun() {
     // environment resolves to (release flags parsed as release parses them).
     ResolverCounters rc;
     rc.run = 0;
-    rc.requireSupportSingle = env::on("TESSERACT_REQUIRE_SUPPORT_SINGLE", false) ? 1 : 0;
-    rc.minFallbackDest = static_cast<size_t>(env::integer("TESSERACT_MIN_FALLBACK_DEST", 0));
-    rc.excludeSharedRepeat = env::on("TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT", false) ? 1 : 0;
+    rc.requireSupportSingle = defaults::requireSupportSingle() ? 1 : 0;
+    rc.minFallbackDest = defaults::minFallbackDest();
+    rc.excludeSharedRepeat = defaults::excludeSharedRepeatSupport() ? 1 : 0;
     rc.sharedAudit = env::on("TESSERACT_SHARED_SUPPORT_AUDIT", false) ? 1 : 0;
     rc.noUnspannedFallback = env::on("TESSERACT_NO_UNSPANNED_FALLBACK", false) ? 1 : 0;
     rc.truncGuard = fixEnabled("TESSERACT_FIX_TRUNC_GUARD") ? 1 : 0;
@@ -2955,14 +2957,13 @@ void printResolverCountersNotRun() {
     std::fprintf(stderr,
         "[pairprefix] m=0 mode=%s anchors=0 ends=0 capped=0 zero=0 bp_walk=0 bp_kept=0 mates=0 enabled=%d\n",
         paMode && std::string(paMode) == "pos" ? "pos" : "node", paOn ? 1 : 0);
-    const bool minBodyOn = env::text("TESSERACT_PREFIX_MIN_BODY") != nullptr &&
-                           std::string(env::text("TESSERACT_PREFIX_MIN_BODY")) != "0";
+    const bool minBodyOn = defaults::prefixMinBody() != 0;
     const bool certified = env::on("TESSERACT_CERTIFIED_PREFIX", false);
     const bool noRevisit = env::on("TESSERACT_PREFIX_NO_REVISIT", false);
     std::fprintf(stderr,
         "[endext] budget=%.0f min_body=0 ends_checked=0 ends_skipped_short_body=0 certified=%d flow=%.2f "
         "anchor_stops=0 flow_stops=0 no_revisit=%d revisit_stops=0 enabled=%d\n",
-        env::real("TESSERACT_COMMON_PREFIX", 3000.0), certified ? 1 : 0,
+        defaults::commonPrefix(), certified ? 1 : 0,
         env::real("TESSERACT_CERTIFIED_PREFIX_FLOW", 0.8), noRevisit ? 1 : 0,
         (minBodyOn || certified || noRevisit) ? 1 : 0);
 }

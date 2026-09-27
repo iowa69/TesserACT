@@ -88,6 +88,7 @@ std::string resolveAnchor(const Fixture& f, bool enabled) {
 int main() {
     testenv::clearTesseractEnv();  // first: flags are cached in statics on first use
     setenv("TESSERACT_COMMON_PREFIX", "3000", 1);  // the baseline expectation is the shipped 3000 bp common-prefix budget
+    testenv::pinRelease130Flags();  // 1.4.0: the other 1.3.0 resolver defaults, pinned
     int checks = 0;
     auto check = [&](bool ok, const char* message) {
         ++checks;

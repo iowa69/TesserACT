@@ -1144,6 +1144,72 @@ stale=$(grep -l '^>stale' "$D/o5/scaffolds.fasta" "$D/o5/scaffolds.agp" "$D/o5/u
 known "reused -o leaves no stale outputs" T34 $([ $st -eq 0 ] && [ -z "$stale" ] && echo 0 || echo 1) \
       "exit=$st stale=[${stale% }]"
 
+# ---------------------------------------------------------------------------
+# 18. 1.4.0 defaults (RELEASE_PLAN 1.4.0 step 5.2)
+#
+# A run with nothing set uses the combo3 F2 configuration and says so on its counter lines.
+# The documented opt-out list restores release 1.3.0 byte for byte: tests/golden_130.md5
+# holds what release 1.3.0 (work/tesseract-1.3.0, md5 4af92d1f) wrote on the t5 and t15d
+# fixtures above, generated once. On t15d (the scaffold gap) the 1.4.0 defaults write
+# different files, so the comparison is not vacuous.
+# ---------------------------------------------------------------------------
+D=$TMP/t18; mkdir -p "$D"
+if asm "$D/def" -1 "$TMP/t15d/r_1.fq.gz" -2 "$TMP/t15d/r_2.fq.gz" -t 4; then
+    miss=""
+    rf=$(grep -m1 '^\[resolveflags\] ' "$LOG")
+    for tok in run=1 tieRatio=3.000 minFallbackDest=1000000000 requireSupportSingle=1 excludeSharedRepeat=1; do
+        case " $rf " in *" $tok "*) ;; *) miss="$miss resolveflags:$tok";; esac
+    done
+    grep -q '^\[fixes-emit\] umbrella=1 ' "$LOG" || miss="$miss fixes-emit:umbrella=1"
+    grep -q '^\[dropoutbridge\] .* enabled=1$' "$LOG" || miss="$miss dropoutbridge:enabled=1"
+    grep -q '^\[endext\] budget=250 ' "$LOG" || miss="$miss endext:budget=250"
+    grep -qx '\[defaults\] tie_ratio=3.000 common_prefix=250 prefix_min_body=reach min_fallback_dest=1000000000 require_support_single=1 exclude_shared_repeat_support=1 fixes=1 dropout_bridge=1' "$LOG" \
+        || miss="$miss [defaults]"
+    if [ -z "$miss" ]; then
+        pass "default run reports the 1.4.0 defaults" "resolveflags, fixes-emit, dropoutbridge, endext, [defaults]"
+    else
+        fail "default run reports the 1.4.0 defaults" "missing:$miss"
+    fi
+else
+    fail "default run reports the 1.4.0 defaults" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
+fi
+
+# optout130 OUTDIR [TesserACT args...] -- the 1.3.0 opt-out list from --help, on this command only
+optout130() {
+    local out=$1; shift
+    rm -rf "$out"
+    TESSERACT_FIXES=0 TESSERACT_COMMON_PREFIX=3000 TESSERACT_PREFIX_MIN_BODY=0 \
+    TESSERACT_MIN_FALLBACK_DEST=0 TESSERACT_REQUIRE_SUPPORT_SINGLE=0 \
+    TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=0 TESSERACT_DROPOUT_BRIDGE=0 \
+        $TIMEOUT "$TESSERACT" --tie-ratio 1.02 "$@" -o "$out" -q >"$LOG" 2>&1
+}
+GOLD=$ROOT/tests/golden_130.md5
+for fx in t5 t15d; do
+    if [ ! -r "$GOLD" ]; then
+        fail "1.3.0 opt-out reproduces release 1.3.0 ($fx)" "missing $GOLD"
+    elif optout130 "$D/o_$fx" -1 "$TMP/$fx/r_1.fq.gz" -2 "$TMP/$fx/r_2.fq.gz" -t 4; then
+        bad=""; n=0
+        while read -r name f want; do
+            [ "$name" = "$fx" ] || continue
+            n=$((n + 1))
+            if [ "$want" = absent ]; then
+                [ -e "$D/o_$fx/$f" ] && bad="$bad $f(written)"
+            else
+                got=$(md5sum < "$D/o_$fx/$f" 2>/dev/null | cut -c1-32)
+                [ "$got" = "$want" ] || bad="$bad $f"
+            fi
+        done < <(grep -v '^#' "$GOLD")
+        [ "$n" -eq 4 ] || bad="$bad (golden has $n rows for $fx)"
+        if [ -z "$bad" ]; then
+            pass "1.3.0 opt-out reproduces release 1.3.0 ($fx)" "4/4 files as release 1.3.0 wrote them"
+        else
+            fail "1.3.0 opt-out reproduces release 1.3.0 ($fx)" "differ:$bad"
+        fi
+    else
+        fail "1.3.0 opt-out reproduces release 1.3.0 ($fx)" "TesserACT exited non-zero ($(tail -1 "$LOG"))"
+    fi
+done
+
 echo
 echo "-----------------------------------------------------------------------"
 printf '%d passed, %d failed, %d known open defects (XFAIL), %d skipped\n' \

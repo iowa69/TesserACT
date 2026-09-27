@@ -208,6 +208,9 @@ Summary runAll() {
 
 int main() {
     clearTesseractEnv();
+    // 1.4.0: the umbrella is on by default (src/defaults.h); "flags unset" below means the
+    // release 1.3.0 state, so the umbrella is pinned off until a check turns it on.
+    setenv("TESSERACT_FIXES", "0", 1);
 
     std::printf("flags unset (release behaviour):\n");
     const Summary off = runAll();

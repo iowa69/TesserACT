@@ -145,7 +145,7 @@ int main() {
         const std::string on = cap.stop();
         expect(field(lines(on, "[gapflank]")[0], "enabled") == 1 && field(lines(on, "[revisit]")[0], "guard") == 1,
                "run=0 lines report the resolved fix flags (umbrella on)");
-        unsetenv("TESSERACT_FIXES");
+        setenv("TESSERACT_FIXES", "0", 1);
     }
     releaseDefaults();
     return finish("test_v3_resolve_counters (T14, T35)");
