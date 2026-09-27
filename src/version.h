@@ -12,7 +12,7 @@
 
 namespace ts {
 
-constexpr const char* kVersion = "1.3.0";
+constexpr const char* kVersion = "1.4.0";
 constexpr const char* kAuthor = "Giovanni Lorenzin";
 constexpr const char* kOrg = "IOWA-BioTech";
 
