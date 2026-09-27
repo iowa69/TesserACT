@@ -77,3 +77,55 @@ N in a model-guided *S. aureus* assembly:
 "Fill the gaps instead" is therefore not available for most of them. Splitting is not
 a workaround for a weak gap-filler; it is the correct representation of an adjacency
 the reads do not support.
+
+## What 1.4.0 changed in gaps and in the reports
+
+These fixes are on by default since 1.4.0. `TESSERACT_FIXES=0` restores the 1.3.0 behaviour
+described above; the defect ids are those of the combo3 register.
+
+**The statistics describe the files as written (T17).** In 1.3.0 `report.json` and the
+summary were computed from the scaffolds before they were split at N-runs and before the
+terminal-overlap trim. On one *E. faecium* isolate that overstated `contig_total_length` by
+109,288 bp. Now the `contig_*` fields are computed from the `contigs.fasta` records, and
+`scaffold_gaps` counts every N-run in `scaffolds.fasta`, a 1-N run included. `report.json`
+also gains `trimmed_overlaps` and `trimmed_overlap_bases`, and a `gap_fill` object: gaps seen
+and closed, why the rest stayed open (ambiguous, no path, thin read pool, out of budget),
+searches truncated or capped, and back-off closures. A `--quiet` run used to keep no record
+of any of it. This part is unconditional.
+
+**An N-run now carries the estimated gap (T03, T20).** In 1.3.0 the resolver wrote each
+scaffold gap as an N-run standing in for the first k−1 bases of the unitig after it, and
+those real bases were lost. Now the gap filler still sees that layout (so its target k-mer
+lies in full-depth sequence), and every gap it leaves open is then rewritten:
+
+* the k−1 bases come back;
+* the N-run becomes the estimated true gap length;
+* a verified exact overlap between the two flanks (at least 4 bases, not contradicted by the
+  estimate) becomes 1 N, with the overlap trimmed once;
+* an estimate of 0 or less with no verified overlap has no measurable length and is written
+  as **100 N**, meaning "length unknown".
+
+The estimate still runs short: T20 is only partly fixed. The 100-N gaps are written as
+ordinary N rows in the AGP, not as type U, because gap provenance is not tracked yet.
+
+**The polisher leaves N-runs alone (T02).** In 1.3.0 the polisher could overwrite a short
+N-run with read bases, turning a join the reads never spanned into contiguous sequence. It
+now skips N positions. T02 and T03 go together: `tesseract-asm` refuses to start with T03
+on and T02 off.
+
+**AGP and GFA describe the final records (T26).** In 1.3.0 no W row of `scaffolds.agp` named a
+`contigs.fasta` record, because both files were built from records before post-processing.
+Now:
+
+* every W row names a `contigs.fasta` record, with its final coordinates;
+* a piece below the length floor still sits inside its scaffold, and its W row names
+  `<scaffold>_unlisted_<n>`, a component that `contigs.fasta` does not hold;
+* the gap evidence is `paired-ends` for resolver gaps and `unspecified` once a model or the
+  layout has joined contigs, because gap origin is not tracked;
+* GFA P-lines cover the contigs that are an exact walk of graph segments. A GFA1 P-line
+  cannot express "an N-gap, then a segment with L bases trimmed", so those P-lines are left
+  out and counted on the log as `pLineOverspell`.
+
+**What this does to scoring.** The restored flank bases lengthen the pieces after gaps. Some
+of them then cross QUAST's 500 bp floor, which adds to the contig count (INFERRED; it is one
+of the contiguity costs of 1.4.0, see the README).

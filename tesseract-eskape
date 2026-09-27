@@ -83,12 +83,18 @@ info() { printf '%s\n' "$*"; }
 # ---------------------------------------------------------------------------
 # The presets.
 #
-# IMPORTANT, AND MEASURED: for six of the seven organisms the plain TesserACT
-# defaults were the best thing we could find. We tested --mode careful,
-# --mode aggressive, --simplify-rounds, --bubble-coverage, --min-link,
+# IMPORTANT, AND MEASURED (1.2/1.3 series): for six of the seven organisms the
+# plain TesserACT defaults were the best thing we could find. We tested --mode
+# careful, --mode aggressive, --simplify-rounds, --bubble-coverage, --min-link,
 # --tie-ratio and --link-per-x on 3 genomes per species and NONE of them beat
 # the default by the 10% margin we required. So those presets deliberately
 # add NO flags. That is not laziness - it is the result.
+#
+# 1.4.0: the defaults themselves changed. They now come from the combo3
+# campaign (the misassembly-first F2 configuration; README, "What 1.4.0
+# changed"), measured on 4 panels of 470 isolates, 329 of them ESKAPEE. The
+# presets still add no flags, so they inherit the new defaults. The
+# per-organism screen above was not repeated on 1.4.0.
 #
 # Only Klebsiella pneumoniae has something to add: a trained genus model,
 # which is a data file, not a tuning knob.

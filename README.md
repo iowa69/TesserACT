@@ -9,9 +9,197 @@ or single-end. No dependencies beyond zlib and a C++17 compiler.
 
 ---
 
+## What 1.4.0 changed
+
+**Misassemblies first.** TesserACT assemblies are the raw material for genus models, and a
+misassembly built into a model is repeated in every assembly the model later completes. So
+1.4.0 puts correctness ahead of contiguity. It fixes 42 defects found in a systematic audit
+of 1.3.0, and it makes the configuration with the fewest misassemblies of every
+configuration measured (called F2 in the campaign records) the default. That costs some
+contiguity, and the cost is stated below with the gain.
+
+The measurements come from the combo3 campaign: 4 panels of real Illumina libraries, each
+isolate scored by QUAST against its own closed reference, `--min-contig 500`. The full record
+is kept with the campaign files (`combo3/FINAL.md`, `combo3/DEFECTS.md`), not in this
+repository.
+
+### New defaults
+
+| Setting | 1.3.0 | 1.4.0 | What it does |
+|---|---|---|---|
+| `--tie-ratio` | 1.02 | **3.0** | The winning branch needs 3× the runner-up's pair support, which removes paired-join errors |
+| `TESSERACT_COMMON_PREFIX` | 3000 | **250** | A short evidence-free walk at chain ends, in bp |
+| `TESSERACT_PREFIX_MIN_BODY` | off | **reach** | That walk starts only from chain ends whose body reaches the insert size |
+| `TESSERACT_MIN_FALLBACK_DEST` | 0 | **1000000000** | Withdraws the three fallback joins |
+| `TESSERACT_REQUIRE_SUPPORT_SINGLE` | off | **on** | A lone join candidate still needs pair support |
+| `TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT` | off | **on** | A repeat that supports every destination loses its votes |
+| `TESSERACT_FIXES` | off | **on** | The 21 output-changing defect fixes (below) |
+| `TESSERACT_DROPOUT_BRIDGE` | off | **on** | Bridges a coverage dropout between two dead ends when at least 2 read pairs span it |
+
+Every run prints the values in force on one line of its log:
+
+```
+[defaults] tie_ratio=3.000 common_prefix=250 prefix_min_body=reach min_fallback_dest=1000000000 require_support_single=1 exclude_shared_repeat_support=1 fixes=1 dropout_bridge=1
+```
+
+The run modes keep their 1.3.0 tie ratios (`fast` 1.3, `careful` 1.4, `aggressive` 1.05). So
+`--mode careful` still adds simplification rounds and polishing passes, but it is no longer
+stricter than `standard` on the tie ratio. It will be re-measured for 1.4.1.
+
+### Reproducing 1.3.0
+
+The 1.3.0 behaviour is one command line away. Measured: the four output files
+(`contigs.fasta`, `scaffolds.fasta`, `assembly_graph.gfa`, `scaffolds.agp`) are byte-identical
+to release 1.3.0 on 3 real isolates and on the test fixtures (`tests/golden_130.md5`).
+
+```sh
+TESSERACT_FIXES=0 TESSERACT_COMMON_PREFIX=3000 TESSERACT_PREFIX_MIN_BODY=0 \
+TESSERACT_MIN_FALLBACK_DEST=0 TESSERACT_REQUIRE_SUPPORT_SINGLE=0 \
+TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=0 TESSERACT_DROPOUT_BRIDGE=0 \
+  tesseract-asm --tie-ratio 1.02 -1 R1.fq.gz -2 R2.fq.gz -o out/
+```
+
+A single fix is turned off with `TESSERACT_FIX_<NAME>=0`, for example
+`TESSERACT_FIX_REVISIT_GUARD=0` (T07) or `TESSERACT_FIX_CARRY_READ_GATE=0` (T01). An explicit
+per-fix value always wins over the umbrella. One combination is refused: the gap-flank restore
+(T03) with the polisher's N-skip (T02) off exits with status 2, because the polisher could
+then overwrite gaps that T03 has restored.
+
+### Results
+
+On two fresh panels that no development decision had seen, against SPAdes 4.3.0:
+
+* **Fresh ESKAPEE isolates (140):** fewer misassemblies (636 against 681), but not
+  significantly at the pre-registered level (one-sided p = 0.0495 against α = 0.025). Because
+  that test failed, everything else on this panel is descriptive only: genome fraction is
+  higher and assembly size error is lower.
+* **Fresh 28-species diversity panel (82 isolates):** fewer misassemblies (133 against 187;
+  −0.64 per isolate, one-sided p = 0.0005 in the pre-registered analysis, which drops the
+  one isolate SPAdes could not assemble). This result is **descriptive, not confirmatory**:
+  that analysis needed two protocol deviations, and they were not ratified.
+* **Contiguity is not better than SPAdes** on either panel. The NGA50 and contig-count
+  comparisons are inconclusive.
+
+These results do not show that 1.4.0 is better than SPAdes on ESKAPEE isolates. They also
+do not show a confirmed improvement over K2, the best configuration of the 1.3 series
+(`--tie-ratio 2.0 TESSERACT_COMMON_PREFIX=0` with the fallbacks withdrawn and both support
+rules on; it was never a shipped default). On the fresh ESKAPEE panel K2 and F2 tie on
+misassemblies: 637 against 636.
+
+Misassembly totals on all four panels (lower is better). The development panels (dev_c and
+esk140b) are the ones F2 was selected and checked on:
+
+| | dev_c (108) | esk140b (140) | esk140c (140, fresh) | divfresh (82, fresh) |
+|---|---|---|---|---|
+| **1.4.0 defaults (F2)** | **350** | **628** | **636** | **133** |
+| K2 | 367 | 643 | 637 | 155 |
+| SPAdes 4.3.0 | 411 | 679 | 681 | 187 |
+
+Of the 22 fewer divfresh misassemblies against K2, 15 come from one low-coverage isolate (see
+the cost below). On fresh data, the gains over K2 that did replicate are genome fraction
+(+0.13 points on esk140c, +0.07 on divfresh), size error, and local misassemblies (314
+against 337, and 107 against 119).
+
+The 1.3.0 defaults had significantly more misassemblies than SPAdes on the campaign's two
+earlier development panels (ESK-140 and DIV-146; `combo/FINAL.md` §3.2), as the 1.3.0 table
+below shows for the 30-species panel. F2 itself was not scored head-to-head against 1.3.0.
+
+### What it costs
+
+Measured against K2 on the two fresh panels:
+
+| | esk140c (140 ESKAPEE) | divfresh (82, 28 species) |
+|---|---|---|
+| Contigs | +3.3 per isolate (mean) | +9.7 mean, +3 median per isolate |
+| NGA50, geometric mean ratio | ×0.940 | ×0.931 |
+| Duplication ratio | +0.0002 | +0.0002 |
+
+The campaign's legacy scorer prints the NGA50 cells as "WIN" and "tie". Both are
+significant losses, as the rank sums and the ratios show; the scorer takes the direction
+from win/loss counts that are nearly equal here.
+
+Two of the defaults account for most of the cost, and both are kept on deliberately:
+
+* **The revisit guard (T07).** Alone it costs NGA50 ×0.96, 2.5 contigs per isolate and
+  0.01 points of genome fraction on the development panel, without removing an extensive
+  misassembly. It is kept on because it removes local misassemblies (232 → 223) and
+  mismatches (26 isolates better, 0 worse).
+  `TESSERACT_FIX_REVISIT_GUARD=0` turns it off.
+* **The carry-read gate (T01) on low-coverage libraries.** T01 accounts for 11 of the 12
+  fewer misassemblies that the fixes give on the development panel. On one low-coverage
+  *S. maltophilia* isolate (k-mer depth 25 at k = 99) it takes misassemblies from 18 to 3,
+  but costs 2.6 points of genome fraction (90.58 % → 87.99 %) and about 260 more contigs.
+  Whether the 15 removed events were real chimeras has not been checked on raw reads.
+  `TESSERACT_FIX_CARRY_READ_GATE=0` turns it off. A low-coverage guard is planned for 1.4.1.
+
+Run time is about ×1.07 that of K2 and peak memory about ×1.01 (development panel).
+
+### The 42 defect fixes
+
+45 defects were triaged. 42 are fixed, T20 only in part; 5 of the 42 (T04, T05, T19, T44,
+T45) are in the evaluation harness, outside this repository. 3 were refuted as filed (T06,
+T12, T23). The ids are those of the campaign's defect register.
+
+**Output-changing, on by default through `TESSERACT_FIXES`** (each also has its own
+`TESSERACT_FIX_<NAME>` switch):
+
+| Id | Defect | Switch |
+|---|---|---|
+| T01 | Carried k-mers made read-free junctions solid ("inside one unitig" chimeras) | `CARRY_READ_GATE` |
+| T02 | The polisher overwrote scaffold N-runs | `POLISH_SKIP_N` |
+| T03 | k−1 real bases were dropped after every open N-gap | `GAP_FLANK` |
+| T07 | A tandem loop was collapsed by the lone-candidate path | `REVISIT_GUARD` |
+| T08 | The legacy gap-close nominator continued from the wrong end | `GAP_NOMINATOR` |
+| T09 | A gap-fill search cut off by its budget was accepted as unique | `GAPFILL_STRICT_BUDGET` |
+| T10 | The terminal-overlap trim could cut both copies of an equal-length pair | `BOUNDARY_SAFE_TRIM` |
+| T11 | The gap filler anchored on the exact terminal k-mers, with no back-off | `GAPFILL_BACKOFF` |
+| T13 | A scaffold cycle lost every join in it | `SCAFFOLD_CYCLE` |
+| T20 | The gap-length estimate was one-sided (partly fixed: its short bias remains) | `GAP_ESTIMATE` |
+| T21 | A rival discarded by a truncated enumeration counted as absent | `TRUNC_GUARD` |
+| T22 | The terminal-overlap trim ignored copy number | `TRIM_COPY_GUARD` |
+| T24 | Contig coverage counted the k−1 overlap of every unitig | `COV_CONTRIB` |
+| T25 | Split pieces skipped the per-record filters and deduplication | `SPLIT_POSTPROCESS` |
+| T26 | AGP and GFA path records were built from records before post-processing | `AGP_GFA_V2` |
+| T27 | The gap filler read input N bases as A | `GAPFILL_SKIP_INPUT_N` |
+| T28 | A hairpin self-link was lost in a merge | `HAIRPIN_KEEP` |
+| T29 | Graph simplification stopped without counting every removal | `SIMPLIFY_COUNT_ALL` |
+| T30 | Read correction left the rest of a capped read unmasked | `EC_CAP_MASK` |
+| T31 | Route-distance allocation summed in thread order | `ROUTE_ORDER` |
+| R6 | Mutual joins did not check that both ends chose the same route | `MIRROR_ROUTE` |
+
+**Unconditional, and output-neutral** (logs, reports and refusal of invalid input):
+
+* T14, T15, T35, T36: every run prints the resolver, gap-close, repeat-threshold and
+  dead-end counters, zeros included.
+* T16: every `TESSERACT_*` variable is validated at startup, and a malformed value exits 2
+  with the variable named. 1.3.0 read `1e9` as 1 and `true` as 0 without a word.
+* T17: `report.json` and the summary describe the records actually written. `report.json`
+  gains a `gap_fill` object.
+* T18: a truncated gzip input is refused.
+* T32: conflicting read options and bad `-k` lists are refused.
+* T33: FASTQ blank lines and `.1`/`.2` mate suffixes are accepted.
+* T34: re-running into an output directory leaves no stale files.
+* T37, T38, T39: faster deduplication, no repeated gap-filler walk, and thread buffers that
+  no longer grow with the square of `-t`.
+
+**Tests and packaging:** T40 to T43. Tests no longer read the caller's `TESSERACT_*`
+environment; the python tests run in `make check`; the conda recipe is checked by
+`make recipecheck`.
+
+**New in 1.4.0 beyond the register:** the T02/T03 coupling is enforced at startup (N9), and
+`make componenttest` builds the binary its end-to-end tests need (N14).
+
+**Known open items.** Gap fills from a search that hit its solution cap are still accepted
+(N8; see Limitations). The coverage labels of split pieces use a different convention from
+the resolver's (N10; names only). The T01 low-coverage guard (N20) is 1.4.1 work.
+
+---
+
 ## Benchmark
 
 ### 30 species, 146 isolates (1.3.0)
+
+Measured with the 1.3.0 defaults, before the 1.4.0 changes above.
 
 A generalisation panel outside the ESKAPE pathogens: 30 bacterial species from 1.6 Mb
 (*H. pylori*) to 7.7 Mb (*B. cenocepacia*) and 27–67 % GC, up to five isolates each, every
@@ -192,7 +380,7 @@ To build without installing:
 
 ```sh
 make -j                     # needs zlib headers; on conda, CPATH=$CONDA_PREFIX/include
-make test                   # 21 end-to-end checks on synthetic genomes
+make test                   # 40 end-to-end checks on synthetic genomes
 ```
 
 Produces `./tesseract-asm`.
@@ -220,7 +408,8 @@ tesseract-asm --12 reads.fq.gz -o out/ -t 8
 # Maximum contiguity, accepting more misassembly risk
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode aggressive
 
-# Maximum caution: more simplification passes, stricter joins
+# More simplification passes and 2 polishing passes. Its tie ratio (1.4) is below the
+# 1.4.0 default (3.0), so it is no longer the stricter mode on joins
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode careful
 
 # With a genus model, for junctions no fragment spans
@@ -442,6 +631,10 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
   (1–2.5 kb). Raising k further does not help — 99.7 % of the genome is already unique at
   k=99, and the rest is far longer than any k a 250 bp read can support.
 * **Bacterial isolates.** Metagenomes and eukaryotes are untested.
+* **Low-coverage libraries lose some genome fraction to the carry-read gate (T01; N20,
+  open).** On one *S. maltophilia* isolate at k-mer depth 25 it cost 2.6 points while removing
+  15 of 18 misassemblies. `TESSERACT_FIX_CARRY_READ_GATE=0` trades them back. A low-coverage
+  guard is planned for 1.4.1.
 * **Gap fills from a search that hit its solution cap (defect N8, open).** When the gap
   filler's search stops at its cap of 24 candidate fills, a fill can still be accepted by
   dominance, although the search did not see every alternative. This is the sibling of the

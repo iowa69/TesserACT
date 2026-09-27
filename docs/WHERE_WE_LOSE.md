@@ -7,6 +7,68 @@ The arms are: **vanilla** (no model), **`--organism`** (the shipped default with
 model), **`careful`** and **`aggressive`** (presets on top of the model), and **SPAdes 4.3.0**
 with its own error correction and automatic k.
 
+## 1.4.0: contigs and NGA50 against K2, and why
+
+1.4.0 makes the combo3 configuration F2 the default: misassemblies first (README, "What 1.4.0
+changed"). The tables below were measured on earlier releases. This section records what F2
+gives up against K2, the best configuration of the 1.3 series (`--tie-ratio 2.0`,
+`TESSERACT_COMMON_PREFIX=0`, fallbacks withdrawn, both support rules on; never a shipped
+default). Source: the campaign's `combo3/FINAL.md` §4 and §6. MEASURED unless marked.
+
+### The loss, on the two fresh panels
+
+| F2 against K2 | esk140c (140 ESKAPEE) | divfresh (82, 28 species) |
+|---|---|---|
+| Contigs per isolate | +3.3 mean | +9.7 mean, +3 median |
+| NGA50, geometric mean ratio | ×0.940 | ×0.931 |
+| Isolates with NGA50 below ×0.8 / below ×0.5 | 19 / 2 (lowest ×0.45, *S. aureus* GCF046742015v1) | 10 / 0 |
+| Worst contig increase | +69 (*E. faecium* GCF040367385v1) | +260 (*S. maltophilia* GCA052784345v1) |
+| Duplication ratio | +0.0002 | +0.0002 |
+
+The gains on the same panels, for balance: genome fraction +0.13 and +0.07 points, lower size
+error, and fewer local misassemblies (314 against 337, and 107 against 119). Extensive
+misassemblies tie on esk140c (636 against 637), and on divfresh 133 against 155 is mostly one
+isolate (below).
+
+### Causes
+
+**1. The revisit guard (T07).** Measured alone on K2 over the 108-isolate development panel:
+NGA50 ×0.960, +2.5 contigs per isolate, genome fraction −0.01 points, and no extensive
+misassembly removed. What it does buy is local misassemblies (232 → 223) and mismatches (26
+isolates better, 0 worse). It stays on by owner decision; `TESSERACT_FIX_REVISIT_GUARD=0`
+turns it off. A bounded guard, which refuses a pick only when the depth says the loop has
+several copies, is expected to buy back about 2.5 contigs and NGA50 ×1.04 (INFERRED from the
+same measurement).
+
+**2. The carry-read gate (T01) on low-coverage libraries.** T01 removes chimeras built from
+carried k-mers that no read supports: net −11 of the fixes' −12 misassemblies on the
+development panel. Where coverage is low, many true junctions also lose read support at high
+k, and T01 withholds them too. The clearest case is the low-coverage *S. maltophilia*
+GCA052784345v1 (divfresh; peak k-mer depth 25 at k = 99):
+
+| Run | Misassemblies | Genome fraction (%) | Contigs | NGA50 |
+|---|---|---|---|---|
+| K2 | 18 | 90.525 | 2,151 | 2,403 |
+| F2 (1.4.0 defaults) | 3 | 87.986 | 2,411 | 1,956 |
+| F2 with T01 off | 18 | 90.583 | 2,148 | 2,413 |
+| K2 with T01 alone | 3 | 87.910 | 2,416 | 1,953 |
+| SPAdes 4.3.0 | 8 | 89.711 | 2,387 | 2,370 |
+
+On this isolate T01 is necessary and sufficient for the whole change (n = 1): 15 fewer
+misassemblies for 2.6 points of genome fraction. Whether those 15 were real chimeras has not
+been checked on raw reads. INFERRED: the gate cuts real junctions here, and the pieces fall
+below QUAST's 500 bp floor. A low-coverage guard for T01 is the first item for 1.4.1.
+`TESSERACT_FIX_CARRY_READ_GATE=0` turns T01 off.
+
+**3. Restored gap flanks (T03), INFERRED.** Every open gap gets its k−1 bases back, which
+lifts some pieces over the 500 bp floor and so adds contigs.
+
+**A caution on the size and contig numbers.** *S. suis* GCA029203915v2 (divfresh) is a
+contaminated library: a 2.08 Mb reference, and a 4.86 Mb K2 assembly of which 2.86 Mb does not
+align. F2 adds 196 kb of unaligned sequence and about 240 contigs there, with genome fraction
+unchanged and no misassembly. On libraries like this, size error measures how contamination
+is handled, not assembly error.
+
 ## The whole table
 
 | metric (median) | vanilla | `--organism` | careful | aggressive | SPAdes |

@@ -15,6 +15,62 @@ recorded as an assembly error.
 
 ---
 
+## 0. combo3 (2026-09-25 to 09-27): the defect campaign and the 1.4.0 defaults
+
+The campaign record lives in the working directory, outside this repository:
+
+| File | What |
+|---|---|
+| `work/combo3/FINAL.md` | Final judgement: best configuration, fresh-panel confirmation, hidden harm, costs |
+| `work/combo3/DEFECTS.md` | Defect register: 45 triaged defects (T01-T45) and 21 found later (N1-N21), each with its fix, test, effect and status |
+| `work/combo3/RELEASE_PLAN.md` | The steps that made 1.4.0, with the owner's decisions appended |
+| `work/combo2/confirm/esk140c/`, `work/combo2/confirm/divfresh/` | Official scorer outputs of the confirmation (json, tsv, txt; primary and secondary views) |
+| `work/combo3/confirm/verdicts/` | Verdict-tool stamps: esk140c is the confirmatory analysis (and H1 was not rejected there); divfresh is stamped SECONDARY |
+| `work/build_v3/v3.patch` | The 42 fixes and the campaign packages as one patch on 1.3.0 (sha256 d0b1a41d...) |
+
+**What shipped.** Commit 1 of the 1.4.0 branch is `v3.patch` unchanged (all new flags
+default off; byte-identical to 1.3.0 with them unset). The defaults then became the F2
+configuration (arm `cb3s_eb_t3`): `--tie-ratio 3.0`, `TESSERACT_COMMON_PREFIX=250`,
+`TESSERACT_PREFIX_MIN_BODY=reach`, `TESSERACT_MIN_FALLBACK_DEST=1000000000`,
+`TESSERACT_REQUIRE_SUPPORT_SINGLE=1`, `TESSERACT_EXCLUDE_SHARED_REPEAT_SUPPORT=1`,
+`TESSERACT_FIXES=1`, `TESSERACT_DROPOUT_BRIDGE=1` (`src/defaults.h`).
+
+**Why F2.** It has the fewest misassemblies of every configuration measured, on all four
+panels (MEASURED, `combo3/FINAL.md` §0):
+
+| | dev_c 108 | esk140b 140 | esk140c 140 (fresh) | divfresh 82 (fresh) |
+|---|---|---|---|---|
+| F2 | 350 | 628 | 636 | 133 |
+| K2 | 367 | 643 | 637 | 155 |
+| SPAdes 4.3.0 | 411 | 679 | 681 | 187 |
+
+**The confirmation (NI_PLAN_v2; two finalists, one-sided α 0.025 each).**
+
+* esk140c: H1 (fewer misassemblies than SPAdes) is **not rejected**. F2 −0.321 per isolate
+  [−0.707, +0.064], p_sup 0.0495. Global test not shown. Non-inferiority to K2 not shown
+  (p_ni 0.125).
+* divfresh: the pre-registered §9 analysis gives F2 −0.637 [−1.101, −0.226], p 0.0005. It
+  needs deviations D7 (the §9 drop, applied explicitly) and D8 (the verdict tool's handling
+  of it). **The owner did not ratify D7/D8 (2026-09-27 17:56 IST), so divfresh is
+  descriptive only.**
+* No improvement claim over K2 survives Family B on either panel.
+
+**Costs against K2 on the fresh panels (MEASURED):** contigs +3.3 per isolate (esk140c) and
++9.7 mean / +3 median (divfresh); NGA50 geometric mean ×0.940 and ×0.931; duplication
++0.0002. The legacy scorer prints the two NGA50 cells as "WIN" and "tie"; both are losses
+(defect N21).
+
+**Owner decisions (2026-09-27 17:56 IST).** D-a: D7/D8 not ratified, divfresh descriptive
+only. D-b: F2 (Track A) becomes the default. D-c: the T07 revisit guard stays on, its NGA50
+cost documented. D-f: the T01 carry-read gate stays on, its low-coverage genome-fraction
+cost documented (smaltophilia GCA052784345v1: −2.6 points against F2 without T01; the
+low-coverage guard is 1.4.1 work). D-d: version 1.4.0. D-e: run-mode presets unchanged.
+
+**Spent panels.** esk140c and divfresh were unblinded on 2026-09-27 at 14:10. Any further
+confirmatory claim needs a new fresh panel and an NI_PLAN_v3.
+
+---
+
 ## 1. Shipped, with the measurement that justified it
 
 | change | effect | n | evidence |
