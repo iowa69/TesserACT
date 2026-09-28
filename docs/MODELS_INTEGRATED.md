@@ -1,9 +1,10 @@
 # The integrated ESKAPEE models
 
 > **1.4.0.** The models described here are not the ones `tesseract-get-models` installs. The
-> `models-v1` release holds whole-panel builds from much larger panels, 811 to 2,238 genomes per
+> `models-v2` release holds whole-panel builds from much larger panels, 811 to 2,238 genomes per
 > organism and about 1.4 GB in total. With the 1.4.0 defaults, a model adds misassemblies in all
-> seven organisms while it adds contiguity. See [models/README.md](../models/README.md).
+> seven organisms while it adds contiguity, so the models are optional and opt-in. See
+> [models/README.md](../models/README.md).
 
 Seven organisms, each a single model carrying **both** the chromosome panel (layout tracks) and
 the plasmid database, with every held-out isolate's own plasmids withheld from training.

@@ -884,3 +884,5 @@ previous stage.
 8. The `model` arm's `_cov_` header field is the scaffold's depth, not the contig's. Affects
    no QUAST metric; affects every user who parses it.
 9. `models-v1` has never been released, so `tesseract-get-models` fails for every user today.
+   (1.4.0: the models are published as `models-v2` instead, because the 1.3.0 fetcher looks for
+   `models-v1` with a different checksum list; see models/README.md.)

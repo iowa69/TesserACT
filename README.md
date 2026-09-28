@@ -358,9 +358,16 @@ leave-clone-out model for each, on 47 held-out isolates per organism (329 in all
 lowers the median contig count from 99 to 86 and raises the median NGA50 from 134 to 156 kb.
 It also raises misassemblies in every organism: from 154 to 290 on the 306 isolates whose
 closed reference matches the reads. Of those isolates, 89 get more misassemblies, 2 get fewer
-and 215 are unchanged. The downloadable `models-v1` files are whole-panel builds of the same
-models with nothing withheld. The per-organism table, and what was and was not measured on the
+and 215 are unchanged. With or without a model, no isolate had 90% of its chromosome in one
+correct block. The downloadable `models-v2` files are whole-panel builds of the same models
+with nothing withheld. The per-organism table, and what was and was not measured on the
 downloads, are in [models/README.md](models/README.md).
+
+So the models are **optional and opt-in**. TesserACT is complete without them:
+`tesseract-asm` loads one only when `--organism` is given, `./install.sh` asks before
+downloading them and defaults to no, a `tesseract-eskape` preset uses one only if it is
+installed, and `tesseract-klebsiella` uses one only with `--with-model`. An improved organism
+model is in development.
 
 ---
 
@@ -374,16 +381,17 @@ cd TesserACT
 
 Run in a terminal, `./install.sh` walks through it: it checks the four tools it needs and
 names the one command that installs any that are missing, asks where to put things, builds,
-puts the commands on your PATH, and offers to download the organism models. Nothing goes
-system-wide and no password is needed.
+puts the commands on your PATH, and offers the optional organism models (the default answer
+is no). Nothing goes system-wide and no password is needed.
 
 It is also the non-interactive installer -- run from a script, a CI job or a pipe there is
 no terminal to ask, so it takes the defaults and says nothing. `--no-prompt` forces that in
 a terminal too, `--guided` forces the questions anywhere, and `--prefix DIR` or
 `--conda-env NAME` choose the destination outright.
 
-You end up with five commands: `tesseract-asm`, `tesseract-model`, `tesseract-klebsiella`,
-`tesseract-eskape` and `tesseract-get-models`.
+You end up with four commands: `tesseract-asm`, `tesseract-klebsiella`, `tesseract-eskape` and
+`tesseract-get-models`. The model builder, `tesseract-model`, is built by `make model` and is not
+installed.
 
 To build without installing:
 
@@ -396,12 +404,15 @@ Produces `./tesseract-asm`.
 
 ## Quick start
 
-For *Klebsiella*, one command does everything -- it builds the assembler if needed, fetches
-and checks the model, and assembles every read pair it is given:
+For *Klebsiella*, one command does everything -- it builds the assembler if needed and
+assembles every read pair it is given. It uses no model unless you add `--with-model`, which
+fetches and checks the *K. pneumoniae* model once and prints what it costs
+([above](#with-a-genus-model-on-140-all-seven-eskapee-organisms)):
 
 ```sh
-./tesseract-klebsiella reads/            # a directory of pairs
-./tesseract-klebsiella sample_R1.fq.gz   # the mate is found automatically
+./tesseract-klebsiella reads/                  # a directory of pairs
+./tesseract-klebsiella sample_R1.fq.gz         # the mate is found automatically
+./tesseract-klebsiella --with-model reads/     # with the organism model (optional)
 ```
 
 Interrupt it and run it again; it picks up where it stopped. Everything below is the general
@@ -496,10 +507,12 @@ of a use is worth shipping as exactly that, and not as a feature.
 `~/.tesseract/models`, or from the directory `TESSERACT_MODEL_DIR` names, and the model must
 have been built for that organism. The names are `saureus`, `efaecium`, `abaumannii`,
 `paeruginosa`, `ecloacae`, `ecoli` and `kpneumoniae`; `klebsiella` is accepted as another name
-for `kpneumoniae`. `tesseract-get-models` downloads and checks the seven models, and
-`tesseract-eskape` and `tesseract-klebsiella` select theirs the same way. There is no option
-that takes a model file: `--model FILE` is kept for building and validating the bundled models
-and is refused unless `TESSERACT_MODEL_AUTHOR` is set.
+for `kpneumoniae`. `tesseract-get-models` downloads and checks the seven models from the
+`models-v2` release, and `tesseract-eskape` presets and `tesseract-klebsiella --with-model`
+select theirs the same way. The models are optional: each buys contiguity and costs
+misassemblies (see "With a genus model on 1.4.0" above). There is no option that takes a model
+file: `--model FILE` is kept for building and validating the bundled models and is refused
+unless `TESSERACT_MODEL_AUTHOR` is set.
 
 The 1.2 *Klebsiella* models are attached to the
 [releases](https://github.com/iowa69/TesserACT/releases) — see
@@ -633,7 +646,7 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
 | `-k LIST` | override the k ladder, e.g. `21,33,55,77` |
 | `-c N` | force the abundance cutoff (default: automatic) |
 | `--mode NAME` | `fast`, `standard` (default), `careful`, `aggressive` |
-| `--organism NAME` | organism model `NAME.tsm`, see above (`TESSERACT_MODEL_DIR` says where) |
+| `--organism NAME` | optional organism model `NAME.tsm`, see above: more contiguity, more misassemblies (`TESSERACT_MODEL_DIR` says where) |
 | `--qc FILE` | scepter QC report |
 | `--min-contig N` | shortest contig to report (default 2k) |
 | `--max-memory GB` | counting-table budget (default 80 % of RAM) |

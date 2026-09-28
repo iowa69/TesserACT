@@ -1237,6 +1237,10 @@ done
 # every run is made without it -- the environment a user has -- and passes only when the run
 # succeeds and the model stage ran: report.json says organism_model.run for the model named,
 # and the log carries the stage's "model joining" line.
+#
+# Models are opt-in (1.4.0): tesseract-klebsiella runs without one unless given --with-model,
+# --model or --plasmid, even when a model is installed, and a tesseract-eskape preset whose
+# model is not installed carries on with the defaults instead of stopping.
 # ---------------------------------------------------------------------------
 D=$TMP/t19; mkdir -p "$D/models" "$D/cache" "$D/elsewhere"
 gen repeat_genome "$D/g.fa" 43 5000 5000 >/dev/null
@@ -1270,6 +1274,29 @@ PYMODEL
     grep -q "model joining" "$5" 2>/dev/null || { rc=1; detail="$detail, no 'model joining' line in the log"; }
     check "$1" $rc "$detail"
 }
+# nomodelran NAME STATUS OUTDIR LOGFILE -- the run succeeded and no model was loaded: report.json
+# says organism_model.run is not true, its command has no --organism, and there is no model stage
+nomodelran() {
+    local detail rc
+    if [ "$2" -ne 0 ]; then
+        fail "$1" "exit=$2 ($(cat "$4" "$3.part/run.log" 2>/dev/null | grep -m1 -i 'error'))"
+        return
+    fi
+    detail=$(python3 - "$3/report.json" <<'PYNOMODEL'
+import json, sys
+try:
+    r = json.load(open(sys.argv[1]))
+except Exception as e:
+    print("no report.json (%s)" % e); sys.exit(1)
+m = r.get("organism_model") or {}
+cmd = r.get("command", "")
+print("organism_model.run=%s, --organism in command: %s" % (m.get("run"), "--organism" in cmd))
+sys.exit(1 if m.get("run") is True or "--organism" in cmd else 0)
+PYNOMODEL
+); rc=$?
+    grep -q "model joining" "$4" 2>/dev/null && { rc=1; detail="$detail, a 'model joining' line in the log"; }
+    check "$1" $rc "$detail"
+}
 if ! n22model kpneumoniae "$D/models/kpneumoniae.tsm" || ! n22model ecoli "$D/models/ecoli.tsm" ||
    ! n22model klebsiella "$D/cache/tesseract-klebsiella-default-v1.2.0.tsm"; then
     fail "--organism model selection (N22)" "could not build the fixture models (logs: $D/models, $D/cache)"
@@ -1299,14 +1326,37 @@ else
         -1 "$R1" -2 "$R2" -o "$D/esk_ec" -t 2 >"$D/esk_ec.out" 2>&1
     modelran "tesseract-eskape --preset ecoli" $? "$D/esk_ec" ecoli "$D/esk_ec/tesseract-eskape.log"
 
-    # tesseract-klebsiella: the default model already in its cache (no download; built as
-    # `klebsiella`, as the 1.2 models were), and --model FILE
-    TESSERACT_MODEL_DIR="$D/cache" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_def" \
+    # tesseract-klebsiella. By default no model, although kpneumoniae.tsm is installed where
+    # --with-model looks; --with-model uses that file and prints its measured cost; --model FILE
+    # implies --with-model (here a 1.2-named file, built as `klebsiella` as the 1.2 models were)
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_def" \
         -t 2 >"$D/kl_def.out" 2>&1
-    modelran "tesseract-klebsiella, cached default model" $? "$D/kl_def/r" klebsiella "$D/kl_def/r/run.log"
+    nomodelran "tesseract-klebsiella: no model by default" $? "$D/kl_def/r" "$D/kl_def/r/run.log"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_with" \
+        -t 2 --with-model >"$D/kl_with.out" 2>&1; st=$?
+    if [ "$st" -eq 0 ] && ! grep -q 'misassemblies 70 -> 93' "$D/kl_with.out"; then
+        fail "tesseract-klebsiella --with-model" "the run did not print the model's measured cost"
+    else
+        modelran "tesseract-klebsiella --with-model" $st "$D/kl_with/r" kpneumoniae "$D/kl_with/r/run.log"
+    fi
     n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_file" -t 2 \
-        --model "$D/elsewhere/my-kleb-model.tsm" >"$D/kl_file.out" 2>&1
-    modelran "tesseract-klebsiella --model FILE" $? "$D/kl_file/r" kpneumoniae "$D/kl_file/r/run.log"
+        --model "$D/cache/tesseract-klebsiella-default-v1.2.0.tsm" >"$D/kl_file.out" 2>&1
+    modelran "tesseract-klebsiella --model FILE" $? "$D/kl_file/r" klebsiella "$D/kl_file/r/run.log"
+
+    # tesseract-eskape: the Klebsiella preset without its model installed carries on with the
+    # defaults (it used to stop), and a model named explicitly but missing still stops it
+    mkdir -p "$D/nomodels"
+    TESSERACT_MODEL_DIR="$D/nomodels" n22user "$ROOT/tesseract-eskape" \
+        --preset kpneumoniae -1 "$R1" -2 "$R2" -o "$D/esk_none" --dry-run >"$D/esk_none.out" 2>&1; st=$?
+    run=$(grep -m1 '^Running: ' "$D/esk_none.out")
+    rc=0
+    [ "$st" -eq 0 ] || rc=1
+    case "$run" in *--organism*|"") rc=1 ;; esac
+    grep -q '^Preset: .*no model installed' "$D/esk_none.out" || rc=1
+    n22user "$ROOT/tesseract-eskape" --preset kpneumoniae --model "$D/nomodels/absent.tsm" \
+        -1 "$R1" -2 "$R2" -o "$D/esk_absent" --dry-run >"$D/esk_absent.out" 2>&1 && rc=1
+    check "tesseract-eskape preset without its model" $rc \
+          "dry-run exit=$st, no --organism; an explicit missing --model still stops it"
 
     # Neither helper hands the assembler --model any more.
     TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset kpneumoniae \
@@ -1322,6 +1372,116 @@ else
     check "helpers pass --organism, never --model" $rc \
           "dry-run exit=$st, $(printf '%s' "$run" | grep -o -- '--organism [a-z]*')"
 fi
+
+# ---------------------------------------------------------------------------
+# 20. Where models come from, and that nothing fetches one unasked
+#
+# tesseract-get-models fetches from the models-v2 release (models-v1 is what 1.3.0 installs look
+# for, with a different checksum list), keeps only what matches models.sha256 and skips what it
+# already has; tesseract-klebsiella --with-model installs kpneumoniae.tsm through it; and the
+# non-interactive install downloads no model and says models are optional. No network: a curl
+# stand-in on PATH records each URL and serves files from a local folder, or answers 404.
+# ---------------------------------------------------------------------------
+D=$TMP/t20; mkdir -p "$D/shim" "$D/serve" "$D/dest" "$D/mk" "$D/home"
+cat > "$D/shim/curl" <<'SHIM'
+#!/usr/bin/env bash
+out=""; url=""
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o|-w|--retry|--retry-delay) [ "$1" = -o ] && out=$2; shift 2 ;;
+        -*) shift ;;
+        *) url=$1; shift ;;
+    esac
+done
+printf '%s\n' "$url" >> "${CURL_LOG:?}"
+f="${CURL_SERVE:-/nonexistent}/${url##*/}"
+if [ -f "$f" ]; then cp "$f" "$out"; printf 200; exit 0; fi
+printf 404; exit 22
+SHIM
+chmod +x "$D/shim/curl"
+printf '#!/bin/sh\nexit 0\n' > "$D/mk/make"; chmod +x "$D/mk/make"
+
+# (a) the published URL, for every model in the manifest
+rm -f "$D/urls_a"
+env -u TESSERACT_MODEL_URL PATH="$D/shim:$PATH" CURL_LOG="$D/urls_a" \
+    "$ROOT/tesseract-get-models" --dir "$D/dest" >"$D/get_a.out" 2>&1; st=$?
+want=$(awk '!/^#/ && NF==2 {print "https://github.com/iowa69/TesserACT/releases/download/models-v2/" $2}' "$ROOT/models.sha256")
+rc=0
+[ "$st" -ne 0 ] || rc=1                      # every asset 404s here, which must fail
+[ -n "$want" ] && [ "$(cat "$D/urls_a" 2>/dev/null)" = "$want" ] || rc=1
+grep -q 'not on the release page' "$D/get_a.out" || rc=1
+[ -z "$(ls -A "$D/dest")" ] || rc=1          # nothing left behind, .part files included
+check "tesseract-get-models fetches from models-v2" $rc \
+      "$(grep -c . "$D/urls_a" 2>/dev/null) URLs, $(head -1 "$D/urls_a" 2>/dev/null | sed 's|/[^/]*$||')"
+
+# (b) keeps what verifies, discards what does not, then skips what it has
+mkdir -p "$D/gm"
+cp "$ROOT/tesseract-get-models" "$D/gm/"
+printf 'model bytes\n' > "$D/serve/good.tsm"; printf 'truncated\n' > "$D/serve/bad.tsm"
+{ echo "$(sha256sum < "$D/serve/good.tsm" | cut -c1-64)  good.tsm"
+  echo "$(printf 'the real thing\n' | sha256sum | cut -c1-64)  bad.tsm"; } > "$D/gm/models.sha256"
+rm -f "$D/urls_b"
+PATH="$D/shim:$PATH" CURL_LOG="$D/urls_b" CURL_SERVE="$D/serve" \
+    "$D/gm/tesseract-get-models" --dir "$D/dest_b" >"$D/get_b.out" 2>&1; st1=$?
+PATH="$D/shim:$PATH" CURL_LOG="$D/urls_b" CURL_SERVE="$D/serve" \
+    "$D/gm/tesseract-get-models" --dir "$D/dest_b" good >"$D/get_b2.out" 2>&1; st2=$?
+rc=0
+[ "$st1" -ne 0 ] && [ "$st2" -eq 0 ] || rc=1
+cmp -s "$D/serve/good.tsm" "$D/dest_b/good.tsm" || rc=1
+[ ! -e "$D/dest_b/bad.tsm" ] && [ ! -e "$D/dest_b/bad.tsm.part" ] || rc=1
+grep -q 'have  good.tsm' "$D/get_b2.out" || rc=1
+[ "$(grep -c . "$D/urls_b")" -eq 2 ] || rc=1  # the second run fetched nothing
+check "tesseract-get-models verifies, discards, skips" $rc \
+      "exit $st1 then $st2, $(grep -c . "$D/urls_b") fetches"
+
+# (c) tesseract-klebsiella --with-model installs kpneumoniae.tsm through tesseract-get-models and
+# assembles with it. A copy of the helpers with a manifest for the fixture model stands in for
+# an install; the fixture model is the one section 19 built.
+KPFIX=$TMP/t19/models/kpneumoniae.tsm
+if [ -s "$KPFIX" ]; then
+    mkdir -p "$D/kit" "$D/serve_kp"
+    cp "$ROOT/tesseract-klebsiella" "$ROOT/tesseract-get-models" "$D/kit/"
+    ln -s "$TESSERACT" "$D/kit/tesseract-asm"
+    cp "$KPFIX" "$D/serve_kp/kpneumoniae.tsm"
+    echo "$(sha256sum < "$KPFIX" | cut -c1-64)  kpneumoniae.tsm" > "$D/kit/models.sha256"
+    rm -f "$D/urls_c"
+    TESSERACT_MODEL_DIR="$D/kfetch" PATH="$D/shim:$PATH" CURL_LOG="$D/urls_c" CURL_SERVE="$D/serve_kp" \
+        n22user "$D/kit/tesseract-klebsiella" "$TMP/t19/r_1.fq.gz" "$TMP/t19/r_2.fq.gz" \
+        -o "$D/kl_fetch" -t 2 --with-model >"$D/kl_fetch.out" 2>&1; st=$?
+    if [ "$(cat "$D/urls_c" 2>/dev/null)" != "https://github.com/iowa69/TesserACT/releases/download/models-v2/kpneumoniae.tsm" ] ||
+       ! cmp -s "$KPFIX" "$D/kfetch/kpneumoniae.tsm"; then
+        fail "tesseract-klebsiella --with-model fetches it" "fetched: $(tr '\n' ' ' < "$D/urls_c" 2>/dev/null)"
+    else
+        modelran "tesseract-klebsiella --with-model fetches it" $st "$D/kl_fetch/r" kpneumoniae \
+                 "$D/kl_fetch/r/run.log"
+    fi
+else
+    fail "tesseract-klebsiella --with-model fetches it" "no fixture model from section 19"
+fi
+
+# (d) the non-interactive install: it installs the four commands and the manifest, downloads no
+# model, and says the models are optional. `make` is a stand-in, so nothing is rebuilt here.
+rm -f "$D/urls_d"; rm -rf "$D/inst"
+env -u TESSERACT_MODEL_DIR HOME="$D/home" PATH="$D/mk:$D/shim:$PATH" CURL_LOG="$D/urls_d" \
+    bash "$ROOT/install.sh" --prefix "$D/inst" </dev/null >"$D/install.out" 2>&1; st=$?
+rc=0; miss=""
+[ "$st" -eq 0 ] || rc=1
+for f in tesseract-asm tesseract-klebsiella tesseract-eskape tesseract-get-models models.sha256; do
+    [ -e "$D/inst/bin/$f" ] || miss="$miss $f"
+done
+[ -z "$miss" ] || rc=1
+[ ! -e "$D/urls_d" ] && [ ! -e "$D/home/.tesseract" ] || rc=1
+grep -q 'Organism models are optional' "$D/install.out" || rc=1
+grep -q 'fetches the model' "$D/install.out" && rc=1
+check "install.sh --prefix: no model, says optional" $rc "exit=$st${miss:+ missing:$miss}"
+
+# (e) the help texts say a model is optional and what it costs
+rc=0
+"$TESSERACT" --help 2>&1 | grep -q 'roughly doubled misassemblies' || rc=1
+"$ROOT/tesseract-eskape" --list | grep -q 'Models are optional and opt-in' || rc=1
+"$ROOT/tesseract-klebsiella" --help | grep -q -- '--with-model' || rc=1
+"$ROOT/tesseract-get-models" --help | grep -q 'The models are optional' || rc=1
+check "help texts: models optional, with their cost" $rc "tesseract-asm, -eskape, -klebsiella, -get-models"
 
 echo
 echo "-----------------------------------------------------------------------"

@@ -75,6 +75,8 @@ void usage() {
         "                          conserved gene order, then plasmids are refined\n"
         "                          against the plasmid table. Without it those junctions\n"
         "                          are left broken rather than guessed at.\n"
+        "                          Optional: on 329 test isolates it raised median NGA50\n"
+        "                          134 -> 156 kb but roughly doubled misassemblies.\n"
         "\n"
         "      --is-panel FILE     FASTA of known insertion sequences. Contig ends\n"
         "                          lying inside one are left unjoined: that is where\n"

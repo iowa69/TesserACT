@@ -4,10 +4,13 @@
 #   tesseract-klebsiella reads/                     every read pair in the directory
 #   tesseract-klebsiella sample_R1.fq.gz            the mate is found automatically
 #   tesseract-klebsiella sample_R1.fq.gz sample_R2.fq.gz
+#   tesseract-klebsiella --with-model reads/        also use the K. pneumoniae organism model
 #
-# Builds the assembler if it is not built, downloads the model if it is not cached, checks
-# what it downloaded, assembles, and leaves one FASTA per isolate with every contig labelled
-# chromosome, plasmid or unknown. Nothing else to run and nothing to configure.
+# Builds the assembler if it is not built, assembles, and leaves one FASTA per isolate with
+# every contig labelled chromosome, plasmid or unknown. No model is used unless you ask for
+# one: by default this is the 1.4.0 assembler on its own, which is complete without a model.
+# The model is opt-in (--with-model); it buys contiguity, costs misassemblies, and the
+# measured cost is printed whenever it is used.
 #
 # Everything it does is idempotent: interrupt it and run it again and it picks up where it
 # stopped, because each isolate is assembled into a scratch directory and moved into place
@@ -18,49 +21,62 @@ set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # The file and the installed command are now the same name, so the help needs no rewriting.
 REPO=iowa69/TesserACT
-# The release the MODELS are attached to. Deliberately separate from the assembler's own
-# version: a patch release of the binary does not re-upload a 1.3 GB model, so this pin
-# moves only when the models actually change.
+
+# --with-model uses the organism model tesseract-get-models installs: kpneumoniae.tsm from the
+# models-v2 release, in the folder tesseract-eskape and `tesseract-asm --organism` read. That
+# is the model whose cost was measured with the 1.4.0 defaults (models/README.md, "What a model
+# costs"): with and without its leave-clone-out build, on 47 held-out K. pneumoniae isolates.
+MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
+MODEL_COST="median NGA50 155 -> 204 kb, but misassemblies 70 -> 93"
+MODEL_COST_WHERE="on 47 held-out K. pneumoniae isolates in the 1.4.0 test (models/README.md)"
+
+# --plasmid is kept for compatibility. It is the 1.2 plasmid-oriented model, attached to the
+# v1.2.0 release: 1.3 GB compressed, 2.9 GB expanded, so it is cached per user and a second
+# project does not download it again. Its cost under the 1.4.0 defaults was never measured.
 MODEL_RELEASE=v1.2.0
-
-# The models live outside the repository -- they are 339 MB and 2.9 GB. Cached per user so a
-# second project does not download them again.
 CACHE="${TESSERACT_MODEL_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/tesseract}"
-
-# Pinned: a download is checked against these before it is used. A truncated model otherwise
+# Pinned: the download is checked against this before it is used. A truncated model otherwise
 # fails much later with a confusing complaint about the file not being a model.
-SHA_DEFAULT=cf40b986899a50ddf7b888e75762d1764b646e6d264dde13b041b6aadc9a0606
 SHA_PLASMID=308a097f2c39bd5961a00ed1d603419109ad462f747578a503016907215b5880
 
 OUT=tesseract-out
 THREADS=$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)
 JOBS=1
 MODEL=""
-WANT=default
+WITH_MODEL=0
+WANT=release
 KEEP_GOING=0
 
 c_info=$'\033[36m'; c_ok=$'\033[32m'; c_warn=$'\033[33m'; c_err=$'\033[31m'; c_off=$'\033[0m'
 [ -t 1 ] || { c_info=""; c_ok=""; c_warn=""; c_err=""; c_off=""; }
 say()  { printf '%s==>%s %s\n' "$c_info" "$c_off" "$*"; }
 ok()   { printf '%s  ok%s %s\n' "$c_ok" "$c_off" "$*"; }
+note() { printf '%snote:%s %s\n' "$c_warn" "$c_off" "$*"; }
 warn() { printf '%swarn:%s %s\n' "$c_warn" "$c_off" "$*" >&2; }
 die()  { printf '%serror:%s %s\n' "$c_err" "$c_off" "$*" >&2; exit 1; }
 
 usage() {
-    sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     cat <<EOF
 
 Options:
   -o DIR        where to put the results        (default: $OUT)
   -t N          threads per isolate             (default: every core, here $THREADS)
   -j N          isolates at once                (default: 1)
-  --plasmid     use the plasmid-oriented model instead of the default
-  --model FILE  use this model file; skips the download entirely
+  --with-model  also use the K. pneumoniae organism model: kpneumoniae.tsm from the
+                models-v2 release, fetched once by tesseract-get-models (about 350 MB)
+                into $MODEL_DIR
+  --model FILE  use this model file instead; implies --with-model and downloads nothing
+  --plasmid     use the 1.2 plasmid-oriented model (v1.2.0 release, 1.3 GB); implies
+                --with-model. Kept for compatibility; its cost under 1.4.0 was not measured
   --keep-going  carry on if one isolate fails
   -h, --help    this
 
-Which model: take the default unless you specifically want plasmid grouping. It is the
-better chromosome model. See models/README.md for the numbers behind that sentence.
+Models are optional. With the 1.4.0 defaults, on 47 held-out K. pneumoniae isolates, the
+model (its leave-clone-out build) gave $MODEL_COST.
+Over all seven ESKAPEE organisms, 329 isolates, a model raised the median NGA50 from 134 to
+156 kb and the misassemblies from 154 to 290. Without a model no contig is called _chr: the
+chromosome's contigs are labelled _unk. See models/README.md.
 EOF
 }
 
@@ -70,8 +86,9 @@ while [ $# -gt 0 ]; do
         -o) OUT="${2:?-o needs a directory}"; shift 2 ;;
         -t) THREADS="${2:?-t needs a number}"; shift 2 ;;
         -j) JOBS="${2:?-j needs a number}"; shift 2 ;;
-        --plasmid) WANT=plasmid; shift ;;
-        --model) MODEL="${2:?--model needs a file}"; shift 2 ;;
+        --with-model) WITH_MODEL=1; shift ;;
+        --plasmid) WITH_MODEL=1; WANT=plasmid; shift ;;
+        --model) MODEL="${2:?--model needs a file}"; WITH_MODEL=1; shift 2 ;;
         --keep-going) KEEP_GOING=1; shift ;;
         -h|--help) usage; exit 0 ;;
         -*) die "unknown option: $1   (try --help)" ;;
@@ -80,6 +97,8 @@ while [ $# -gt 0 ]; do
 done
 
 [ ${#INPUTS[@]} -gt 0 ] || { usage; exit 2; }
+# --model FILE wins over --plasmid, in either order: the file given is the one used.
+if [ -n "$MODEL" ]; then WANT=file; fi
 case "$THREADS" in ''|*[!0-9]*) die "-t wants a number, got '$THREADS'" ;; esac
 case "$JOBS"    in ''|*[!0-9]*) die "-j wants a number, got '$JOBS'" ;; esac
 [ "$THREADS" -ge 1 ] || die "-t must be at least 1"
@@ -174,7 +193,7 @@ fi
 say "${#S_NAME[@]} isolate(s) to assemble, ${THREADS} thread(s) each, ${JOBS} at a time"
 
 # ---------------------------------------------------------------------------
-# 3. the model, once the inputs are known to be good
+# 3. the model: only when asked for, and once the inputs are known to be good
 # ---------------------------------------------------------------------------
 fetch() {   # fetch <url> <destination>
     # A progress bar is worth having on a terminal and is 280 kB of noise in a log file, so
@@ -198,25 +217,48 @@ sha_of() {
     else echo ""; fi
 }
 
-if [ -z "$MODEL" ]; then
-    if [ "$WANT" = plasmid ]; then
-        asset="tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm.zst"; want_sha=$SHA_PLASMID
-        MODEL="$CACHE/tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm"
-    else
-        asset="tesseract-klebsiella-default-$MODEL_RELEASE.tsm"; want_sha=$SHA_DEFAULT
-        MODEL="$CACHE/$asset"
+need_space() {   # need_space <dir> <MB>
+    local free_mb
+    free_mb=$(df -Pm "$1" 2>/dev/null | awk 'NR==2{print $4}')
+    if [ -n "$free_mb" ] && [ "$free_mb" -lt "$2" ]; then
+        die "not enough space in $1: need about $2 MB, have ${free_mb} MB.
+      Point TESSERACT_MODEL_DIR somewhere roomier and run again."
     fi
+}
 
+if [ "$WITH_MODEL" -eq 0 ]; then
+    ok "model: none (the default), so this is the 1.4.0 assembler on its own"
+    say "models are optional. --with-model adds the K. pneumoniae model, which gave"
+    say "  $MODEL_COST"
+    say "  $MODEL_COST_WHERE"
+elif [ -z "$MODEL" ] && [ "$WANT" = release ]; then
+    # The released model, installed and verified by tesseract-get-models. It is fetched only
+    # when it is not already there, so a model the user put in that folder is used as it is
+    # and never overwritten.
+    MODEL="$MODEL_DIR/kpneumoniae.tsm"
+    if [ ! -s "$MODEL" ]; then
+        GETMODELS=""
+        for cand in "$HERE/tesseract-get-models" "$(command -v tesseract-get-models 2>/dev/null || true)"; do
+            [ -n "$cand" ] && [ -x "$cand" ] && { GETMODELS=$cand; break; }
+        done
+        [ -n "$GETMODELS" ] || die "--with-model needs tesseract-get-models, which is neither next to this
+      script nor on PATH. Install TesserACT with ./install.sh, or run without --with-model."
+        mkdir -p "$MODEL_DIR" || die "cannot create the model folder $MODEL_DIR"
+        need_space "$MODEL_DIR" 400
+        say "fetching the K. pneumoniae model once into $MODEL_DIR (about 350 MB)"
+        "$GETMODELS" --dir "$MODEL_DIR" kpneumoniae \
+            || die "the model did not download (see above). Run without --with-model to assemble
+      without it, or retry later with:  tesseract-get-models kpneumoniae"
+    fi
+elif [ -z "$MODEL" ]; then
+    # --plasmid: the 1.2 plasmid-oriented model from the v1.2.0 release, as before 1.4.0.
+    asset="tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm.zst"
+    MODEL="$CACHE/tesseract-klebsiella-plasmid-$MODEL_RELEASE.tsm"
     if [ ! -s "$MODEL" ]; then
         mkdir -p "$CACHE" || die "cannot create the model cache at $CACHE"
-        need_mb=$([ "$WANT" = plasmid ] && echo 4300 || echo 400)
-        free_mb=$(df -Pm "$CACHE" 2>/dev/null | awk 'NR==2{print $4}')
-        if [ -n "$free_mb" ] && [ "$free_mb" -lt "$need_mb" ]; then
-            die "not enough space in $CACHE: need about ${need_mb} MB, have ${free_mb} MB.
-      Point TESSERACT_MODEL_DIR somewhere roomier and run again."
-        fi
+        need_space "$CACHE" 4300
         url="https://github.com/$REPO/releases/download/$MODEL_RELEASE/$asset"
-        say "downloading the $WANT model once into $CACHE"
+        say "downloading the plasmid model once into $CACHE"
         tmp="$CACHE/.$asset.part"
         rm -f "$tmp"
         fetch "$url" "$tmp" || { rm -f "$tmp"; die "the download failed. Check the network, or fetch it by hand:
@@ -226,7 +268,7 @@ if [ -z "$MODEL" ]; then
         got=$(sha_of "$tmp")
         if [ -z "$got" ]; then
             warn "no sha256 tool available, so the download could not be checked"
-        elif [ "$got" != "$want_sha" ]; then
+        elif [ "$got" != "$SHA_PLASMID" ]; then
             rm -f "$tmp"
             die "the download is corrupt (checksum does not match). Run again; if it keeps
       happening, fetch it by hand from $url"
@@ -234,20 +276,27 @@ if [ -z "$MODEL" ]; then
             ok "checksum verified"
         fi
 
-        if [ "$WANT" = plasmid ]; then
-            command -v zstd >/dev/null || { rm -f "$tmp"; die "zstd is needed to expand the plasmid model.
+        command -v zstd >/dev/null || { rm -f "$tmp"; die "zstd is needed to expand the plasmid model.
       Debian/Ubuntu: sudo apt install zstd     conda: conda install -c conda-forge zstd
-      (the default model needs no such step -- drop --plasmid to use it)"; }
-            say "expanding it (2.9 GB once expanded)"
-            zstd -d -q -f "$tmp" -o "$MODEL.part" || { rm -f "$tmp" "$MODEL.part"; die "could not expand the model"; }
-            mv "$MODEL.part" "$MODEL"; rm -f "$tmp"
-        else
-            mv "$tmp" "$MODEL"
-        fi
+      (--with-model needs no such step -- use it in place of --plasmid)"; }
+        say "expanding it (2.9 GB once expanded)"
+        zstd -d -q -f "$tmp" -o "$MODEL.part" || { rm -f "$tmp" "$MODEL.part"; die "could not expand the model"; }
+        mv "$MODEL.part" "$MODEL"; rm -f "$tmp"
     fi
 fi
-[ -s "$MODEL" ] || die "model file is missing or empty: $MODEL"
-ok "model: $MODEL"
+if [ "$WITH_MODEL" -eq 1 ]; then
+    [ -s "$MODEL" ] || die "model file is missing or empty: $MODEL"
+    ok "model: $MODEL"
+    case "$WANT" in
+        release) note "the model buys contiguity and costs misassemblies: $MODEL_COST"
+                 note "$MODEL_COST_WHERE" ;;
+        plasmid) note "the cost of the 1.2 plasmid model under the 1.4.0 defaults was not measured."
+                 note "that of the kpneumoniae model (--with-model) was $MODEL_COST"
+                 note "$MODEL_COST_WHERE" ;;
+        file)    note "the cost of a model you supply is not known. The kpneumoniae model's was"
+                 note "$MODEL_COST $MODEL_COST_WHERE" ;;
+    esac
+fi
 
 
 # ---------------------------------------------------------------------------
@@ -258,10 +307,14 @@ SUMMARY="$OUT/summary.tsv"
 
 # The assembler takes a model only as --organism NAME, read from $TESSERACT_MODEL_DIR/NAME.tsm;
 # --model FILE is refused unless TESSERACT_MODEL_AUTHOR is set (since 1.3.0), so passing it
-# failed every isolate at startup (N22). The model found above -- downloaded, cached or given
+# failed every isolate at startup (N22). The model found above -- installed, cached or given
 # with --model -- is handed over as kpneumoniae.tsm: from its own folder when it already has
-# that name, otherwise through a link of that name in $OUT/.tesseract-model.
-if [ "$(basename -- "$MODEL")" = kpneumoniae.tsm ]; then
+# that name, otherwise through a link of that name in $OUT/.tesseract-model. Without
+# --with-model nothing is handed over and the assembler is run without --organism.
+MODEL_RUN_DIR=""
+if [ "$WITH_MODEL" -eq 0 ]; then
+    :
+elif [ "$(basename -- "$MODEL")" = kpneumoniae.tsm ]; then
     MODEL_RUN_DIR="$(cd "$(dirname -- "$MODEL")" && pwd)"
 else
     model_abs="$(readlink -f -- "$MODEL" 2>/dev/null || printf '%s' "$MODEL")"
@@ -278,9 +331,11 @@ run_one() {
     local name=$1 r1=$2 r2=$3 d="$OUT/$name"
     if [ ! -s "$d/contigs.fasta" ]; then
         rm -rf "$d.part"; mkdir -p "$d.part"
-        if ! TESSERACT_MODEL_DIR="$MODEL_RUN_DIR" "$TESSERA" -1 "$r1" -2 "$r2" -o "$d.part" -t "$THREADS" \
-                --organism kpneumoniae > "$d.part/run.log" 2>&1 \
-           || [ ! -s "$d.part/contigs.fasta" ]; then
+        local cmd=("$TESSERA" -1 "$r1" -2 "$r2" -o "$d.part" -t "$THREADS")
+        if [ "$WITH_MODEL" -eq 1 ]; then
+            cmd=(env "TESSERACT_MODEL_DIR=$MODEL_RUN_DIR" "${cmd[@]}" --organism kpneumoniae)
+        fi
+        if ! "${cmd[@]}" > "$d.part/run.log" 2>&1 || [ ! -s "$d.part/contigs.fasta" ]; then
             printf '%sfailed:%s %s -- see %s\n' "$c_err" "$c_off" "$name" "$d.part/run.log" >&2
             return 1
         fi
@@ -350,5 +405,13 @@ Contig names end in what the contig is:
 The file is ordered as a genome: chromosome first, then each plasmid molecule
 whole and contiguous, then the unassigned.
 EOF
+if [ "$WITH_MODEL" -eq 0 ]; then
+cat <<EOF
+
+No model was used, so no contig is called _chr: the chromosome's contigs are
+labelled _unk, and the _plas calls rest on depth and read pairs alone.
+--with-model adds the chromosome calls, at the cost printed above.
+EOF
+fi
 [ "$failed" -eq 0 ] || exit 1
 exit 0

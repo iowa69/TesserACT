@@ -270,12 +270,18 @@ fi
 
 # ---- models ----------------------------------------------------------------
 if [ "$guided" = 1 ]; then
-    step "Step 5 of 5: the organism models"
-    printf '  TesserACT assembles without these. They are what lets it lay the pieces out\n'
-    printf '  against a closed genome of the same species, for the seven clinical bugs:\n'
-    printf '  Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas, S. aureus,\n'
-    printf '  Enterococcus. About 1.4 GB in total, downloaded once.\n\n'
-    if yesno "  Download them now?" "yes"; then
+    step "Step 5 of 5: the organism models (optional)"
+    printf '  TesserACT is complete without these, and nothing it does needs them. A model\n'
+    printf '  lays the pieces out against closed genomes of the same species, for the seven\n'
+    printf '  clinical bugs: Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas,\n'
+    printf '  S. aureus, Enterococcus. About 1.4 GB in total, downloaded once.\n\n'
+    printf '  It is a trade-off. Measured with the 1.4.0 defaults on 329 held-out isolates:\n'
+    printf '    with a model   median NGA50 134 -> 156 kb, median contigs 99 -> 86\n'
+    printf '    but            misassemblies 154 -> 290 (isolates whose reference matches)\n'
+    printf '  Either way, no isolate had 90%% of its chromosome in one correct block.\n'
+    printf '  TesserACT puts misassemblies first, so the answer here defaults to no. An\n'
+    printf '  improved model (Organism Model 2.0) is in development.\n\n'
+    if yesno "  Download them now?" "no"; then
         printf '\n'
         # Not fatal. A failed download is a network problem, not an install problem: the
         # assembler is already installed and working, and the fetch is one command to retry.
@@ -287,7 +293,7 @@ if [ "$guided" = 1 ]; then
             printf '      tesseract-get-models\n'
         fi
     else
-        say "skipped. When you want them: tesseract-get-models"
+        say "skipped. TesserACT works fully without them. To add them later: tesseract-get-models"
     fi
 fi
 
@@ -302,6 +308,9 @@ Your assembled genome is then the file  my_result/contigs.fasta
 
   tesseract-eskape --list     the preset name for each organism
   tesseract-eskape --help     every option, explained
+
+A preset uses its organism's model only if you downloaded the models
+(tesseract-get-models); without them it runs the plain 1.4.0 defaults.
 EOF
 else
 cat <<EOF
@@ -309,15 +318,20 @@ cat <<EOF
 Next:
   tesseract-asm -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
 
-For Klebsiella there is nothing to set up -- this fetches the model and runs everything:
-  ./tesseract-klebsiella reads/          every read pair in the directory
-  ./tesseract-klebsiella R1.fq.gz        the mate is found automatically
+For Klebsiella, one command assembles every read pair and labels each contig:
+  tesseract-klebsiella reads/            every read pair in the directory
+  tesseract-klebsiella R1.fq.gz          the mate is found automatically
 
-For the other six ESKAPEE organisms:
-  tesseract-get-models                   fetch the models (about 1.4 GB, once)
+For the seven ESKAPEE organisms:
   tesseract-eskape --list                the preset name for each organism
 
-With the models installed, the assembler takes one by organism name. It reads
+Organism models are optional, and nothing above needs them. A model buys
+contiguity and costs misassemblies: with the 1.4.0 defaults, on 329 held-out
+isolates, it raised the median NGA50 from 134 to 156 kb and the misassemblies
+from 154 to 290. None was downloaded. To add them:
+  tesseract-get-models                   fetch the models (about 1.4 GB, once)
+Then each preset uses its organism's model, tesseract-klebsiella --with-model
+uses the Klebsiella one, and the assembler takes one by organism name. It reads
 ~/.tesseract/models/<organism>.tsm, or the directory TESSERACT_MODEL_DIR names:
   tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
 EOF

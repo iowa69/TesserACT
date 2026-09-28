@@ -6,11 +6,13 @@
 # You give it two files of sequencing reads and the name of your bug.
 # It gives you back an assembled genome.
 #
-# Version 1.0  (settings measured on TesserACT 1.2.5)
+# Version 1.4.0, shipped with TesserACT 1.4.0. The presets add no tuning option, so they run
+# the 1.4.0 defaults. Organism models are optional and opt-in: a preset uses its organism's
+# model only if the user installed it with tesseract-get-models, and says what it costs.
 #
 set -euo pipefail
 
-VERSION="1.0"
+VERSION="1.4.0"
 
 # ---------------------------------------------------------------------------
 # Where things live. Override any of these with an environment variable if
@@ -97,9 +99,11 @@ info() { printf '%s\n' "$*"; }
 # presets still add no flags, so they inherit the new defaults. The
 # per-organism screen above was not repeated on 1.4.0.
 #
-# Only Klebsiella pneumoniae has something to add: a trained genus model,
-# which is a data file, not a tuning knob.
-# See PRESETS.md for the numbers.
+# What a preset can add is the organism's model: a data file, not a tuning
+# knob, and used only when it is installed. Models are opt-in (nothing is
+# downloaded unless the user runs tesseract-get-models), and each one buys
+# contiguity at a measured cost in misassemblies (model_note above).
+# See docs/ESKAPEE_PRESETS.md and models/README.md for the numbers.
 # ---------------------------------------------------------------------------
 
 preset_fullname() {
@@ -145,28 +149,32 @@ print_list() {
     cat <<'LIST_EOF'
 Available presets (type either name - capital letters do not matter):
 
-  short name     also accepted as        organism                    what the preset does
+  short name     also accepted as        organism                    with its model installed
   -----------    --------------------    ------------------------    ---------------------------------
-  kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       model: longer NGA50, more mis
-  saureus        staph, sa, mrsa         Staphylococcus aureus       model: longer NGA50, more mis
-  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: longer NGA50, more mis
-  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: longer NGA50, more mis
-  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: longer NGA50, more mis
-  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: longer NGA50, more mis
-  ecoli          escherichia, coli       Escherichia coli            model: longer NGA50, more mis
+  kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       longer NGA50, more misassemblies
+  saureus        staph, sa, mrsa         Staphylococcus aureus       longer NGA50, more misassemblies
+  efaecium       enterococcus, ef, vre   Enterococcus faecium        longer NGA50, more misassemblies
+  abaumannii     acinetobacter, ab       Acinetobacter baumannii     longer NGA50, more misassemblies
+  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      longer NGA50, more misassemblies
+  ecloacae       enterobacter, ecl       Enterobacter cloacae        longer NGA50, more misassemblies
+  ecoli          escherichia, coli       Escherichia coli            longer NGA50, more misassemblies
 
 What does a preset do?
-  It uses the organism's model if the model is installed (tesseract-get-models),
-  and adds no tuning option. We tried the assembler's tuning knobs on three real
+  It adds no tuning option. We tried the assembler's tuning knobs on three real
   genomes for each species, and none of them made the assembly meaningfully
-  better than leaving the settings alone. Without its model, the Klebsiella
-  preset stops and asks for it; the other six carry on with the plain defaults.
+  better than leaving the settings alone. It uses the organism's model only if
+  you installed it.
+
+  Models are optional and opt-in. Nothing is downloaded unless you run
+  tesseract-get-models, and without a model every preset carries on with the
+  plain 1.4.0 defaults, which assemble the genome completely on their own.
 
   A model buys contiguity and costs misassemblies. With the 1.4.0 defaults, on
   329 held-out isolates, it raised the median NGA50 from 134 to 156 kb, and the
   misassemblies from 154 to 290 on the isolates whose reference matched the
-  reads. To assemble without one, leave out --preset, or run tesseract-asm
-  without --organism. The table for each organism is in models/README.md.
+  reads. To assemble without one when it is installed, leave out --preset, or
+  run tesseract-asm without --organism. The table for each organism is in
+  models/README.md.
 LIST_EOF
 }
 
@@ -191,8 +199,10 @@ COPY THIS EXAMPLE
 OPTIONS
   --preset NAME     Which bug the reads came from. Run '$PROG --list'
                     to see the names. If you leave this out, the assembler's
-                    default settings are used - which is fine, and for six of
-                    the seven organisms is exactly what the preset does anyway.
+                    default settings are used, with no model - which is fine.
+                    A preset adds the organism's model only if you installed
+                    it with tesseract-get-models (optional): longer contigs,
+                    but more misassemblies; it prints the measured cost.
   -1, --read1 FILE  Forward reads   (usually named something_R1.fastq.gz)
   -2, --read2 FILE  Reverse reads   (usually named something_R2.fastq.gz)
   -o, --out DIR     Where to put the results. Created if it does not exist.
@@ -211,8 +221,8 @@ OPTIONS
 
 HOW LONG WILL IT TAKE?
   A few minutes for a typical 3-5 million base bacterial genome on 3-4 cores,
-  and roughly 2-4 GB of memory. Klebsiella with the model takes longer
-  (about 5 minutes) because it also loads the model file.
+  and roughly 2-4 GB of memory. A preset whose model is installed takes a
+  little longer, because it also loads the model file.
 
 IF SOMETHING GOES WRONG
   This script checks your files before it starts anything slow, and tells you
@@ -432,6 +442,18 @@ use_model() {
         || die "I could not make the model available to the assembler as $RUN_MODEL_DIR/$org.tsm"
 }
 
+# model_not_installed ORGANISM FILE -- the preset carries on without a model. Models are opt-in,
+# so this is the normal case after a default install, not an error: say so, say what the model
+# would cost, and say how to add it.
+model_not_installed() {
+    PRESET_DESC="$1 ($(preset_fullname "$1")) - defaults, no model installed"
+    info "No $1 model is installed (looked for $2)."
+    info "Carrying on with the assembler defaults and no model, which assemble the"
+    info "genome completely. Models are optional. What this one would do:"
+    info "  $(model_note "$1")."
+    info "To add it: tesseract-get-models $1   (or export TESSERACT_MODEL_DIR=/path/to/models)"
+}
+
 if [ -z "$PRESET" ]; then
     info "No --preset given, so I am using the assembler's default settings."
     info "That is a perfectly good choice. Presets available: kpneumoniae, saureus,"
@@ -440,19 +462,22 @@ if [ -z "$PRESET" ]; then
 else
     if [ "$PRESET" = "kpneumoniae" ]; then
         MODEL_FILE="${MODEL_OVERRIDE:-$KP_MODEL}"
-        if [ ! -r "$MODEL_FILE" ]; then
-            die "The Klebsiella preset needs the trained model file, but I cannot read:
+        if [ -r "$MODEL_FILE" ]; then
+            use_model kpneumoniae "$MODEL_FILE"
+            EXTRA+=(--organism kpneumoniae)
+            PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model, $(model_note kpneumoniae)"
+            info "Using the kpneumoniae model: $MODEL_FILE"
+            info "  $(model_note kpneumoniae)."
+        elif [ -n "$MODEL_OVERRIDE" ] || [ -n "${TESSERACT_KP_MODEL:-}" ]; then
+            # A model the user named and that is not there is a mistake worth stopping for;
+            # a model that was simply never installed is not (models are opt-in).
+            die "I cannot read the Klebsiella model you pointed me at:
     $MODEL_FILE
-  Either point me at it with  --model /path/to/model.tsm
-  or set  export TESSERACT_KP_MODEL=/path/to/model.tsm
-  or drop the preset and run with plain defaults (leave out --preset).
-  Without the model, Klebsiella assembles no better than the defaults."
+  Check the path given with --model or TESSERACT_KP_MODEL, or leave both
+  out to assemble with the plain defaults and no model."
+        else
+            model_not_installed kpneumoniae "$MODEL_FILE"
         fi
-        use_model kpneumoniae "$MODEL_FILE"
-        EXTRA+=(--organism kpneumoniae)
-        PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model, $(model_note kpneumoniae)"
-        info "Using the kpneumoniae model: $MODEL_FILE"
-        info "  $(model_note kpneumoniae)."
     else
         _mf="$(model_for "$PRESET")"
         if [ -n "$_mf" ]; then
@@ -463,13 +488,7 @@ else
                 PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - trained model, $(model_note "$PRESET")"
                 info "Using the $PRESET model: $(model_note "$PRESET")."
             else
-                PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - defaults, model not installed"
-                info "No $PRESET model found here:"
-                info "    $MODEL_FILE"
-                info "Carrying on with the assembler defaults. You still get a good assembly,"
-                info "it is just less contiguous. To install the model, download it from the"
-                info "releases page into that folder, or point me at it:"
-                info "    export TESSERACT_MODEL_DIR=/path/to/models"
+                model_not_installed "$PRESET" "$MODEL_FILE"
             fi
         else
             PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - assembler defaults"

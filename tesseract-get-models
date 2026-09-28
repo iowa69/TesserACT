@@ -10,7 +10,7 @@
 # confusing error much later in an assembly rather than an obvious one now.
 set -euo pipefail
 
-BASE="${TESSERACT_MODEL_URL:-https://github.com/iowa69/TesserACT/releases/download/models-v1}"
+BASE="${TESSERACT_MODEL_URL:-https://github.com/iowa69/TesserACT/releases/download/models-v2}"
 DEST="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
 MANIFEST_LOCAL="$(dirname "$0")/models.sha256"
 
@@ -29,6 +29,10 @@ tesseract-get-models -- fetch the TesserACT organism models
 They go to ~/.tesseract/models by default, which is where tesseract-eskape looks.
 About 1.4 GB for the full set (64 to 349 MB per organism). Re-running is safe: anything
 already verified is skipped.
+
+The models are optional: TesserACT assembles without them. A model buys contiguity and costs
+misassemblies. With the 1.4.0 defaults, on 329 held-out ESKAPEE isolates, the models raised
+the median NGA50 from 134 to 156 kb and the misassemblies from 154 to 290 (models/README.md).
 USAGE
 }
 

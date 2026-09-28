@@ -165,28 +165,27 @@ not fail halfway through an hour-long run.
 
 ---
 
-## 5. The Klebsiella model file (only if you work on *Klebsiella pneumoniae*)
+## 5. Organism models (optional)
 
-*Klebsiella pneumoniae* is the one organism with a **trained model** — a data
-file, built from thousands of finished *Klebsiella* genomes, that helps the
-assembler put the pieces in the right order. It is the only preset in this
-package that changes anything (see `PRESETS.md`).
+You do not need a model. TesserACT assembles every organism completely
+without one, and nothing downloads a model unless you ask for it.
 
-The model is a large file (a few hundred megabytes) and is **not** part of the
-software install. Point the wrapper at your copy:
+A model is a data file, built from thousands of finished genomes of one
+species, that helps the assembler put the pieces in order. There is one for
+each of the seven ESKAPEE organisms. It is a trade-off: with the 1.4.0
+settings, on 329 test isolates, the models made the contigs longer (median
+NGA50 134 -> 156 kb) but nearly doubled the misassemblies (154 -> 290). The
+table for each organism is in `models/README.md`.
+
+If you want them anyway (about 1.4 GB, once):
 
 ```bash
-export TESSERACT_KP_MODEL=/path/to/fold0_mem.tsm
+tesseract-get-models
 ```
 
-or pass it per-run with `--model /path/to/fold0_mem.tsm`.
-
-If you do not have the model, do not worry: run without `--preset` (or with
-any other preset) and you get a perfectly normal assembly. You just do not get
-the Klebsiella contiguity bonus. The wrapper tells you this rather than
-failing silently.
-
-The other six organisms need no model file at all. Nothing to download.
+After that, `tesseract-eskape --preset <organism>` uses the model for that
+organism, and `tesseract-klebsiella --with-model` uses the *Klebsiella* one.
+Without them, both carry on with the plain settings and tell you so.
 
 ---
 

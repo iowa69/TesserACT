@@ -3,13 +3,18 @@
 Models are attached to the [releases](https://github.com/iowa69/TesserACT/releases) rather
 than committed. There are two sets, and neither belongs in a git history:
 
-- **`models-v1`**, the seven ESKAPEE organism models, one `<organism>.tsm` each, about 1.4 GB
+- **`models-v2`**, the seven ESKAPEE organism models, one `<organism>.tsm` each, about 1.4 GB
   together. `tesseract-get-models` downloads them into `~/.tesseract/models` and checks each
   against [`models.sha256`](../models.sha256). The assembler selects one with
   `--organism <organism>` and looks for it there, or in the directory `TESSERACT_MODEL_DIR`
-  names. `tesseract-eskape --preset <organism>` uses the same file.
+  names. `tesseract-eskape --preset <organism>` and `tesseract-klebsiella --with-model` use the
+  same file.
 - **The 1.2 *Klebsiella* models**, 339 MB and 2.9 GB, attached to the `v1.2.0` release.
-  `tesseract-klebsiella` downloads the default one for itself.
+  `tesseract-klebsiella --plasmid` downloads the plasmid one for itself.
+
+**The models are optional and opt-in.** TesserACT is complete without them, and nothing
+downloads or loads one unless you ask: `./install.sh` asks before downloading them and defaults
+to no.
 
 **A model buys contiguity and costs misassemblies.** With the 1.4.0 defaults, on 329 held-out
 isolates, adding the organism model cut the median contig count from 99 to 86 and raised the
@@ -17,7 +22,12 @@ median NGA50 from 134 to 156 kb. It also raised misassemblies from 154 to 290 on
 isolates whose closed reference matches the reads. The assembler loads a model only when
 `--organism` is given. The measurement is in [What a model costs](#what-a-model-costs).
 
-## models-v1: the seven ESKAPEE models
+## models-v2: the seven ESKAPEE models
+
+The release is named `models-v2`, and there is no `models-v1`. The `tesseract-get-models` of
+1.3.0 fetches from a `models-v1` release and checks against a different checksum list, so
+publishing these files as `models-v1` would make every 1.3.0 install download 1.4 GB only to
+reject each file.
 
 | asset | organism | bytes | size | chromosomes | plasmid records |
 |---|---|---:|---:|---:|---:|
@@ -45,7 +55,7 @@ ed47f4035b0a473c4d2091e9707d31bdd9b6bbff941613360e6e7470884773a3  paeruginosa.ts
 
 `tesseract-get-models` fetches all seven, or only the ones named (`tesseract-get-models saureus`).
 It checks each file against that list and skips any it has already verified. To fetch by hand,
-download from the [`models-v1` release](https://github.com/iowa69/TesserACT/releases/tag/models-v1)
+download from the [`models-v2` release](https://github.com/iowa69/TesserACT/releases/tag/models-v2)
 and run `sha256sum --check --ignore-missing SHA256SUMS`.
 
 Each model is `TSMODEL5`, k = 31, with one layout track per chromosome:
@@ -64,7 +74,7 @@ The measurement below was made with **leave-clone-out** builds. For each organis
 withheld the whole clonal cluster of every test isolate, together with every plasmid record of
 those clusters. So no measured gain can come from a model that had already seen the answer.
 
-The `models-v1` files are **whole-panel builds**. They use the same chromosome panel, the same
+The `models-v2` files are **whole-panel builds**. They use the same chromosome panel, the same
 plasmid panel and the same parameters, with **nothing withheld**. A released model has no test
 isolate to protect, so it holds everything the measured build held, and more. That includes
 the closed genomes of the isolates the measurement used, so these files cannot be scored on
@@ -116,10 +126,15 @@ The other rows use all 329.
 Each arrow runs from no model to model. All seven organisms move the same way: fewer, longer
 contigs and more misassemblies.
 
-TesserACT puts misassemblies first, so `tesseract-asm` never loads a model on its own.
-`tesseract-eskape --preset <organism>` uses the model whenever it is installed, and
-`tesseract-klebsiella` always uses one. To assemble one of these organisms without a model, run `tesseract-asm` without
-`--organism`: the presets add no other option.
+With or without a model, no isolate had 90% of its chromosome in one correct block.
+
+TesserACT puts misassemblies first, so models are opt-in. `tesseract-asm` never loads a model
+on its own, `./install.sh` asks before downloading them and defaults to no,
+`tesseract-eskape --preset <organism>` uses the model only if it is installed, and
+`tesseract-klebsiella` uses one only with `--with-model`, `--model FILE` or `--plasmid`. To
+assemble one of these organisms without a model while the models are installed, run
+`tesseract-asm` without `--organism`: the presets add no other option. An improved organism
+model is in development.
 
 Both arms were run with the pre-release build of the configuration that 1.4.0 made the
 default. Without a model, 1.4.0 writes byte-identical assemblies to that build on every isolate
@@ -135,7 +150,7 @@ fewer misassemblies". Those were measured with older defaults and older models, 
 For the seven ESKAPEE organisms:
 
 ```sh
-tesseract-get-models                                            # once, about 1.4 GB
+tesseract-get-models                                            # optional; once, about 1.4 GB
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism saureus
 tesseract-eskape --preset saureus -1 R1.fq.gz -2 R2.fq.gz -o out/   # the same model, via the preset
 ```
@@ -147,9 +162,12 @@ as `klebsiella`, which counts as `kpneumoniae`. The assembler does not take a mo
 the command line: `--model FILE` is refused unless `TESSERACT_MODEL_AUTHOR` is set, which is
 for building and validating the bundled models.
 
-`tesseract-klebsiella` needs nothing more: it downloads the 1.2 default model, or takes the one
-given with `--model FILE`, and hands it to the assembler itself. To run the assembler directly
-with a 1.2 model, put it where `--organism` looks for it, under the name `kpneumoniae.tsm`:
+`tesseract-klebsiella` runs without a model unless asked. `--with-model` uses the same
+`kpneumoniae.tsm`, and fetches it with `tesseract-get-models` if it is not installed;
+`--model FILE` takes another model file, and `--plasmid` the 1.2 plasmid model below. The
+helper hands any of them to the assembler itself and prints what a model costs. To run the
+assembler directly with a 1.2 model, put it where `--organism` looks for it, under the name
+`kpneumoniae.tsm`:
 
 ```sh
 mkdir -p kleb-model
@@ -158,6 +176,10 @@ TESSERACT_MODEL_DIR=kleb-model tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --o
 ```
 
 ## The 1.2 *Klebsiella* models
+
+Kept for compatibility. Since 1.4.0 `tesseract-klebsiella` no longer uses the default model on
+its own; `--plasmid` still fetches the plasmid model. Neither was measured with the 1.4.0
+defaults: the figures below are from the 1.2 series.
 
 | asset | sampling | download | unpacked |
 |---|---|---|---|
