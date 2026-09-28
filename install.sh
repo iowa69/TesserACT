@@ -317,8 +317,8 @@ For the other six ESKAPEE organisms:
   tesseract-get-models                   fetch the models (about 150 MB, once)
   tesseract-eskape --list                the preset name for each organism
 
-To build a model of your own instead:
+With the models installed, the assembler takes one by organism name. It reads
+~/.tesseract/models/<organism>.tsm, or the directory TESSERACT_MODEL_DIR names:
   tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
-  tesseract-asm --organism klebsiella --model kleb.tsm -1 R1.fq.gz -2 R2.fq.gz -o out
 EOF
 fi

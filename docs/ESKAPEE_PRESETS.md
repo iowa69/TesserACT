@@ -71,7 +71,7 @@ junk. All NG50 values below are **contig** NG50 — see
 
 | Organism | Preset name | Genome | GC | Flags the preset adds | Default NG50 | Preset NG50 | Beats default? |
 |---|---|---:|---:|---|---:|---:|:--|
-| *Klebsiella pneumoniae* | `kpneumoniae` | 5.28 Mb | 57.5 % | `--organism klebsiella --model <model>.tsm` | 325,336 bp | **409,059 bp** | **YES — +25.7 %** |
+| *Klebsiella pneumoniae* | `kpneumoniae` | 5.28 Mb | 57.5 % | `--organism kpneumoniae` (reads `kpneumoniae.tsm`) | 325,336 bp | **409,059 bp** | **YES — +25.7 %** |
 | *Staphylococcus aureus* | `saureus` | 3.05 Mb | 32.8 % | *(none — defaults)* | 249,909 bp | 249,909 bp | no |
 | *Enterococcus faecium* | `efaecium` | 2.98 Mb | 37.9 % | *(none — defaults)* | 47,639 bp | 47,639 bp | no |
 | *Acinetobacter baumannii* | `abaumannii` | 4.16 Mb | 39.0 % | *(none — defaults)* | 160,376 bp | 160,376 bp | no |

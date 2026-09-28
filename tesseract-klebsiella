@@ -256,12 +256,30 @@ ok "model: $MODEL"
 mkdir -p "$OUT" || die "cannot create the output directory $OUT"
 SUMMARY="$OUT/summary.tsv"
 
+# The assembler takes a model only as --organism NAME, read from $TESSERACT_MODEL_DIR/NAME.tsm;
+# --model FILE is refused unless TESSERACT_MODEL_AUTHOR is set (since 1.3.0), so passing it
+# failed every isolate at startup (N22). The model found above -- downloaded, cached or given
+# with --model -- is handed over as kpneumoniae.tsm: from its own folder when it already has
+# that name, otherwise through a link of that name in $OUT/.tesseract-model.
+if [ "$(basename -- "$MODEL")" = kpneumoniae.tsm ]; then
+    MODEL_RUN_DIR="$(cd "$(dirname -- "$MODEL")" && pwd)"
+else
+    model_abs="$(readlink -f -- "$MODEL" 2>/dev/null || printf '%s' "$MODEL")"
+    case "$model_abs" in /*) ;; *) model_abs="$PWD/$model_abs" ;; esac
+    MODEL_RUN_DIR="$(cd "$OUT" && pwd)/.tesseract-model"
+    mkdir -p "$MODEL_RUN_DIR" || die "cannot create $MODEL_RUN_DIR"
+    rm -f "$MODEL_RUN_DIR/kpneumoniae.tsm"
+    ln -s "$model_abs" "$MODEL_RUN_DIR/kpneumoniae.tsm" 2>/dev/null \
+        || cp "$model_abs" "$MODEL_RUN_DIR/kpneumoniae.tsm" \
+        || die "cannot make the model available as $MODEL_RUN_DIR/kpneumoniae.tsm"
+fi
+
 run_one() {
     local name=$1 r1=$2 r2=$3 d="$OUT/$name"
     if [ ! -s "$d/contigs.fasta" ]; then
         rm -rf "$d.part"; mkdir -p "$d.part"
-        if ! "$TESSERA" -1 "$r1" -2 "$r2" -o "$d.part" -t "$THREADS" \
-                --organism klebsiella --model "$MODEL" > "$d.part/run.log" 2>&1 \
+        if ! TESSERACT_MODEL_DIR="$MODEL_RUN_DIR" "$TESSERA" -1 "$r1" -2 "$r2" -o "$d.part" -t "$THREADS" \
+                --organism kpneumoniae > "$d.part/run.log" 2>&1 \
            || [ ! -s "$d.part/contigs.fasta" ]; then
             printf '%sfailed:%s %s -- see %s\n' "$c_err" "$c_off" "$name" "$d.part/run.log" >&2
             return 1

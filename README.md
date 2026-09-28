@@ -412,8 +412,10 @@ tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode aggressive
 # 1.4.0 default (3.0), so it is no longer the stricter mode on joins
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode careful
 
-# With a genus model, for junctions no fragment spans
-tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella --model kleb.tsm
+# With an organism model, for junctions no fragment spans. Reads kpneumoniae.tsm from
+# ~/.tesseract/models (tesseract-get-models puts the seven ESKAPEE models there), or from
+# the directory TESSERACT_MODEL_DIR names; `klebsiella` is accepted for kpneumoniae
+tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
 
 # Hand it a QC report from scepter (see below)
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
@@ -481,18 +483,26 @@ of a use is worth shipping as exactly that, and not as a feature.
 
 ## Genus models
 
-`--model` takes a model file and `--organism` names the genus it must match.
+`--organism NAME` selects a model by organism: the assembler reads `NAME.tsm` from
+`~/.tesseract/models`, or from the directory `TESSERACT_MODEL_DIR` names, and the model must
+have been built for that organism. The names are `saureus`, `efaecium`, `abaumannii`,
+`paeruginosa`, `ecloacae`, `ecoli` and `kpneumoniae`; `klebsiella` is accepted as another name
+for `kpneumoniae`. `tesseract-get-models` downloads and checks the seven models, and
+`tesseract-eskape` and `tesseract-klebsiella` select theirs the same way. There is no option
+that takes a model file: `--model FILE` is kept for building and validating the bundled models
+and is refused unless `TESSERACT_MODEL_AUTHOR` is set.
 
-Pre-built *Klebsiella* models are attached to the
+The 1.2 *Klebsiella* models are attached to the
 [releases](https://github.com/iowa69/TesserACT/releases) — see
-[`models/README.md`](models/README.md) for which one to take. To build your own, `make` builds
-the model builder alongside the assembler:
+[`models/README.md`](models/README.md) for which one to take. To build your own, `make model`
+builds the model builder, and `TESSERACT_MODEL_DIR` points the assembler at the result:
 
 ```sh
-tesseract-model --organism klebsiella --out kleb.tsm --layout-tracks \
+tesseract-model --organism kpneumoniae --out mymodels/kpneumoniae.tsm --layout-tracks \
               --plasmids plasmid_panel.fna --exclude-plasmids withheld.txt \
               --marker-density 64 \
               closed/*.fasta
+TESSERACT_MODEL_DIR=mymodels tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
 ```
 
 A model records, from closed genomes of one genus, which canonical 31-mers occur near each
@@ -614,7 +624,7 @@ panel: at one 31-mer in 512, a 1 kb contig expects two markers and grouping need
 | `-k LIST` | override the k ladder, e.g. `21,33,55,77` |
 | `-c N` | force the abundance cutoff (default: automatic) |
 | `--mode NAME` | `fast`, `standard` (default), `careful`, `aggressive` |
-| `--organism` / `--model` | genus model, see above |
+| `--organism NAME` | organism model `NAME.tsm`, see above (`TESSERACT_MODEL_DIR` says where) |
 | `--qc FILE` | scepter QC report |
 | `--min-contig N` | shortest contig to report (default 2k) |
 | `--max-memory GB` | counting-table budget (default 80 % of RAM) |

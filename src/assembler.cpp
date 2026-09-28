@@ -1409,13 +1409,16 @@ bool Assembler::run(std::string& error) {
         }
         // --organism names what the reads are; the model names what it was built
         // from. If they disagree the model is the wrong one for these reads, and
-        // its joins would be placed from another species' gene order.
+        // its joins would be placed from another species' gene order. Compared by canonical
+        // name (N22): the 1.2 Klebsiella models were built as `klebsiella`, the 1.4 ones as
+        // `kpneumoniae`, and either name selects either file.
         auto lower = [](std::string v) {
             for (char& c : v) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
             return v;
         };
         if (!opt_.organism.empty() && !organismModel_.organism().empty() &&
-            lower(opt_.organism) != lower(organismModel_.organism())) {
+            lower(canonicalOrganism(opt_.organism)) !=
+                lower(canonicalOrganism(organismModel_.organism()))) {
             error = "--organism says '" + opt_.organism + "' but " + opt_.organismModelPath +
                     " was built for '" + organismModel_.organism() +
                     "'; use a model for this organism, or drop --organism";

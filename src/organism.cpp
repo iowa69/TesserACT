@@ -1,6 +1,7 @@
 #include "organism.h"
 
 #include <algorithm>
+#include <cctype>
 #include <cstdio>
 #include <cstring>
 #include <memory>
@@ -35,6 +36,12 @@ bool readPod(std::FILE* f, T& v) {
 }
 
 }  // namespace
+
+std::string canonicalOrganism(const std::string& name) {
+    std::string lower = name;
+    for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return lower == "klebsiella" ? std::string("kpneumoniae") : name;
+}
 
 void OrganismModel::beginBuild(const std::string& organism, int k) {
     organism_ = organism;

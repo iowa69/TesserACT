@@ -15,6 +15,7 @@
 #include "resolve.h"
 #include "version.h"
 #include "kmer.h"
+#include "organism.h"
 #include "util.h"
 
 namespace {
@@ -63,11 +64,12 @@ void usage() {
         "      --min-contig N      minimum contig length to report (default: 2*k)\n"
         "\n"
         "ORGANISM MODEL\n"
-        "      --organism NAME     use the bundled model for this organism. Run\n"
-        "                          tesseract-get-models once to install them; they go\n"
-        "                          to ~/.tesseract/models and TESSERACT_MODEL_DIR moves\n"
-        "                          that. Names: saureus, efaecium, abaumannii,\n"
-        "                          paeruginosa, ecloacae, ecoli, kpneumoniae.\n"
+        "      --organism NAME     use the bundled model for this organism, the file\n"
+        "                          NAME.tsm. Run tesseract-get-models once to install\n"
+        "                          them; they go to ~/.tesseract/models and\n"
+        "                          TESSERACT_MODEL_DIR moves that. Names: saureus,\n"
+        "                          efaecium, abaumannii, paeruginosa, ecloacae, ecoli,\n"
+        "                          kpneumoniae (klebsiella is accepted for kpneumoniae).\n"
         "                          The model is consulted only at junctions no fragment\n"
         "                          can span: the chromosome is reconstructed first from\n"
         "                          conserved gene order, then plasmids are refined\n"
@@ -311,7 +313,9 @@ int main(int argc, char** argv) {
                 std::fprintf(stderr,
                     "error: --model is not a supported option.\n"
                     "  Use --organism NAME to select a bundled model, and run\n"
-                    "  tesseract-get-models once to install them.\n");
+                    "  tesseract-get-models once to install them. A model kept elsewhere\n"
+                    "  is found by pointing TESSERACT_MODEL_DIR at the directory that\n"
+                    "  holds it as NAME.tsm.\n");
                 return 2;
             }
         }
@@ -436,6 +440,11 @@ int main(int argc, char** argv) {
     // from it, none of which survives being pointed at an arbitrary file. Resolution
     // matches tesseract-get-models' install location and tesseract-eskape's default, so
     // the three cannot drift apart.
+    //
+    // The file is named by the canonical organism name (N22): `--organism klebsiella`, which
+    // the helpers passed and the 1.2 documentation taught, resolves to kpneumoniae.tsm -- the
+    // name tesseract-get-models, the installer and models.sha256 use. Until 1.4.0 it looked
+    // for klebsiella.tsm, which nothing installs.
     if (!opt.organism.empty() && opt.organismModelPath.empty()) {
         std::string dir;
         if (const char* d = env::text("TESSERACT_MODEL_DIR")) {
@@ -443,7 +452,8 @@ int main(int argc, char** argv) {
         } else if (const char* h = std::getenv("HOME")) {
             dir = std::string(h) + "/.tesseract/models";
         }
-        const std::string cand = dir.empty() ? std::string() : dir + "/" + opt.organism + ".tsm";
+        const std::string cand =
+            dir.empty() ? std::string() : dir + "/" + canonicalOrganism(opt.organism) + ".tsm";
         if (!cand.empty() && util::fileExists(cand)) {
             opt.organismModelPath = cand;
         } else {

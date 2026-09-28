@@ -1,7 +1,7 @@
 // tesseract-model: builds a genus prior from closed reference genomes.
 //
-//   tesseract-model --organism klebsiella --out kleb.tsm ref/*.fasta
-//   tesseract-model --organism klebsiella --out kleb.tsm --exclude ERR123
+//   tesseract-model --organism kpneumoniae --out kpneumoniae.tsm ref/*.fasta
+//   tesseract-model --organism kpneumoniae --out kpneumoniae.tsm --exclude ERR123
 //                 --plasmids plasmid_db.fasta ref/*.fasta
 //
 // Inputs are classified by file name: `*_chr.fasta` is chromosome, anything
@@ -171,7 +171,8 @@ void usage(std::FILE* to = stderr) {
     std::fprintf(to,
                  "tesseract-model -- build a genus prior from closed genomes\n\n"
                  "usage: tesseract-model --organism NAME --out FILE [options] FASTA...\n\n"
-                 "  --organism NAME     organism the model describes (e.g. klebsiella)\n"
+                 "  --organism NAME     organism the model describes (e.g. kpneumoniae); the\n"
+                 "                      assembler selects it as --organism NAME from NAME.tsm\n"
                  "  --out FILE          model file to write\n"
                  "  --exclude ACC       omit this accession from the panel (repeatable)\n"
                  "  --plasmids FILE     multi-record plasmid database; each record is\n"

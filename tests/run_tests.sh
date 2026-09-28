@@ -1226,6 +1226,103 @@ for fx in t5 t15d; do
     fi
 done
 
+# ---------------------------------------------------------------------------
+# 19. A model selected by organism: directly, and through each helper (N22)
+#
+# Since 1.3.0 --model is refused unless TESSERACT_MODEL_AUTHOR is set, and tesseract-eskape and
+# tesseract-klebsiella still passed it, so every model run through them failed at startup.
+# They also passed `--organism klebsiella`, while the installer, tesseract-get-models and
+# models.sha256 name the model kpneumoniae.tsm. Nothing here caught it: every model test above
+# runs under the TESSERACT_MODEL_AUTHOR this suite exports. Here the model is built with it and
+# every run is made without it -- the environment a user has -- and passes only when the run
+# succeeds and the model stage ran: report.json says organism_model.run for the model named,
+# and the log carries the stage's "model joining" line.
+# ---------------------------------------------------------------------------
+D=$TMP/t19; mkdir -p "$D/models" "$D/cache" "$D/elsewhere"
+gen repeat_genome "$D/g.fa" 43 5000 5000 >/dev/null
+gen reads "$D/g.fa" "$D/r" 60 150 350 30 0 1043 paired fastq gz >/dev/null
+# n22model ORGANISM FILE -- a small track model of the fixture genome, built under
+# TESSERACT_MODEL_AUTHOR (the build is the only step that has it)
+n22model() {
+    TESSERACT_MODEL_AUTHOR=1 $TIMEOUT "$ROOT/tesseract-model" --organism "$1" --out "$2" \
+        --layout-tracks --min-support 1 "$D/g.fa" >"$2.log" 2>&1 && [ -s "$2" ]
+}
+# n22user CMD... -- run as a user would: TESSERACT_MODEL_AUTHOR removed from the environment
+n22user() { env -u TESSERACT_MODEL_AUTHOR $TIMEOUT "$@"; }
+# modelran NAME STATUS OUTDIR MODEL_ORGANISM LOGFILE
+modelran() {
+    local detail rc
+    if [ "$2" -ne 0 ]; then
+        # tesseract-klebsiella leaves a failed isolate in OUTDIR.part
+        fail "$1" "exit=$2 ($(cat "$5" "$3.part/run.log" 2>/dev/null | grep -m1 -i 'error'))"
+        return
+    fi
+    detail=$(python3 - "$3/report.json" "$4" <<'PYMODEL'
+import json, sys
+try:
+    m = json.load(open(sys.argv[1]))["organism_model"]
+except Exception as e:
+    print("no report.json organism_model (%s)" % e); sys.exit(1)
+print("organism_model.run=%s organism=%s genomes=%s" % (m.get("run"), m.get("organism"), m.get("genomes")))
+sys.exit(0 if m.get("run") is True and m.get("organism") == sys.argv[2] else 1)
+PYMODEL
+); rc=$?
+    grep -q "model joining" "$5" 2>/dev/null || { rc=1; detail="$detail, no 'model joining' line in the log"; }
+    check "$1" $rc "$detail"
+}
+if ! n22model kpneumoniae "$D/models/kpneumoniae.tsm" || ! n22model ecoli "$D/models/ecoli.tsm" ||
+   ! n22model klebsiella "$D/cache/tesseract-klebsiella-default-v1.2.0.tsm"; then
+    fail "--organism model selection (N22)" "could not build the fixture models (logs: $D/models, $D/cache)"
+else
+    cp "$D/models/kpneumoniae.tsm" "$D/elsewhere/my-kleb-model.tsm"
+    R1=$D/r_1.fq.gz; R2=$D/r_2.fq.gz
+
+    # tesseract-asm itself, by the canonical name and by the alias
+    rm -rf "$D/asm_kp"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/asm_kp" -t 2 \
+        --organism kpneumoniae >"$D/asm_kp.log" 2>&1
+    modelran "--organism kpneumoniae via TESSERACT_MODEL_DIR" $? "$D/asm_kp" kpneumoniae "$D/asm_kp.log"
+    rm -rf "$D/asm_kleb"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/asm_kleb" -t 2 \
+        --organism klebsiella >"$D/asm_kleb.log" 2>&1
+    modelran "--organism klebsiella reads kpneumoniae.tsm" $? "$D/asm_kleb" kpneumoniae "$D/asm_kleb.log"
+
+    # tesseract-eskape: the Klebsiella preset from the model folder and from --model FILE under
+    # another name, and one of the other six presets
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset kpneumoniae \
+        -1 "$R1" -2 "$R2" -o "$D/esk_kp" -t 2 >"$D/esk_kp.out" 2>&1
+    modelran "tesseract-eskape --preset kpneumoniae" $? "$D/esk_kp" kpneumoniae "$D/esk_kp/tesseract-eskape.log"
+    n22user "$ROOT/tesseract-eskape" --preset klebsiella --model "$D/elsewhere/my-kleb-model.tsm" \
+        -1 "$R1" -2 "$R2" -o "$D/esk_file" -t 2 >"$D/esk_file.out" 2>&1
+    modelran "tesseract-eskape --model FILE" $? "$D/esk_file" kpneumoniae "$D/esk_file/tesseract-eskape.log"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset ecoli \
+        -1 "$R1" -2 "$R2" -o "$D/esk_ec" -t 2 >"$D/esk_ec.out" 2>&1
+    modelran "tesseract-eskape --preset ecoli" $? "$D/esk_ec" ecoli "$D/esk_ec/tesseract-eskape.log"
+
+    # tesseract-klebsiella: the default model already in its cache (no download; built as
+    # `klebsiella`, as the 1.2 models were), and --model FILE
+    TESSERACT_MODEL_DIR="$D/cache" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_def" \
+        -t 2 >"$D/kl_def.out" 2>&1
+    modelran "tesseract-klebsiella, cached default model" $? "$D/kl_def/r" klebsiella "$D/kl_def/r/run.log"
+    n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_file" -t 2 \
+        --model "$D/elsewhere/my-kleb-model.tsm" >"$D/kl_file.out" 2>&1
+    modelran "tesseract-klebsiella --model FILE" $? "$D/kl_file/r" kpneumoniae "$D/kl_file/r/run.log"
+
+    # Neither helper hands the assembler --model any more.
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset kpneumoniae \
+        -1 "$R1" -2 "$R2" -o "$D/esk_dry" --dry-run >"$D/esk_dry.out" 2>&1; st=$?
+    run=$(grep -m1 '^Running: ' "$D/esk_dry.out")
+    case "$run" in
+        *" --model "*) rc=1 ;;
+        *"--organism kpneumoniae"*) rc=0 ;;
+        *) rc=1 ;;
+    esac
+    [ "$st" -eq 0 ] || rc=1
+    grep -q -- '--model' "$D/kl_file/r/report.json" 2>/dev/null && rc=1
+    check "helpers pass --organism, never --model" $rc \
+          "dry-run exit=$st, $(printf '%s' "$run" | grep -o -- '--organism [a-z]*')"
+fi
+
 echo
 echo "-----------------------------------------------------------------------"
 printf '%d passed, %d failed, %d known open defects (XFAIL), %d skipped\n' \

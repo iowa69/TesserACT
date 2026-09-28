@@ -3,6 +3,12 @@
 Models are attached to the [releases](https://github.com/iowa69/TesserACT/releases) rather
 than committed: 339 MB and 2.9 GB is not something that belongs in a git history.
 
+The seven ESKAPEE models, one `<organism>.tsm` each, are what `tesseract-get-models` downloads
+into `~/.tesseract/models`, checked against `models.sha256`. The assembler selects one with
+`--organism <organism>` and looks for it there, or in the directory `TESSERACT_MODEL_DIR`
+names. The two files below are the 1.2 *Klebsiella* models, which `tesseract-klebsiella`
+downloads for itself.
+
 | asset | sampling | download | unpacked |
 |---|---|---|---|
 | `tesseract-klebsiella-default-v1.2.0.tsm` | 1 marker in 512, 16 neighbours | 339 MB | — |
@@ -24,13 +30,22 @@ sha256sum --check --ignore-missing SHA256SUMS
 
 ## Using one
 
+`tesseract-klebsiella` needs nothing more: it downloads the default model, or takes the one
+given with `--model FILE`, and hands it to the assembler itself. To run the assembler directly,
+put the model where `--organism` looks for it, under the name `kpneumoniae.tsm`:
+
 ```sh
-tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism klebsiella \
-        --model tesseract-klebsiella-default-v1.2.0.tsm
+mkdir -p kleb-model
+ln -s "$PWD/tesseract-klebsiella-default-v1.2.0.tsm" kleb-model/kpneumoniae.tsm
+TESSERACT_MODEL_DIR=kleb-model tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
 ```
 
-`--organism` must match the name the model was built with, which is a guard against pointing a
-*Klebsiella* model at something else by accident.
+`klebsiella` is accepted as another name for `kpneumoniae`, and reads the same
+`kpneumoniae.tsm`. The model must have been built for the organism named, which is a guard
+against pointing a *Klebsiella* model at something else by accident; the 1.2 models were built
+as `klebsiella`, which counts as `kpneumoniae`. The assembler does not take a model file on
+the command line: `--model FILE` is refused unless `TESSERACT_MODEL_AUTHOR` is set, which is
+for building and validating the bundled models.
 
 ## Which one
 
@@ -90,5 +105,6 @@ with per-replicon-class counts, the marker adjacency tables, one marker-order tr
 chromosome, and per-plasmid marker membership sets. Nothing is obfuscated: the k-mers decode
 directly back to sequence, which is public RefSeq in any case.
 
-Build your own with `tesseract-model` — see the README. About four minutes at the default
-density, twenty at the dense one.
+Build your own with `tesseract-model` (`make model`) — see the README. About four minutes at
+the default density, twenty at the dense one. Name the file `<organism>.tsm` and point
+`TESSERACT_MODEL_DIR` at its directory to use it.

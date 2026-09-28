@@ -195,7 +195,8 @@ OPTIONS
   -o, --out DIR     Where to put the results. Created if it does not exist.
   -t, --threads N   How many CPU cores to use (default: 4). More = faster,
                     but be polite on a shared machine.
-  --model FILE      Use a different Klebsiella model file than the built-in one.
+  --model FILE      Use this model file instead of the installed one for the
+                    preset's organism. It must be a model of that organism.
   --dry-run         Show the assembler command that would run, then stop.
                     Good for checking things before committing to a long run.
   --list            Print the available presets and exit.
@@ -403,6 +404,30 @@ fi
 # ---------------------------------------------------------------------------
 EXTRA=()
 PRESET_DESC=""
+RUN_MODEL_DIR=""
+
+# The assembler takes a model only as --organism NAME, which it reads from
+# $TESSERACT_MODEL_DIR/NAME.tsm. It refuses --model FILE unless TESSERACT_MODEL_AUTHOR is set
+# (since 1.3.0), so passing --model made every model run fail at startup (N22).
+# use_model NAME FILE points RUN_MODEL_DIR at FILE's own folder when FILE is already called
+# NAME.tsm, and otherwise at a folder inside the results holding a link of that name to FILE,
+# so --model, TESSERACT_KP_MODEL and any file name keep working.
+use_model() {
+    local org="$1" file="$2" abs
+    if [ "$(basename -- "$file")" = "$org.tsm" ]; then
+        RUN_MODEL_DIR="$(cd "$(dirname -- "$file")" && pwd)"
+        return 0
+    fi
+    abs="$(readlink -f -- "$file" 2>/dev/null || printf '%s' "$file")"
+    case "$abs" in /*) ;; *) abs="$PWD/$abs" ;; esac
+    RUN_MODEL_DIR="$(cd "$OUTDIR" && pwd)/.tesseract-model"
+    mkdir -p -- "$RUN_MODEL_DIR" 2>/dev/null \
+        || die "I could not create a folder for the model inside the results: $RUN_MODEL_DIR"
+    rm -f -- "$RUN_MODEL_DIR/$org.tsm"
+    ln -s -- "$abs" "$RUN_MODEL_DIR/$org.tsm" 2>/dev/null \
+        || cp -- "$abs" "$RUN_MODEL_DIR/$org.tsm" \
+        || die "I could not make the model available to the assembler as $RUN_MODEL_DIR/$org.tsm"
+}
 
 if [ -z "$PRESET" ]; then
     info "No --preset given, so I am using the assembler's default settings."
@@ -420,14 +445,17 @@ else
   or drop the preset and run with plain defaults (leave out --preset).
   Without the model, Klebsiella assembles no better than the defaults."
         fi
-        EXTRA+=(--organism klebsiella --model "$MODEL_FILE")
+        use_model kpneumoniae "$MODEL_FILE"
+        EXTRA+=(--organism kpneumoniae)
         PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model"
+        info "Using the kpneumoniae model: $MODEL_FILE"
     else
         _mf="$(model_for "$PRESET")"
         if [ -n "$_mf" ]; then
             MODEL_FILE="${MODEL_OVERRIDE:-$MODEL_DIR/$_mf}"
             if [ -r "$MODEL_FILE" ]; then
-                EXTRA+=(--organism "$PRESET" --model "$MODEL_FILE")
+                use_model "$PRESET" "$MODEL_FILE"
+                EXTRA+=(--organism "$PRESET")
                 PRESET_DESC="$PRESET ($(preset_fullname "$PRESET")) - trained model, $(model_note "$PRESET")"
                 info "Using the $PRESET model: $(model_note "$PRESET")."
             else
@@ -448,7 +476,11 @@ else
     fi
 fi
 
-CMD=("$TESSERACT_ASM" -1 "$READ1" -2 "$READ2" -o "$OUTDIR" -t "$THREADS")
+# The model folder goes on the command itself, so the "Running:" line below can be copied
+# and run as it stands.
+CMD=()
+if [ -n "$RUN_MODEL_DIR" ]; then CMD+=(env "TESSERACT_MODEL_DIR=$RUN_MODEL_DIR"); fi
+CMD+=("$TESSERACT_ASM" -1 "$READ1" -2 "$READ2" -o "$OUTDIR" -t "$THREADS")
 if [ "${#EXTRA[@]}" -gt 0 ]; then CMD+=("${EXTRA[@]}"); fi
 if [ "${#PASSTHRU[@]}" -gt 0 ]; then CMD+=("${PASSTHRU[@]}"); fi
 
