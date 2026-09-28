@@ -380,7 +380,7 @@ To build without installing:
 
 ```sh
 make -j                     # needs zlib headers; on conda, CPATH=$CONDA_PREFIX/include
-make test                   # 40 end-to-end checks on synthetic genomes
+make test                   # end-to-end checks on synthetic genomes
 ```
 
 Produces `./tesseract-asm`.
