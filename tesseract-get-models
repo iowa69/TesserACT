@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # tesseract-get-models -- download the organism models and check they arrived intact.
 #
-# Models are release assets, not part of the source tree: they total well over a hundred
-# megabytes and do not belong in a git history. This fetches them, verifies each against a
+# Models are release assets, not part of the source tree: the seven total about 1.4 GB
+# and do not belong in a git history. This fetches them, verifies each against a
 # checksum, and puts them where tesseract-eskape looks by default.
 #
 # Written to be safe to re-run: an already-verified model is skipped, and a download that fails
@@ -27,7 +27,8 @@ tesseract-get-models -- fetch the TesserACT organism models
   tesseract-get-models --dir PATH   put them somewhere else
 
 They go to ~/.tesseract/models by default, which is where tesseract-eskape looks.
-About 150 MB for the full set. Re-running is safe: anything already verified is skipped.
+About 1.4 GB for the full set (64 to 349 MB per organism). Re-running is safe: anything
+already verified is skipped.
 USAGE
 }
 

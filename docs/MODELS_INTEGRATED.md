@@ -1,5 +1,10 @@
 # The integrated ESKAPEE models
 
+> **1.4.0.** The models described here are not the ones `tesseract-get-models` installs. The
+> `models-v1` release holds whole-panel builds from much larger panels, 811 to 2,238 genomes per
+> organism and about 1.4 GB in total. With the 1.4.0 defaults, a model adds misassemblies in all
+> seven organisms while it adds contiguity. See [models/README.md](../models/README.md).
+
 Seven organisms, each a single model carrying **both** the chromosome panel (layout tracks) and
 the plasmid database, with every held-out isolate's own plasmids withheld from training.
 
@@ -83,6 +88,6 @@ that would address them.
 ## Installing
 
 ```sh
-tesseract-get-models            # ~491 MB, checksum-verified, safe to re-run
+tesseract-get-models            # about 1.4 GB, checksum-verified, safe to re-run
 tesseract-eskape --preset saureus -1 R1.fastq.gz -2 R2.fastq.gz -o result
 ```

@@ -351,7 +351,16 @@ fix ([docs/PLASMID_COPY_NUMBER.md](docs/PLASMID_COPY_NUMBER.md)). Contig classif
 no SPAdes arm, since SPAdes does not classify: pooled over every contig >=1500 bp, the model
 arm reaches precision 0.700 / recall 0.803 (F1 0.748) against 0.406 / 0.549 with no model.
 
-The remaining six ESKAPEE cohorts are in progress and will be added here as each completes.
+### With a genus model on 1.4.0: all seven ESKAPEE organisms
+
+The same comparison has now been made for all seven organisms, with the 1.4.0 defaults and a
+leave-clone-out model for each, on 47 held-out isolates per organism (329 in all). The model
+lowers the median contig count from 99 to 86 and raises the median NGA50 from 134 to 156 kb.
+It also raises misassemblies in every organism: from 154 to 290 on the 306 isolates whose
+closed reference matches the reads. Of those isolates, 89 get more misassemblies, 2 get fewer
+and 215 are unchanged. The downloadable `models-v1` files are whole-panel builds of the same
+models with nothing withheld. The per-organism table, and what was and was not measured on the
+downloads, are in [models/README.md](models/README.md).
 
 ---
 

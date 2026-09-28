@@ -1,5 +1,10 @@
 # Real-world ESKAPEE evaluation — recovered results, 279 isolates
 
+> **1.4.0.** These results were measured with earlier TesserACT versions and older models, and
+> they do not describe 1.4.0. With the 1.4.0 defaults, the organism model adds misassemblies in
+> all seven ESKAPEE organisms while it adds contiguity (329 held-out isolates). See
+> [models/README.md](../models/README.md).
+
 **Stopped mid-run and consolidated. 279 of 360 isolates scored, every one a real clinical
 isolate with a closed genome as truth and its own Illumina reads as input, against models
 trained under leave-cluster-out.**

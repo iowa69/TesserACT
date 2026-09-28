@@ -1,5 +1,10 @@
 # ESKAPEE models — six new organism models, measured on held-out genomes
 
+> **1.4.0.** These results were measured with earlier TesserACT versions and older models, and
+> they do not describe 1.4.0. With the 1.4.0 defaults, the organism model adds misassemblies in
+> all seven ESKAPEE organisms while it adds contiguity (329 held-out isolates). See
+> [models/README.md](../models/README.md).
+
 **All six improve contig NG50. Two are free; four cost misassemblies. *S. aureus* is the best of
 them by a wide margin, on both axes.**
 

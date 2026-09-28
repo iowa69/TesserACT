@@ -4,7 +4,7 @@
 #   devtools/publish-models.sh [MODEL_DIR]
 #
 # MODEL_DIR defaults to the checked copy kept outside git at
-# ../../release/models-v1 -- the models are ~490 MB and belong in a release, not a history.
+# ../../release/models-v1 -- the models are about 1.4 GB and belong in a release, not a history.
 #
 # Needs gh already authenticated (`gh auth status`). It never reads a token from the
 # environment or an argument: the credential stays wherever gh keeps it.

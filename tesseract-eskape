@@ -31,8 +31,8 @@ else
     TESSERACT_ASM="$(command -v tesseract-asm 2>/dev/null || printf '%s' "$_here/tesseract-asm")"
 fi
 
-# Organism models are release assets, not part of the repository: six of them come to ~144 MB,
-# which does not belong in a git history.
+# Organism models are release assets, not part of the repository: the seven come to about
+# 1.4 GB, which does not belong in a git history.
 MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
 
 # Klebsiella resolves like every other preset -- $MODEL_DIR/<organism>.tsm, which is where
@@ -40,9 +40,8 @@ MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
 # one preset with a published model was also the one that could not find it.
 KP_MODEL="${TESSERACT_KP_MODEL:-$MODEL_DIR/kpneumoniae.tsm}"
 
-# Gains measured on four held-out genomes per species, each removed from the panel before the
-# model was trained. "free" means the model added no misassemblies; the others buy contiguity
-# and pay for it, which is a choice the user should make knowingly. See docs/ESKAPEE_MODELS.md.
+# A model buys contiguity and pays for it in misassemblies, which is a choice the user should
+# make knowingly: the note printed with each model says what it costs. See models/README.md.
 model_for() {
     case "$1" in
         saureus) printf '%s' "saureus.tsm" ;;  efaecium) printf '%s' "efaecium.tsm" ;;
@@ -51,19 +50,21 @@ model_for() {
         *) printf '%s' "" ;;
     esac
 }
-# Measured on 279 REAL clinical isolates (closed genome as truth, the isolate's own Illumina
-# reads as input, model retrained under leave-cluster-out). An earlier version of these notes
-# came from simulated reads and was wrong in both directions: it inverted the species ranking
-# and it claimed four organisms "add misassemblies". On real data the model REMOVES 15-50% of
-# misassemblies in every organism, and genome fraction rises everywhere too.
+# Measured with the 1.4.0 defaults on 47 held-out isolates per organism (closed genome as
+# truth, the isolate's own Illumina reads as input), with and without a leave-clone-out model:
+# median NGA50 over all 47, and misassemblies over the isolates whose closed genome matches the
+# reads (models/README.md). In every organism the model adds misassemblies. These notes used to
+# say "+25% to +70% longer contigs, and fewer misassemblies": that came from a 279-isolate run
+# with older defaults and older models, and it does not hold for 1.4.0.
 model_note() {
     case "$1" in
-        abaumannii) printf '%s' "+70% longer contigs, and fewer misassemblies" ;;
-        paeruginosa) printf '%s' "+68% longer contigs, and fewer misassemblies" ;;
-        ecloacae) printf '%s' "+49% longer contigs, and fewer misassemblies" ;;
-        saureus) printf '%s' "+43% longer contigs, and fewer misassemblies" ;;
-        efaecium) printf '%s' "+30% longer contigs, and fewer misassemblies" ;;
-        ecoli) printf '%s' "+25% longer contigs, and fewer misassemblies" ;;
+        abaumannii) printf '%s' "median NGA50 97 -> 115 kb, but misassemblies 14 -> 44 in the 1.4.0 test" ;;
+        paeruginosa) printf '%s' "median NGA50 181 -> 210 kb, but misassemblies 5 -> 16 in the 1.4.0 test" ;;
+        ecloacae) printf '%s' "median NGA50 208 -> 209 kb, but misassemblies 7 -> 24 in the 1.4.0 test" ;;
+        saureus) printf '%s' "median NGA50 186 -> 214 kb, but misassemblies 12 -> 21 in the 1.4.0 test" ;;
+        efaecium) printf '%s' "median NGA50 49 -> 50 kb, but misassemblies 23 -> 47 in the 1.4.0 test" ;;
+        ecoli) printf '%s' "median NGA50 117 -> 133 kb, but misassemblies 23 -> 45 in the 1.4.0 test" ;;
+        kpneumoniae) printf '%s' "median NGA50 155 -> 204 kb, but misassemblies 70 -> 93 in the 1.4.0 test" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -146,24 +147,26 @@ Available presets (type either name - capital letters do not matter):
 
   short name     also accepted as        organism                    what the preset does
   -----------    --------------------    ------------------------    ---------------------------------
-  kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       uses the trained Klebsiella model
-  saureus        staph, sa, mrsa         Staphylococcus aureus       model: +43% contigs, fewer mis
-  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: +30% contigs, fewer mis
-  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: +70% contigs, fewer mis
-  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: +68% contigs, fewer mis
-  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: +49% contigs, fewer mis
-  ecoli          escherichia, coli       Escherichia coli            model: +25% contigs, fewer mis
+  kpneumoniae    klebsiella, kp, kleb    Klebsiella pneumoniae       model: longer NGA50, more mis
+  saureus        staph, sa, mrsa         Staphylococcus aureus       model: longer NGA50, more mis
+  efaecium       enterococcus, ef, vre   Enterococcus faecium        model: longer NGA50, more mis
+  abaumannii     acinetobacter, ab       Acinetobacter baumannii     model: longer NGA50, more mis
+  paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      model: longer NGA50, more mis
+  ecloacae       enterobacter, ecl       Enterobacter cloacae        model: longer NGA50, more mis
+  ecoli          escherichia, coli       Escherichia coli            model: longer NGA50, more mis
 
-Why do six presets "do nothing"?
-  Because we measured it. We tried the assembler's tuning knobs on three real
-  genomes for each of these species and not one of them made the assembly
-  meaningfully better than leaving the settings alone. Some made it worse.
-  So the honest preset for those six is: use the defaults. The preset name
-  still works, so you can write the same command for every organism.
+What does a preset do?
+  It uses the organism's model if the model is installed (tesseract-get-models),
+  and adds no tuning option. We tried the assembler's tuning knobs on three real
+  genomes for each species, and none of them made the assembly meaningfully
+  better than leaving the settings alone. Without its model, the Klebsiella
+  preset stops and asks for it; the other six carry on with the plain defaults.
 
-  Klebsiella pneumoniae is the exception, because someone trained a model file
-  for it. That model raised contiguity by about 26% on genomes it had never
-  seen. See PRESETS.md for the full table and the caveats.
+  A model buys contiguity and costs misassemblies. With the 1.4.0 defaults, on
+  329 held-out isolates, it raised the median NGA50 from 134 to 156 kb, and the
+  misassemblies from 154 to 290 on the isolates whose reference matched the
+  reads. To assemble without one, leave out --preset, or run tesseract-asm
+  without --organism. The table for each organism is in models/README.md.
 LIST_EOF
 }
 
@@ -447,8 +450,9 @@ else
         fi
         use_model kpneumoniae "$MODEL_FILE"
         EXTRA+=(--organism kpneumoniae)
-        PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model"
+        PRESET_DESC="kpneumoniae (Klebsiella pneumoniae) - trained genus model, $(model_note kpneumoniae)"
         info "Using the kpneumoniae model: $MODEL_FILE"
+        info "  $(model_note kpneumoniae)."
     else
         _mf="$(model_for "$PRESET")"
         if [ -n "$_mf" ]; then

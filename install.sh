@@ -274,7 +274,7 @@ if [ "$guided" = 1 ]; then
     printf '  TesserACT assembles without these. They are what lets it lay the pieces out\n'
     printf '  against a closed genome of the same species, for the seven clinical bugs:\n'
     printf '  Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas, S. aureus,\n'
-    printf '  Enterococcus. About 150 MB in total, downloaded once.\n\n'
+    printf '  Enterococcus. About 1.4 GB in total, downloaded once.\n\n'
     if yesno "  Download them now?" "yes"; then
         printf '\n'
         # Not fatal. A failed download is a network problem, not an install problem: the
@@ -314,7 +314,7 @@ For Klebsiella there is nothing to set up -- this fetches the model and runs eve
   ./tesseract-klebsiella R1.fq.gz        the mate is found automatically
 
 For the other six ESKAPEE organisms:
-  tesseract-get-models                   fetch the models (about 150 MB, once)
+  tesseract-get-models                   fetch the models (about 1.4 GB, once)
   tesseract-eskape --list                the preset name for each organism
 
 With the models installed, the assembler takes one by organism name. It reads

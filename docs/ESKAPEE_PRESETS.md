@@ -1,3 +1,8 @@
+> **1.4.0.** These results were measured with earlier TesserACT versions and older models, and
+> they do not describe 1.4.0. With the 1.4.0 defaults, the organism model adds misassemblies in
+> all seven ESKAPEE organisms while it adds contiguity (329 held-out isolates). See
+> [models/README.md](../models/README.md).
+
 > ## UPDATE 2 — measured on 279 REAL clinical isolates; the simulated table below was wrong
 >
 > The figures in the previous update were measured on **simulated reads** (wgsim). They have now
