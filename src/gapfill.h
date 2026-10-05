@@ -77,6 +77,14 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
                        int threads, int k, int flank,
                        const std::vector<uint8_t>* inputAmbiguousReads = nullptr);
 
+// Organism Model 2.0 C1e: the same, but a gap whose entry in `allow` is 0 is never attempted
+// (entries follow the order in which N-runs occur: contig by contig, left to right). `blocked`
+// receives how many gaps were skipped. With `allow` null this is exactly the call above.
+GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& reads,
+                       int threads, int k, int flank,
+                       const std::vector<uint8_t>* inputAmbiguousReads,
+                       const std::vector<uint8_t>* allow, size_t* blocked);
+
 // One entry per read, nonzero where the read has any ambiguous position. Called right after
 // loading and before read correction, the ambiguity bits are exactly the input Ns: the
 // corrector only ever masks reads that were all ACGT, and it skips reads holding an N.

@@ -179,3 +179,28 @@ uninstall:
 
 clean:
 	@rm -rf $(BUILDDIR) $(BIN) $(MODELBIN)
+
+# Organism Model 2.0 C3 (om2/c3): detection sketch builder and scorer, a development tool that
+# calls the library code behind --organism auto / TESSERACT_OM2_DETECT. Never built by `all`.
+.PHONY: om2probe
+OM2PROBESRC := devtools/om2_detect_probe.cpp
+OM2PROBEBIN := $(BUILDDIR)/om2_detect_probe
+om2probe: $(OM2PROBEBIN)
+$(OM2PROBEBIN): $(OM2PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(OM2PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
+
+# Organism Model 2.0 C4 (om2/clonal): the nearest-relative plasmid sidecar builder (<org>.om2nrp), a development tool
+# that reads a model, the panel's plasmid_map.tsv and the curated plasmid database. Never built by `all`.
+.PHONY: om2nrp om2clonaltest
+OM2NRPSRC := devtools/om2_nrp_build.cpp
+OM2NRPBIN := $(BUILDDIR)/om2_nrp_build
+om2nrp: $(OM2NRPBIN)
+$(OM2NRPBIN): $(OM2NRPSRC) $(PROBEOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(OM2NRPSRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
+
+# C4 end-to-end test on synthetic clonal panels (a clone, a novel IS, a clone missing an IS, a rearranged clone),
+# with and without the layout; drives the built binaries. Not part of `check` (about 5 minutes).
+om2clonaltest: $(BIN) $(MODELBIN)
+	@d=$$(mktemp -d "$${TMPDIR:-/tmp}/tesseract-om2clonal.XXXXXXXX"); set -e; \
+	python3 tests/om2_clonal_e2e.py --asm $(CURDIR)/$(BIN) --model $(CURDIR)/$(MODELBIN) --out $$d --threads 2; \
+	rm -rf $$d

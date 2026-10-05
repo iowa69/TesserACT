@@ -24,7 +24,11 @@
 #include "gapfill.h"
 #include "gap_evidence.h"
 #include "mappolish.h"
+#include "om2_clonal.h"
+#include "om2_close.h"
+#include "om2_output.h"
 #include "organism_join.h"
+#include "om2_ledger.h"
 #include "pairends.h"
 #include "replicon.h"
 #include "gfa.h"
@@ -1448,6 +1452,12 @@ bool Assembler::run(std::string& error) {
                          util::commify(static_cast<long long>(isPanel_.siteCount())).c_str());
         }
     }
+    // Organism Model 2.0, C1 (SEAM): evidence index, junction gate and ledger. Created only when a
+    // TESSERACT_OM2_* flag is set; with none set it stays null and no om2 code runs.
+    std::unique_ptr<om2::SeamContext> om2seam;
+    if (organismModel_.loaded() && !seqs.empty()) {
+        om2seam = om2::SeamContext::create(graph, seqs, reads_, report_.resolve.insert, opt_.threads);
+    }
     if (organismModel_.loaded() && !seqs.empty()) {
         if (opt_.verbose) {
             std::fprintf(stderr, "[4b/7] %s model joining (%u genomes, %u plasmid sets)\n",
@@ -1457,7 +1467,8 @@ bool Assembler::run(std::string& error) {
         }
         std::vector<uint32_t> joinSource;
         report_.organism = joinByModel(organismModel_, seqs, covs, finalK, opt_.verbose,
-                                      isPanel_.loaded() ? &isPanel_ : nullptr, &joinSource);
+                                      isPanel_.loaded() ? &isPanel_ : nullptr, &joinSource,
+                                      om2seam.get());
         // joinByModel rebuilds the contig vector: chains become one entry and
         // the survivors come back in a different order. gfaPaths is parallel to
         // it and has to be permuted with it, or a P line names one contig and
@@ -1488,7 +1499,8 @@ bool Assembler::run(std::string& error) {
         // exactly as it was: in this cohort that residue is 70% plasmid by base, which is
         // the part a clinical read-out actually wants to look at.
         if (organismModel_.trackCount() > 0 && opt_.layout && seqs.size() > 1) {
-            report_.layout = layoutByModel(organismModel_, seqs, covs, finalK, opt_.verbose);
+            report_.layout = layoutByModel(organismModel_, seqs, covs, finalK, opt_.verbose,
+                                           om2seam.get());
             // gfaPaths cannot survive a layout that ran: a scaffold is several contigs with
             // N between them and has no single walk through the graph. Dropping it is
             // correct; permuting it would name one contig and describe another.
@@ -1516,14 +1528,80 @@ bool Assembler::run(std::string& error) {
         }
     }
 
+    // [4b2/7] Organism Model 2.0, C4 (om2_clonal.cpp): clonal-anchored closure. Default off
+    // (TESSERACT_OM2_CLONAL): unset, nothing below runs and only the counter line is printed (at the
+    // end of the run). On, the isolate's nearest panel relatives propose joins between the records the
+    // earlier stages left apart, C1 judges each one, and C2 fills them from this isolate's graph.
+    const om2::ClonalOptions om2ClonalOpt = om2::ClonalOptions::fromEnv();
+    std::unique_ptr<om2::ClonalEngine> om2Clonal;
+    om2::ClonalStats om2ClonalStats;
+    om2ClonalStats.enabled = om2ClonalOpt.enabled;
+    if (om2ClonalOpt.enabled) {
+        if (organismModel_.loaded() && organismModel_.trackCount() > 0 && !seqs.empty()) {
+            om2Clonal.reset(new om2::ClonalEngine(organismModel_, om2ClonalOpt));
+            om2Clonal->selectNearest(graph);
+            bool om2NrpLoaded = false;
+            if (!om2ClonalOpt.nrpPath.empty()) {
+                std::string nerr;
+                om2NrpLoaded = om2Clonal->loadPlasmids(om2ClonalOpt.nrpPath, om2::md5File(opt_.organismModelPath), nerr);
+                if (!om2NrpLoaded) std::fprintf(stderr, "[om2-clonal] plasmid sidecar refused: %s\n", nerr.c_str());
+            }
+            om2::ClonalInputs om2Ci{organismModel_, graph, om2seam.get(), opt_.verbose, opt_.outDir};
+            bool om2ClonalChanged = false;
+            om2ClonalStats = om2::runClonalStage(om2Ci, *om2Clonal, seqs, covs, layoutMembers, om2ClonalChanged);
+            om2ClonalStats.nrpLoaded = om2NrpLoaded;
+            om2ClonalStats.plasmidTracks = om2Clonal->plasmidTracks();
+            // A joined or split record has no single graph walk (as after the layout).
+            if (om2ClonalChanged) gfaPaths.clear();
+        } else {
+            om2ClonalStats.skip = "no_model_tracks";
+        }
+    } else if (om2ClonalOpt.anyFlagSet) {
+        std::fprintf(stderr, "[om2-clonal] note: a TESSERACT_OM2_CLONAL_* option is set but TESSERACT_OM2_CLONAL "
+                             "is not; the stage is off\n");
+    }
+
+    // [4c/7] Organism Model 2.0, C2 (om2_close.cpp): repeat bridging, data-driven fills, labelled
+    // allocation and circularisation. Default off (TESSERACT_OM2_CLOSE): unset, the stage returns
+    // without touching the assembly, and only its counter line is printed.
+    // Integration (build_om2): with C1 judging, C2 attaches its fills to C1's rows (located in `seqs`
+    // by C1) instead of recording the gaps again, and C1's verdicts gate its bridges. C2's own rows
+    // (wraps, and N-runs no C1 row owns) and the repeat-variant rows are kept for the writer (C3).
+    const om2::CloseOptions om2CloseOpt = om2::CloseOptions::fromEnv();
+    om2::Ledger om2CloseLedger;
+    std::vector<om2::RepeatVariant> om2Variants;
+    om2::CloseStats om2CloseStats;
+    {
+        std::vector<std::vector<om2::RunOwner>> om2Runs;
+        om2::CloseInputs om2In{graph, reads_, report_.resolve.insert, opt_.outDir, opt_.organismModelPath,
+                               opt_.threads, opt_.verbose};
+        if (om2CloseOpt.enabled && om2seam && om2seam->gating()) {
+            om2Runs = om2seam->runOwners(seqs);
+            om2In.c1 = &om2seam->ledgerForUpdate();
+            om2In.c1Runs = &om2Runs;
+        }
+        if (om2CloseOpt.enabled) om2In.variants = &om2Variants;
+        om2CloseStats = om2::runCloseStage(om2In, om2CloseOpt, seqs, om2CloseLedger);
+        om2::logCloseCounters(om2CloseStats);
+    }
+
     // Scaffolding wrote the joins it trusts as Ns. Those Ns are a statement
     // about the graph, not about the data: the reads that cross the join are
     // still in memory. Closing them here, before polishing, means the bases
     // that come back are polished with everything else.
     if (opt_.gapFill && !seqs.empty()) {
         if (opt_.verbose) std::fprintf(stderr, "[5/7] scaffold gap closing\n");
-        const GapFillStats gs = closeGaps(seqs, reads_, opt_.threads, 31, 300,
-                                          inputAmbiguousReads.empty() ? nullptr : &inputAmbiguousReads);
+        // Organism Model 2.0 C1e: with a SEAM context the ledger maps every gap to its junction,
+        // and in act mode the filler skips the gaps the ledger does not allow.
+        std::vector<uint8_t> om2Allow;
+        size_t om2Blocked = 0;
+        const bool om2Mask = om2seam && om2seam->beforeCloseGaps(seqs, om2Allow);
+        const GapFillStats gs = om2Mask
+            ? closeGaps(seqs, reads_, opt_.threads, 31, 300,
+                        inputAmbiguousReads.empty() ? nullptr : &inputAmbiguousReads, &om2Allow, &om2Blocked)
+            : closeGaps(seqs, reads_, opt_.threads, 31, 300,
+                        inputAmbiguousReads.empty() ? nullptr : &inputAmbiguousReads);
+        if (om2seam) om2seam->afterCloseGaps(seqs, om2Blocked);
         report_.gapFill = gs;
         report_.gapFillRun = true;
         if (opt_.verbose && gs.gapsSeen) {
@@ -1542,6 +1620,8 @@ bool Assembler::run(std::string& error) {
     }
     // Counter lines of the gap-filler fixes, on every run (OBJECTIVE amendment A2).
     logGapFillCounters(report_.gapFillRun ? report_.gapFill : gapFillIdleStats());
+    // Organism Model 2.0 C1 counter lines, on every run (zeros without TESSERACT_OM2_*).
+    om2::SeamContext::printCounters(om2seam.get(), stderr);
 
     // T03 (G-resolve): gaps the filler left open get back the k-1 bases the resolver's
     // layout left out -- after gap filling, before polishing. Called on every run: it
@@ -2057,6 +2137,90 @@ bool Assembler::run(std::string& error) {
     }
 
     logAgpGfa(agpStats);
+
+    // Organism Model 2.0 C1: the junction ledger, located in the scaffolds as written.
+    if (om2seam && om2seam->gating()) {
+        std::string om2err;
+        if (!om2seam->writeTsv(opt_.outDir + "/om2_seams.tsv", outSeqs, outNames, om2err))
+            std::fprintf(stderr, "      warning: %s\n", om2err.c_str());
+    }
+
+    // Organism Model 2.0, C3 (default OFF: TESSERACT_OM2_OUTPUT, TESSERACT_OM2_AGP_EVIDENCE). The
+    // genome/ owner view is written from the records above, which it only reads; the counter line
+    // prints on every run. C1's junction ledger and C2's fills attach at `ledger`/`variants`.
+    {
+        om2::SurfaceInput si;
+        si.outDir = opt_.outDir;
+        si.scaffoldsFile = gapBasesTotal > 0;
+        si.seqs = si.scaffoldsFile ? &outSeqs : &splitSeqs;
+        si.names = si.scaffoldsFile ? &outNames : &splitNames;
+        si.modelRan = report_.organismRun || report_.layout.run;
+        if (report_.organismRun) { si.modelPath = opt_.organismModelPath; si.modelName = report_.organismName; }
+        // Integration (build_om2): one ledger for the writer, index = junction id: C1's rows (with
+        // C2's fills attached), then C2's own rows. Handed over only when an om2 stage acted or the
+        // writer was asked for: C1 in audit mode records and never acts, so its admissions are not
+        // applied (every C1 row reads as admitted to scaffolds) and alone it hands nothing over.
+        om2::Ledger om2All;
+        std::vector<std::vector<om2::RunOwner>> om2Owner;
+        om2::DnaaSketch om2Dnaa;
+        const bool om2C1 = om2seam && om2seam->gating();
+        const bool om2C1Act = om2C1 && om2seam->config().act();
+        if (om2C1Act || om2CloseStats.enabled || om2::outputEnabled() || om2::agpEvidenceEnabled()) {
+            if (om2C1) {
+                om2All.j = om2seam->ledger().j;
+                if (!om2C1Act) for (om2::Junction& j : om2All.j) j.admit = om2::Admit::Scaffold;
+                om2Owner = om2seam->runOwners(*si.seqs);
+                si.runOwner = &om2Owner;
+            }
+            om2All.j.insert(om2All.j.end(), om2CloseLedger.j.begin(), om2CloseLedger.j.end());
+            for (int w = 0; w < 64; ++w) om2All.rotateOffset[w] = om2CloseLedger.rotateOffset[w];
+            if (!om2All.j.empty()) si.ledger = &om2All;
+            if (!om2Variants.empty()) si.variants = &om2Variants;
+            if (om2CloseStats.dnaaLoaded) {
+                std::string derr;
+                if (om2Dnaa.load(om2CloseOpt.dnaa, om2::md5File(opt_.organismModelPath), derr)) {
+                    si.originLocator = [&om2Dnaa](const std::string& rec) -> int64_t {
+                        const om2::DnaaSketch::Hit h = om2Dnaa.locate(rec);
+                        if (!h.found) return -1;
+                        return h.reverse ? -2 - h.offset : h.offset;
+                    };
+                }
+            }
+            if (!om2CloseOpt.rrnPrior.empty()) si.sidecars.emplace_back("rrn_prior", om2CloseOpt.rrnPrior);
+            if (!om2CloseOpt.dnaa.empty()) si.sidecars.emplace_back("dnaa", om2CloseOpt.dnaa);
+            // the C1 and C2 counter lines, as printed, for the report.json om2 block
+            char* cbuf = nullptr;
+            size_t clen = 0;
+            if (std::FILE* mf = open_memstream(&cbuf, &clen)) {
+                om2::SeamContext::printCounters(om2seam.get(), mf);
+                std::fclose(mf);
+                const std::string lines(cbuf ? cbuf : "", clen);
+                std::free(cbuf);
+                size_t at = 0;
+                while (at < lines.size()) {
+                    size_t e = lines.find('\n', at);
+                    if (e == std::string::npos) e = lines.size();
+                    const std::string ln = lines.substr(at, e - at);
+                    if (ln.rfind("[om2-evidence]", 0) == 0) si.stageCounters.emplace_back("om2_evidence", ln);
+                    if (ln.rfind("[om2-seam]", 0) == 0) si.stageCounters.emplace_back("om2_seam", ln);
+                    at = e + 1;
+                }
+            }
+            si.stageCounters.emplace_back("om2_close", om2::formatCloseCounters(om2CloseStats));
+        }
+        // C4: the clonal annotator (junction labels, nearest relatives in closure.txt). Only when the
+        // clonal stage ran; otherwise si.clonal stays null and the writer is exactly C3's.
+        std::unique_ptr<om2::ClonalSurface> om2ClonalSurface;
+        if (om2Clonal) {
+            om2ClonalSurface.reset(new om2::ClonalSurface(*om2Clonal, om2seam.get(), om2ClonalStats));
+            si.clonal = om2ClonalSurface.get();
+        }
+        const om2::SurfaceStats os = om2::writeSurface(si, report_.om2Json);
+        om2::logSurfaceCounters(os);
+        if (!os.ok) { error = os.error; return false; }
+    }
+    // Organism Model 2.0 C4 counter line, on every run (zeros without TESSERACT_OM2_CLONAL).
+    om2::logClonalCounters(om2ClonalStats);
 
     stats_.contigs = outSeqs.size();
     stats_.totalLength = report_.totalLength;

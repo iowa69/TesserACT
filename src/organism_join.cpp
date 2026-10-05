@@ -8,6 +8,7 @@
 #include <unordered_map>
 
 #include "graph.h"
+#include "om2_ledger.h"
 
 namespace ts {
 
@@ -189,7 +190,8 @@ struct Hit { size_t contig; uint32_t pos; int orient; uint32_t id; };
 // the number of joins made and rewrites `contigs` in place.
 size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::string>& contigs,
                 std::vector<double>& covs, int k, OrganismJoinStats& st,
-                const IsPanel* isPanel, std::vector<uint32_t>* source) {
+                const IsPanel* isPanel, std::vector<uint32_t>* source,
+                om2::SeamContext* seam) {
     const size_t n = contigs.size();
     // `source` maps each emitted contig back to the single input it came from,
     // or UINT32_MAX when it was built by joining several. Callers holding data
@@ -276,6 +278,16 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         const bool plasmidic = pv >= cv * 3;
         if (cls == Replicon::Chromosome) participates[c] = chromosomal || !plasmidic;
         else participates[c] = plasmidic || !chromosomal;
+    }
+    // Organism Model 2.0 C1d (act mode): a contig whose depth says plasmid (>= 1.75 theta)
+    // stays out of the chromosome pass.
+    if (seam && seam->plasmidRuleActive() && cls == Replicon::Chromosome) {
+        for (size_t c = 0; c < n; ++c) {
+            if (participates[c] && seam->plasmidByDepth(covs[c])) {
+                participates[c] = 0;
+                seam->countPlasmidDepthExcluded();
+            }
+        }
     }
 
     std::vector<Hit> unique;
@@ -612,6 +624,57 @@ size_t joinPass(const OrganismModel& model, Replicon cls, std::vector<std::strin
         std::fclose(dump);
         dump = nullptr;
     }
+    // ---- Organism Model 2.0 C1: judge every accepted join ------------------------
+    // Audit mode records and changes nothing; act mode may break a join or size its N from
+    // the graph. Each join is judged once, leaving from its lower-numbered port.
+    if (seam && made && seam->gating()) {
+        seam->beginBatch(contigs);
+        const size_t win = static_cast<size_t>(25000);
+        auto voteChr = [&](size_t c) { return chrVotes[c] > 0 && chrVotes[c] >= plsVotes[c] * 3; };
+        auto votePls = [&](size_t c) { return plsVotes[c] > 0 && plsVotes[c] >= chrVotes[c] * 3; };
+        for (uint32_t p = 0; p < nports; ++p) {
+            const uint32_t q = joinTo[p];
+            if (q == UINT32_MAX || q < p) continue;
+            const int32_t gap = joinGap[p];
+            const size_t w = std::max(win, static_cast<size_t>(std::abs(gap)) + 1000);
+            const std::string& cp = contigs[p / 2];
+            const std::string& cq = contigs[q / 2];
+            // Oriented so the junction sits at the right end of `left` and the left end of `right`.
+            const std::string left = (p & 1u) ? cp.substr(cp.size() > w ? cp.size() - w : 0)
+                                              : reverseComplement(cp.substr(0, std::min(w, cp.size())));
+            const std::string right = (q & 1u) ? reverseComplement(cq.substr(cq.size() > w ? cq.size() - w : 0))
+                                               : cq.substr(0, std::min(w, cq.size()));
+            om2::JudgeRequest rq;
+            rq.stage = cls == Replicon::Chromosome ? "join_chr" : "join_pls";
+            rq.left = &left;
+            rq.right = &right;
+            if (gap < 0) {
+                const size_t trim = mergeOnOverlap(left, right, -gap, minOverlapMerge);
+                rq.source = trim ? om2::Source::JoinOverlap : om2::Source::JoinButt1;
+                rq.claimedN = trim ? -static_cast<int32_t>(trim) : 1;
+            } else {
+                rq.source = om2::Source::Join;
+                rq.claimedN = std::max(1, gap);
+            }
+            rq.panelGap = gap;
+            rq.a = om2::Port{p / 2, (p & 1u) != 0};
+            rq.b = om2::Port{q / 2, (q & 1u) != 0};
+            rq.plasmidPass = cls == Replicon::Plasmid;
+            rq.chromosomalA = voteChr(p / 2);
+            rq.chromosomalB = voteChr(q / 2);
+            rq.plasmidicA = votePls(p / 2);
+            rq.plasmidicB = votePls(q / 2);
+            if (best[p].port == q) { rq.panelSupport = best[p].support; rq.panelPairs = static_cast<uint32_t>(best[p].pairs); }
+            if (siteJoin[p] == q) rq.stage = "join_site";
+            const om2::Decision d = seam->judge(rq);
+            if (!d.keep) {
+                joinTo[p] = joinTo[q] = UINT32_MAX;
+                --made;
+            } else if (d.writeN != INT32_MIN) {
+                joinGap[p] = joinGap[q] = d.writeN;
+            }
+        }
+    }
     if (made == 0) { identity(); return 0; }
 
     // ---- emit --------------------------------------------------------------
@@ -798,7 +861,8 @@ double IsPanel::density(const std::string& seq, size_t from, size_t len) const {
 
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
                               std::vector<double>& covs, int k, bool verbose,
-                              const IsPanel* isPanel, std::vector<uint32_t>* source) {
+                              const IsPanel* isPanel, std::vector<uint32_t>* source,
+                              om2::SeamContext* seam) {
     OrganismJoinStats st;
     st.contigsIn = contigs.size();
     st.contigsOut = contigs.size();
@@ -842,10 +906,10 @@ OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::strin
     for (int round = 0; round < kMaxRounds; ++round) {
         std::vector<uint32_t> m1, m2;
         const size_t chr = joinPass(model, Replicon::Chromosome, contigs, covs, k, st,
-                                    isPanel, source ? &m1 : nullptr);
+                                    isPanel, source ? &m1 : nullptr, seam);
         compose(m1);
         const size_t pls = joinPass(model, Replicon::Plasmid, contigs, covs, k, st,
-                                    isPanel, source ? &m2 : nullptr);
+                                    isPanel, source ? &m2 : nullptr, seam);
         compose(m2);
         st.chromosomeJoins += chr;
         st.plasmidJoins += pls;

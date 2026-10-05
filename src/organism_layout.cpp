@@ -7,6 +7,7 @@
 #include <unordered_map>
 
 #include "graph.h"
+#include "om2_ledger.h"
 
 namespace ts {
 
@@ -98,7 +99,8 @@ struct Located {
 }  // namespace
 
 LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& contigs,
-                          std::vector<double>& covs, int k, bool verbose) {
+                          std::vector<double>& covs, int k, bool verbose,
+                          om2::SeamContext* seam) {
     LayoutStats st;
     st.contigsIn = contigs.size();
     st.contigsOut = contigs.size();
@@ -233,6 +235,18 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
                 }
             }
         }
+        // Organism Model 2.0 C1d (act mode): plasmid-voted contigs stay off the chromosome
+        // track -- marker votes 3:1 (without the 4-marker floor) or depth >= 1.75 theta.
+        if (seam && seam->plasmidRuleActive()) {
+            for (size_t c = 0; c < contigs.size(); ++c) {
+                if (plasmidContig[c]) continue;
+                if ((plsV[c] > 0 && plsV[c] >= chrV[c] * 3) || seam->plasmidByDepth(covs[c])) {
+                    plasmidContig[c] = 1;
+                    ++st.plasmidSkipped;
+                    seam->countPlasmidDepthExcluded();
+                }
+            }
+        }
     }
 
     std::vector<Placement> placed;
@@ -339,6 +353,7 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
         ++st.scaffolds;
     };
 
+    if (seam && seam->gating()) seam->beginBatch(contigs);
     for (size_t i = 0; i < chosen.size(); ++i) {
         const Placement& p = chosen[i];
         used[p.contig] = 1;
@@ -349,6 +364,41 @@ LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& 
             const int64_t gap = p.start - chosen[i - 1].end;
             if (gap > kMaxTrackGap) {
                 flush();
+            } else if (seam && seam->gating()) {
+                // Organism Model 2.0 C1: the release decision below, judged first. Audit mode
+                // writes exactly what the release writes; act mode may break or resize.
+                size_t trim = 0;
+                om2::JudgeRequest rq;
+                rq.stage = "layout";
+                if (gap < 0) {
+                    trim = exactOverlap(cur, piece, -gap);
+                    rq.source = trim ? om2::Source::LayoutOverlap : om2::Source::LayoutButt1;
+                    rq.claimedN = trim ? -static_cast<int32_t>(trim) : 1;
+                } else {
+                    rq.source = gap > kGapCap ? om2::Source::LayoutCap2000 : om2::Source::Layout;
+                    rq.claimedN = static_cast<int32_t>(std::min<int64_t>(std::max<int64_t>(gap, 1), kGapCap));
+                }
+                rq.panelGap = static_cast<int32_t>(gap);
+                rq.left = &cur;
+                rq.right = &piece;
+                rq.a = om2::Port{static_cast<uint32_t>(chosen[i - 1].contig), chosen[i - 1].orient == 0};
+                rq.b = om2::Port{static_cast<uint32_t>(p.contig), p.orient != 0};
+                rq.panelSupport = static_cast<uint32_t>(std::min(p.markers, chosen[i - 1].markers));
+                const om2::Decision d = seam->judge(rq);
+                if (!d.keep) {
+                    flush();
+                } else if (d.writeN != INT32_MIN) {
+                    const size_t nn = static_cast<size_t>(std::max<int32_t>(d.writeN, 1));
+                    cur.append(nn, 'N');
+                    st.gapBases += nn;
+                } else if (trim) {
+                    piece.erase(0, trim);
+                    ++st.overlapMerges;
+                } else {
+                    const size_t nn = static_cast<size_t>(rq.claimedN);
+                    cur.append(nn, 'N');
+                    st.gapBases += nn;
+                }
             } else if (gap < 0) {
                 const size_t trim = exactOverlap(cur, piece, -gap);
                 if (trim) {

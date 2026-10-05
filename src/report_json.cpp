@@ -276,6 +276,13 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.num("seconds", rep.polishSeconds);
     w.close('}');
 
+    // Organism Model 2.0 (C3): present only when an om2 flag ran (see AssemblyReport::om2Json).
+    if (!rep.om2Json.empty()) {
+        w.key("om2");
+        w.s += rep.om2Json;
+        w.s += ",\n";
+    }
+
     w.openObj("assembly");
     w.uint("contigs", rep.contigs.size());
     w.uint("total_length", rep.totalLength);

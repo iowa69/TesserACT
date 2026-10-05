@@ -16,6 +16,7 @@
 #include "version.h"
 #include "kmer.h"
 #include "organism.h"
+#include "organism_detect.h"
 #include "util.h"
 
 namespace {
@@ -245,6 +246,7 @@ int main(int argc, char** argv) {
     std::vector<Library> singles;
     bool haveLib = false;
     bool sawK = false;
+    bool organismForce = false;   // om2 C3: run an explicit --organism the detection gate refused
 
     if (argc < 2) { usage(); return 1; }
 
@@ -300,6 +302,7 @@ int main(int argc, char** argv) {
         }
         else if (a == "-o" || a == "--out") opt.outDir = needValue(i, "-o");
         else if (a == "--organism") opt.organism = needValue(i, "--organism");
+        else if (a == "--organism-force") organismForce = true;
         // --model is not part of the supported interface. A model is a curated artifact:
         // its panel composition, its leave-cluster-out provenance and the exclusion lists
         // behind it are what make its output meaningful, and a file of the right shape
@@ -437,6 +440,24 @@ int main(int argc, char** argv) {
         std::fprintf(stderr, "%s\n", defaults::line(effective.tieRatio).c_str());
     }
 
+    // Organism Model 2.0, C3 (default OFF): `--organism auto` picks the model from the reads, and
+    // TESSERACT_OM2_DETECT=warn|gate checks an explicit --organism against them (organism_detect.h).
+    // Skipped when an input is missing: the checks below report that.
+    if (om2::detectRequested(opt.organism) && opt.organismModelPath.empty()) {
+        std::vector<std::string> files;
+        for (const std::string& f : {lib.r1, lib.r2}) if (!f.empty()) files.push_back(f);
+        for (const Library& sl : singles) files.push_back(sl.r1);
+        bool present = !files.empty();
+        for (const std::string& f : files) present = present && util::fileExists(f);
+        std::string dir;
+        if (const char* d = env::text("TESSERACT_MODEL_DIR")) dir = d;
+        else if (const char* h = std::getenv("HOME")) dir = std::string(h) + "/.tesseract/models";
+        if (present) {
+            const int rc = om2::detectOrganism(opt.organism, organismForce, files, dir, stderr);
+            if (rc != 0) return rc;
+        }
+    }
+
     // --organism resolves to a bundled model. This is the only supported way to reach
     // one: the model's value is in how its panel was assembled and what was withheld
     // from it, none of which survives being pointed at an arbitrary file. Resolution
@@ -470,6 +491,8 @@ int main(int argc, char** argv) {
             return 2;
         }
     }
+    // om2 C3: the detection sketch must come from the model file this run loads (EVAL_PLAN s2).
+    if (om2::checkSketchModel(opt.organismModelPath, stderr) != 0) return 2;
 
     if (!haveLib || (lib.r1.empty() && singles.empty())) {
         std::fprintf(stderr, "error: no input reads given (use -1/-2, --12, or -s)\n");

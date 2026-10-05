@@ -260,6 +260,14 @@ void logGapFillCounters(const GapFillStats& s) {
 GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& reads,
                        int threads, int k, int flank,
                        const std::vector<uint8_t>* inputAmbiguousReads) {
+    return closeGaps(contigs, reads, threads, k, flank, inputAmbiguousReads, nullptr, nullptr);
+}
+
+GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& reads,
+                       int threads, int k, int flank,
+                       const std::vector<uint8_t>* inputAmbiguousReads,
+                       const std::vector<uint8_t>* allow, size_t* blocked) {
+    if (blocked) *blocked = 0;
     GapFillStats stats;
     util::Timer timer;
     // Fix switches, read per call (never cached): see emit_fixflags.h.
@@ -295,6 +303,12 @@ GapFillStats closeGaps(std::vector<std::string>& contigs, const SequenceStore& r
             uint32_t j = i;
             while (j < s.size() && s[j] == 'N') ++j;
             ++stats.gapsSeen;
+            // Organism Model 2.0 C1e: a gap the junction ledger does not allow is left as N.
+            if (allow && stats.gapsSeen - 1 < allow->size() && !(*allow)[stats.gapsSeen - 1]) {
+                if (blocked) ++*blocked;
+                i = j;
+                continue;
+            }
             const uint32_t len = j - i;
             const bool roomLeft = i >= std::max<uint32_t>(kMinFlank, static_cast<uint32_t>(k));
             const bool roomRight = s.size() - j >= std::max<uint32_t>(kMinFlank, static_cast<uint32_t>(k));

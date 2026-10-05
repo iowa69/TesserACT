@@ -131,6 +131,11 @@ struct AssemblyReport {
     size_t trimmedOverlaps = 0;      // terminal repeat overlaps trimmed from the records
     size_t trimmedOverlapBases = 0;  // bases they removed
 
+    // Organism Model 2.0 (C3): the report.json "om2" object, rendered by om2_output.cpp. Empty
+    // unless an om2 flag ran (TESSERACT_OM2_OUTPUT, TESSERACT_OM2_AGP_EVIDENCE, detection),
+    // and then no key is written: a flags-off report is the release's byte for byte.
+    std::string om2Json;
+
     // Recomputes the derived summary fields from `contigs`.
     void finalize();
 };

@@ -34,6 +34,8 @@
 
 namespace ts {
 
+namespace om2 { class SeamContext; }
+
 struct LayoutStats {
     bool run = false;
     std::string track;          // panel chromosome used, for provenance
@@ -55,7 +57,10 @@ struct LayoutStats {
 // `covs` is reordered to match. Contigs that cannot be placed are kept, untouched, after
 // the scaffolds. Returns what happened; `run` is false when the model carries no tracks
 // or too few markers could be located to choose one.
+// `seam` (Organism Model 2.0, C1) judges every seam the layout writes; null -- the default,
+// and every run without TESSERACT_OM2_* -- leaves this function exactly as released.
 LayoutStats layoutByModel(const OrganismModel& model, std::vector<std::string>& contigs,
-                          std::vector<double>& covs, int k, bool verbose);
+                          std::vector<double>& covs, int k, bool verbose,
+                          om2::SeamContext* seam = nullptr);
 
 }  // namespace ts

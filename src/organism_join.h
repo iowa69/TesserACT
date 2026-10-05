@@ -21,6 +21,8 @@
 
 namespace ts {
 
+namespace om2 { class SeamContext; }
+
 struct OrganismJoinStats {
     size_t contigsIn = 0;
     size_t contigsOut = 0;
@@ -85,9 +87,13 @@ private:
 // by joining several. Anything the caller keeps parallel to `contigs` -- graph
 // walks, for one -- has to be permuted with it or it will describe the wrong
 // contig afterwards.
+// `seam` (Organism Model 2.0, C1) judges every accepted join against the graph and the read
+// pairs before it is emitted; null -- the default, and every run without TESSERACT_OM2_* --
+// leaves this function exactly as released.
 OrganismJoinStats joinByModel(const OrganismModel& model, std::vector<std::string>& contigs,
                               std::vector<double>& covs, int k, bool verbose,
                               const IsPanel* isPanel = nullptr,
-                              std::vector<uint32_t>* source = nullptr);
+                              std::vector<uint32_t>* source = nullptr,
+                              om2::SeamContext* seam = nullptr);
 
 }  // namespace ts

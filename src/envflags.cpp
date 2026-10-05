@@ -159,6 +159,57 @@ const Spec kTable[] = {
     K("TESSERACT_JOIN_DUMP", Kind::Text),
     K("TESSERACT_PLASMID_CLUSTERS", Kind::Text),
     K("TESSERACT_DEV_FORK_BATCH", Kind::Text),
+    // Organism Model 2.0, C1 SEAM (om2_ledger.h); all unset = release behaviour
+    K("TESSERACT_OM2_EVIDENCE", Kind::Binary),
+    C("TESSERACT_OM2_SEAM", "0|audit|act"),
+    C("TESSERACT_OM2_UNSIZED", "butt|break|sized"),
+    C("TESSERACT_OM2_CAP", "keep|size"),
+    K("TESSERACT_OM2_PAIRS", Kind::Binary),
+    K("TESSERACT_OM2_PLASMID_RULE", Kind::Binary),
+    K("TESSERACT_OM2_CLOSEGAPS_POLICY", Kind::Binary),
+    K("TESSERACT_OM2_ADMIT", Kind::Text),
+    I("TESSERACT_OM2_TANGLE_MAX", 1, kIntMax),
+    // Organism Model 2.0, C2 close (om2_close.cpp, om2_alloc.cpp), all default off
+    K("TESSERACT_OM2_CLOSE", Kind::Binary),                  // stage [4c/7]
+    C("TESSERACT_OM2_FILL", "none|genome|contig"),           // genome is the default when on
+    C("TESSERACT_OM2_ALLOC", "off|consensus|phased|prior"),  // phased is the default when on
+    K("TESSERACT_OM2_CIRC", Kind::Binary),
+    K("TESSERACT_OM2_RRN_PRIOR", Kind::Text),                // <org>.om2rrn, md5-pinned to the model
+    K("TESSERACT_OM2_DNAA", Kind::Text),                     // <org>.om2dnaa, md5-pinned to the model
+    K("TESSERACT_OM2_FLOW", Kind::Binary),
+    // Organism Model 2.0, component C3 (om2_output.cpp, organism_detect.cpp); all default off
+    K("TESSERACT_OM2_OUTPUT", Kind::Binary),                 // genome/ owner view, report.json om2 block
+    K("TESSERACT_OM2_AGP_EVIDENCE", Kind::Binary),           // per-gap linkage evidence in scaffolds.agp
+    C("TESSERACT_OM2_DETECT", "off|warn|gate"),              // check --organism against the reads
+    K("TESSERACT_OM2_DETECT_SKETCH", Kind::Text),            // default <model dir>/om2detect.sketch
+    // Organism Model 2.0, component C4 CLONAL (om2_clonal.cpp); all default off
+    K("TESSERACT_OM2_CLONAL", Kind::Binary),                 // stage [4b2/7] + junction labels
+    I("TESSERACT_OM2_CLONAL_K", 1, 32),                      // nearest relatives consulted (5)
+    I("TESSERACT_OM2_CLONAL_KMIN", 1, 32),                   // relatives that must agree (3)
+    K("TESSERACT_OM2_CLONAL_LAYOUT", Kind::Binary),          // propose joins (1)
+    K("TESSERACT_OM2_CLONAL_BREAK", Kind::Binary),           // break contradicted panel-only joins (1)
+    C("TESSERACT_OM2_CLONAL_NONPOS", "fill|gap"),            // non-positional elements with bases (fill)
+    R("TESSERACT_OM2_CLONAL_DMAX", 0.0, 1.0),                // distance gate for clonal joins (1)
+    R("TESSERACT_OM2_CLONAL_CONFIDENT", 0.5, 1.0),           // claim threshold (0.99)
+    R("TESSERACT_OM2_CLONAL_CONF_DMAX", 0.0, 1.0),           // distance gate for `confident` (1)
+    K("TESSERACT_OM2_CLONAL_CAL", Kind::Text),               // dev-fitted calibration table
+    I("TESSERACT_OM2_CLONAL_MINMARK", 1, 32),                // markers placing an end (3)
+    K("TESSERACT_OM2_CLONAL_NRP", Kind::Text),               // nearest-relative plasmid sidecar (<org>.om2nrp)
+    C("TESSERACT_OM2_CLONAL_WEIGHT", "distance|count"),      // relatives' votes (distance)
+    R("TESSERACT_OM2_CLONAL_DSCALE", 1e-6, 0.1),             // vote weight distance scale (0.0005)
+    K("TESSERACT_OM2_CLONAL_OVERLAP", Kind::Binary),         // round 2: exact-overlap joins (1)
+    K("TESSERACT_OM2_CLONAL_VOUCH", Kind::Binary),           // round 2: relatives vouch over C1 pair DENY at repeat ends (1)
+    K("TESSERACT_OM2_CLONAL_BRACKET", Kind::Binary),         // round 2: walk / relatives size bracket (0)
+    K("TESSERACT_OM2_CLONAL_RESIZE", Kind::Binary),          // round 2: clonal size check of panel-sized joins (1)
+    K("TESSERACT_OM2_CLONAL_WALKSIZE", Kind::Binary),        // round 3: data-driven gap sizing from the isolate's walks (0)
+    K("TESSERACT_OM2_CLONAL_KC2", Kind::Binary),             // round 3: KC2, non-positional elements never filled (0)
+    K("TESSERACT_OM2_CLONAL_CONFRULE", Kind::Binary),        // round 3: count-based `confident` rule (0)
+    I("TESSERACT_OM2_CLONAL_DISCORD", 0, 1000),              // round 3: CONFRULE discord threshold (2)
+    K("TESSERACT_OM2_CLONAL_INDEL", Kind::Binary),           // round 3b: end placements tolerate a 250 kb indel (0)
+    K("TESSERACT_OM2_CLONAL_UNVERIFIED", Kind::Binary),      // round 3b: break panel-sized layout gaps nobody sizes (0)
+    K("TESSERACT_OM2_CLONAL_CAPWALK", Kind::Binary),         // round 3: C1 cap rule sized at the isolated shortest walk (0)
+    K("TESSERACT_OM2_CLONAL_STRICT", Kind::Binary),          // round 3c: graph-first emission rule of model junctions (0)
+    K("TESSERACT_OM2_CLONAL_STRICT_NR0", Kind::Binary),      // round 3c: STRICT also breaks junctions no relative places (0)
     // read by tesseract-eskape, tesseract-klebsiella and tesseract-get-models
     K("TESSERACT_ASM", Kind::External),
     K("TESSERACT_KP_MODEL", Kind::External),
