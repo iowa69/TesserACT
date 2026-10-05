@@ -3,8 +3,8 @@
 Models are attached to the [releases](https://github.com/iowa69/TesserACT/releases) rather
 than committed. There are two sets, and neither belongs in a git history:
 
-- **`models-v2`**, the seven ESKAPEE organism models, one `<organism>.tsm` each, about 1.4 GB
-  together. `tesseract-get-models` downloads them into `~/.tesseract/models` and checks each
+- **`models-v2`**, the seven ESKAPEE organism models and, since 1.5.0, the *Salmonella enterica*
+  model, one `<organism>.tsm` each, about 1.7 GB together. `tesseract-get-models` downloads them into `~/.tesseract/models` and checks each
   against [`models.sha256`](../models.sha256). The assembler selects one with
   `--organism <organism>` and looks for it there, or in the directory `TESSERACT_MODEL_DIR`
   names. `tesseract-eskape --preset <organism>` and `tesseract-klebsiella --with-model` use the
@@ -22,7 +22,7 @@ median NGA50 from 134 to 156 kb. It also raised misassemblies from 154 to 290 on
 isolates whose closed reference matches the reads. The assembler loads a model only when
 `--organism` is given. The measurement is in [What a model costs](#what-a-model-costs).
 
-## models-v2: the seven ESKAPEE models
+## models-v2: the seven ESKAPEE models, and *Salmonella enterica* (1.5.0)
 
 The release is named `models-v2`, and there is no `models-v1`. The `tesseract-get-models` of
 1.3.0 fetches from a `models-v1` release and checks against a different checksum list, so
@@ -39,6 +39,8 @@ reject each file.
 | `paeruginosa.tsm` | *Pseudomonas aeruginosa* | 214,016,711 | 214.0 MB | 1,358 | 1,146 |
 | `saureus.tsm` | *Staphylococcus aureus* | 92,588,552 | 92.6 MB | 1,473 | 4,135 |
 | **all seven** | | **1,413,367,482** | **1.41 GB** | | |
+| `senterica.tsm` (1.5.0) | *Salmonella enterica* | 297,628,042 | 297.6 MB | 1,530 | 41,336 |
+| **all eight** | | **1,710,995,524** | **1.71 GB** | | |
 
 These are the sha256 checksums. They are the same as [`models.sha256`](../models.sha256) and
 the release's `SHA256SUMS` asset:
@@ -51,9 +53,10 @@ d8702ec9ab45aac72f4a33d03475ddff2708901fd6d3ef0c1bedf5399bb5ae9d  ecoli.tsm
 c668812cc7ef81f3d34e4be9b9ac38c40f5b56d980bd741ea2a89bd8c43fa8a0  kpneumoniae.tsm
 ed47f4035b0a473c4d2091e9707d31bdd9b6bbff941613360e6e7470884773a3  paeruginosa.tsm
 86e6ec7f1afbf1a391ce41bfbcb5267f5eef68a90fbc2a0033e4f96637ede216  saureus.tsm
+7c627d3fc190065150b252468d95efc79e8d1506b1e307f7e630b442341dffaf  senterica.tsm
 ```
 
-`tesseract-get-models` fetches all seven, or only the ones named (`tesseract-get-models saureus`).
+`tesseract-get-models` fetches all eight, or only the ones named (`tesseract-get-models saureus`).
 It checks each file against that list and skips any it has already verified. To fetch by hand,
 download from the [`models-v2` release](https://github.com/iowa69/TesserACT/releases/tag/models-v2)
 and run `sha256sum --check --ignore-missing SHA256SUMS`.
@@ -145,9 +148,45 @@ fewer misassemblies". Those were measured with older defaults and older models, 
 [`docs/REAL_WORLD_RESULTS.md`](../docs/REAL_WORLD_RESULTS.md) and
 [`docs/ESKAPEE_MODELS.md`](../docs/ESKAPEE_MODELS.md), and they do not hold for 1.4.0.
 
+### *Salmonella enterica* (`senterica.tsm`, new in 1.5.0)
+
+**Why it is an eighth file in `models-v2` and not a new release.** The seven ESKAPEE files and their
+checksums are unchanged, so nothing that 1.4.0 downloads or verifies changes: a 1.4.0 install reads
+its own seven-line `models.sha256` and never asks for `senterica.tsm`. A 1.5.0 install lists eight
+lines and fetches the eighth from the same place. A `models-v3` release would only be needed if an
+existing file changed, because a 1.4.0 install would then reject the new bytes under the old name;
+publishing the unchanged 1.4 GB again under a new tag would buy nothing.
+
+**How it was built.** With the models-v2 recipe and the same builder (`tesseract-model` 1.4.0,
+`--marker-density 512 --min-support 5 --min-support-plasmid 3 --layout-tracks`): 1,530 closed
+*S. enterica* chromosomes (a clonal panel of 812 clusters, at most 16 genomes per cluster, drawn
+from 3,183 NCBI assemblies), and the 41,336 Enterobacterales plasmid records the *E. coli* model
+uses. Nothing is withheld: like the other released files, it is a whole-panel build. It loads
+through `--organism senterica` (or `--organism salmonella`) and runs its model stage on a real
+isolate: 1,530 genomes, 41,336 plasmid sets, 25 joins, about 15 minutes and 11 GB of memory on 4
+threads.
+
+**What it costs, so far on development isolates only.** The ESKAPEE table above was measured with
+leave-clone-out builds on held-out isolates. For *Salmonella* the same comparison has been made on
+the 15 development isolates of its evaluation (30 BioSample-verified read/closed-genome pairs,
+split 15 / 15), with the leave-clone-out build that withholds each isolate's whole clonal cluster:
+1.4.0 defaults without and with the model, QUAST 5.3 `--min-contig 500` against each isolate's own
+closed genome. The 15 held-out isolates have not been scored yet, so these are development figures:
+expect held-out to be the same or worse.
+
+| | no model | with model |
+|---|---:|---:|
+| misassemblies, 15 *S. enterica* dev isolates | **3** | 10 |
+| isolates with more / fewer / the same misassemblies | | 5 / 0 / 10 |
+| median NGA50 | 150 kb | **267 kb** |
+| median contigs | 84 | **64** |
+| genome fraction, mean | 98.44 % | **98.50 %** |
+
+It moves the same way as the seven: fewer, longer contigs and more misassemblies.
+
 ## Using one
 
-For the seven ESKAPEE organisms:
+For the seven ESKAPEE organisms, and *S. enterica*:
 
 ```sh
 tesseract-get-models                                            # optional; once, about 1.4 GB
@@ -156,7 +195,7 @@ tesseract-eskape --preset saureus -1 R1.fq.gz -2 R2.fq.gz -o out/   # the same m
 ```
 
 `klebsiella` is accepted as another name for `kpneumoniae`, and reads the same
-`kpneumoniae.tsm`. The model must have been built for the organism named, which is a guard
+`kpneumoniae.tsm`; `salmonella` is accepted for `senterica` (1.5.0). The model must have been built for the organism named, which is a guard
 against pointing a *Klebsiella* model at something else by accident; the 1.2 models were built
 as `klebsiella`, which counts as `kpneumoniae`. The assembler does not take a model file on
 the command line: `--model FILE` is refused unless `TESSERACT_MODEL_AUTHOR` is set, which is

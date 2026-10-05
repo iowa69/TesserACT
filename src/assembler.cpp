@@ -2218,11 +2218,35 @@ bool Assembler::run(std::string& error) {
         const om2::SurfaceStats os = om2::writeSurface(si, report_.om2Json);
         om2::logSurfaceCounters(os);
         if (!os.ok) { error = os.error; return false; }
+        // 1.5 layout-only view: scaffolds.fasta was cut at the junctions this isolate does not confirm,
+        // so report.json and report.html restate their record table from the records as written.
+        if (os.layoutOnly && !os.scaffoldParts.empty() && si.scaffoldsFile) {
+            std::vector<ContigRecord> parts;
+            parts.reserve(os.scaffoldParts.size());
+            for (const auto& pr : os.scaffoldParts) {
+                const std::string& q = (*si.seqs)[pr.first];
+                ContigRecord rec;
+                rec.length = pr.second.second - pr.second.first;
+                rec.coverage = pr.first < report_.contigs.size() ? report_.contigs[pr.first].coverage : 0;
+                size_t gc = 0, ns = 0;
+                for (size_t i = pr.second.first; i < pr.second.second && i < q.size(); ++i) {
+                    const char c = q[i];
+                    if (c == 'G' || c == 'C') ++gc;
+                    else if (c == 'N') ++ns;
+                }
+                const size_t called = rec.length - ns;
+                rec.gcPercent = called ? 100.0 * static_cast<double>(gc) / static_cast<double>(called) : 0;
+                rec.gapBases = ns;
+                parts.push_back(rec);
+            }
+            report_.contigs.swap(parts);
+            report_.finalize();
+        }
     }
     // Organism Model 2.0 C4 counter line, on every run (zeros without TESSERACT_OM2_CLONAL).
     om2::logClonalCounters(om2ClonalStats);
 
-    stats_.contigs = outSeqs.size();
+    stats_.contigs = report_.contigs.size();   // == outSeqs.size() unless the 1.5 layout-only view cut scaffolds
     stats_.totalLength = report_.totalLength;
     stats_.largest = report_.largest;
     stats_.n50 = report_.n50;

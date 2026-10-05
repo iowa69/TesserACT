@@ -70,7 +70,8 @@ void usage() {
         "                          them; they go to ~/.tesseract/models and\n"
         "                          TESSERACT_MODEL_DIR moves that. Names: saureus,\n"
         "                          efaecium, abaumannii, paeruginosa, ecloacae, ecoli,\n"
-        "                          kpneumoniae (klebsiella is accepted for kpneumoniae).\n"
+        "                          kpneumoniae (klebsiella is accepted for kpneumoniae),\n"
+        "                          senterica (salmonella is accepted for senterica).\n"
         "                          The model is consulted only at junctions no fragment\n"
         "                          can span: the chromosome is reconstructed first from\n"
         "                          conserved gene order, then plasmids are refined\n"
@@ -425,6 +426,14 @@ int main(int argc, char** argv) {
         }
     }
 
+    // 1.5: the Model 2.0 organism-detection tokens are experimental. They are accepted only when
+    // TESSERACT_OM2_DETECT is set, so that without it the command line is 1.4.0's: --organism-force
+    // is an unknown option and `--organism auto` names a model file auto.tsm like any other name.
+    const bool detectCli = env::isSet("TESSERACT_OM2_DETECT");
+    if (organismForce && !detectCli) {
+        std::fprintf(stderr, "error: unknown option '--organism-force'\nRun 'tesseract-asm --help' for usage.\n");
+        return 1;
+    }
     // Every TESSERACT_* flag is checked against its declared kind and range before any
     // work starts, and each one that is set is recorded as "[config] NAME=<parsed value>".
     // A malformed value (1e9 for an integer, "true" for a switch, -1 for a length) is a
@@ -443,7 +452,7 @@ int main(int argc, char** argv) {
     // Organism Model 2.0, C3 (default OFF): `--organism auto` picks the model from the reads, and
     // TESSERACT_OM2_DETECT=warn|gate checks an explicit --organism against them (organism_detect.h).
     // Skipped when an input is missing: the checks below report that.
-    if (om2::detectRequested(opt.organism) && opt.organismModelPath.empty()) {
+    if (detectCli && om2::detectRequested(opt.organism) && opt.organismModelPath.empty()) {
         std::vector<std::string> files;
         for (const std::string& f : {lib.r1, lib.r2}) if (!f.empty()) files.push_back(f);
         for (const Library& sl : singles) files.push_back(sl.r1);

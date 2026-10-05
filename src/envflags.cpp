@@ -210,6 +210,10 @@ const Spec kTable[] = {
     K("TESSERACT_OM2_CLONAL_CAPWALK", Kind::Binary),         // round 3: C1 cap rule sized at the isolated shortest walk (0)
     K("TESSERACT_OM2_CLONAL_STRICT", Kind::Binary),          // round 3c: graph-first emission rule of model junctions (0)
     K("TESSERACT_OM2_CLONAL_STRICT_NR0", Kind::Binary),      // round 3c: STRICT also breaks junctions no relative places (0)
+    K("TESSERACT_OM2_CLONAL_ALLOW_CONFIDENT", Kind::Binary), // 1.5: write the `confident` claim (0: KC1, written `supported`)
+    // 1.5 layout-only genome view (om2_output.cpp); default off
+    K("TESSERACT_OM2_LAYOUT_ONLY", Kind::Binary),            // join bases only at isolate-confirmed junctions
+    C("TESSERACT_OM2_LAYOUT_CONFIRM", "isolate|c1pass"),     // what confirms a junction (isolate)
     // read by tesseract-eskape, tesseract-klebsiella and tesseract-get-models
     K("TESSERACT_ASM", Kind::External),
     K("TESSERACT_KP_MODEL", Kind::External),

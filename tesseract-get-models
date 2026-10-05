@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
 # tesseract-get-models -- download the organism models and check they arrived intact.
 #
-# Models are release assets, not part of the source tree: the seven total about 1.4 GB
-# and do not belong in a git history. This fetches them, verifies each against a
+# Models are release assets, not part of the source tree: the eight total about 1.7 GB
+# and do not belong in a git history. 1.5.0 added senterica.tsm to the same models-v2 release:
+# the seven ESKAPEE files are unchanged, so a 1.4.0 install (whose models.sha256 lists only
+# those seven) still verifies everything it fetches, and never asks for the eighth. This fetches them, verifies each against a
 # checksum, and puts them where tesseract-eskape looks by default.
 #
 # Written to be safe to re-run: an already-verified model is skipped, and a download that fails
@@ -27,12 +29,14 @@ tesseract-get-models -- fetch the TesserACT organism models
   tesseract-get-models --dir PATH   put them somewhere else
 
 They go to ~/.tesseract/models by default, which is where tesseract-eskape looks.
-About 1.4 GB for the full set (64 to 349 MB per organism). Re-running is safe: anything
-already verified is skipped.
+About 1.7 GB for the full set of eight (64 to 349 MB per organism). Re-running is safe:
+anything already verified is skipped.
 
 The models are optional: TesserACT assembles without them. A model buys contiguity and costs
 misassemblies. With the 1.4.0 defaults, on 329 held-out ESKAPEE isolates, the models raised
 the median NGA50 from 134 to 156 kb and the misassemblies from 154 to 290 (models/README.md).
+The Salmonella model (senterica, new in 1.5.0) was measured on 15 development isolates only:
+median NGA50 150 -> 267 kb, misassemblies 3 -> 10.
 USAGE
 }
 

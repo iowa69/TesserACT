@@ -115,10 +115,11 @@ struct PlasmidMembership {
 };
 
 // The name a --organism value stands for: the file it resolves to is <name>.tsm, and two
-// organism names match when their canonical forms do (compared case-insensitively). One alias
-// exists (N22): `klebsiella`, the name the 1.2 Klebsiella models were built with and the one
+// organism names match when their canonical forms do (compared case-insensitively). Two aliases
+// exist. `klebsiella` (N22), the name the 1.2 Klebsiella models were built with and the one
 // tesseract-eskape and tesseract-klebsiella passed, is kpneumoniae -- the name the installer,
-// tesseract-get-models and models.sha256 give the same model. Any other name is returned as is.
+// tesseract-get-models and models.sha256 give the same model. `salmonella` (1.5) is senterica,
+// the Salmonella enterica model senterica.tsm. Any other name is returned as is.
 std::string canonicalOrganism(const std::string& name);
 
 class OrganismModel {

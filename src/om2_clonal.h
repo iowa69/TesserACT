@@ -188,6 +188,11 @@ struct ClonalOptions {
     int64_t c1Max = 20000;       // an isolated shortest class sizes a gap only up to this length (fixed)
     int64_t confSide = 2000;     // CONFRULE: N-free bases on each side (fixed)
     int64_t confMaxGap = 10000;  // CONFRULE: largest asserted gap (fixed)
+    // 1.5 (KC1, EVAL_PLAN_CLONAL s9: triggered under the binding scorer at round 3): a junction that reaches the
+    // `confident` threshold is written `supported` unless TESSERACT_OM2_CLONAL_ALLOW_CONFIDENT=1 (dev A/B and the E0g
+    // identity check against the round-3c candidate only). The numeric confidence column is unchanged: it is the
+    // hand-set prior, never fitted (no TESSERACT_OM2_CLONAL_CAL table exists).
+    bool allowConfident = false; // TESSERACT_OM2_CLONAL_ALLOW_CONFIDENT
     bool strict = false;         // TESSERACT_OM2_CLONAL_STRICT (round 3c)
     bool strictNr0 = false;      // TESSERACT_OM2_CLONAL_STRICT_NR0 (round 3c, A/B)
     double strictPeriodicWa = 1.5;     // STRICT: weighted agreement a periodic walk set needs (fixed)
@@ -447,6 +452,10 @@ struct ClonalStats {
     // round 3c
     bool strict = false, strictNr0 = false;
     size_t strictChecked = 0, strictBroken = 0, strictRefused = 0, strictPeriodic = 0, strictNoRelative = 0;
+    // 1.5: `confident` claims written as `supported` (KC1). Not part of the [om2-clonal] counter line (whose format
+    // the round-3c identity check E0g compares); printed on the [om2-layout] line and in report.json when non-zero.
+    size_t confidentSuppressed = 0;
+    bool kc1 = false;            // suppression active (allowConfident off) and the writer annotated
 };
 
 struct ClonalInputs {

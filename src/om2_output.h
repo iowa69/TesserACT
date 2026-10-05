@@ -85,10 +85,34 @@ struct SurfaceStats {
     size_t seams = 0, unrecorded = 0, ambiguous = 0, scaffoldSplits = 0, variantRows = 0;
     size_t ownedByC1 = 0, overlapTrimmed = 0, reversed = 0;   // integration counters
     double detectScore = -1, detectSecond = -1;           // -1: detection did not run
+    // 1.5 layout-only view (TESSERACT_OM2_LAYOUT_ONLY=1): junctions this isolate does not confirm are
+    // cut, in scaffolds.fasta and genome.fasta alike, and kept as order in genome/layout.agp.
+    bool layoutOnly = false;
+    std::string layoutConfirm;                            // isolate | c1pass
+    size_t layoutObjects = 0, layoutCuts = 0, layoutPieces = 0, layoutMergeCuts = 0;
+    size_t confirmedPairsScaffolder = 0, confirmedReadPairs = 0, confirmedGraphFill = 0, confirmedUnrecorded = 0,
+           confirmedC1Pass = 0;
+    size_t kc1Suppressed = 0;                             // `confident` claims written `supported` (C4)
+    bool kc1 = false;
+    // Set when this call rewrote scaffolds.fasta in layout-only mode: every record written, as
+    // (source record, start, end) of `seqs`, so the caller can restate report.json's record table.
+    std::vector<std::pair<size_t, std::pair<size_t, size_t>>> scaffoldParts;
 };
 
-bool outputEnabled();        // TESSERACT_OM2_OUTPUT=1
+bool outputEnabled();        // TESSERACT_OM2_OUTPUT=1, or TESSERACT_OM2_LAYOUT_ONLY=1 (which needs the view)
 bool agpEvidenceEnabled();   // TESSERACT_OM2_AGP_EVIDENCE=1
+bool layoutOnlyEnabled();    // TESSERACT_OM2_LAYOUT_ONLY=1
+
+// 1.5 layout-only view: what confirms a junction with this isolate's own data, or "" when nothing
+// does (the junction is then cut and kept as layout). `isolate` (the default):
+//   read_pairs_scaffolder  an N-run of the release's own paired-end scaffolder (Source::Resolver*)
+//   read_pairs             >= 2 read pairs cross the seam (C1 pair test) and none leaves an end elsewhere
+//   graph_fill             the gap is filled with bases of this isolate's graph and no base of the fill
+//                          is allocation (PRIOR_ALLOCATED, MULTIPLICITY, CONSENSUS)
+//   unrecorded             an N-run no ledger row owns, in a run whose ledger exists (the release's own
+//                          run, as written); without a ledger after a model ran, nothing is confirmed
+// `c1pass` (dev A/B only): the resolver's runs plus C1 verdicts PASS_EXACT / PASS_WALK.
+std::string confirmBasis(const Junction* j, bool c1pass, bool haveLedger, bool modelRan);
 
 // Writes genome/ (when enabled), rewrites scaffolds.fasta/.agp only where the ledger admits a
 // junction to the genome view alone, adds per-gap evidence to scaffolds.agp (when enabled),

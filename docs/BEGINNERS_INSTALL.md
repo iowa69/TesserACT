@@ -177,7 +177,7 @@ settings, on 329 test isolates, the models made the contigs longer (median
 NGA50 134 -> 156 kb) but nearly doubled the misassemblies (154 -> 290). The
 table for each organism is in `models/README.md`.
 
-If you want them anyway (about 1.4 GB, once):
+If you want them anyway (about 1.7 GB, once):
 
 ```bash
 tesseract-get-models

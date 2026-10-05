@@ -89,6 +89,6 @@ that would address them.
 ## Installing
 
 ```sh
-tesseract-get-models            # about 1.4 GB, checksum-verified, safe to re-run
+tesseract-get-models            # about 1.7 GB, checksum-verified, safe to re-run
 tesseract-eskape --preset saureus -1 R1.fastq.gz -2 R2.fastq.gz -o result
 ```

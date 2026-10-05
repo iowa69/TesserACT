@@ -1374,6 +1374,57 @@ else
 fi
 
 # ---------------------------------------------------------------------------
+# 19b. 1.5.0: the Salmonella model (senterica, alias salmonella), and the gated CLI surface
+#
+# senterica.tsm is selected like the seven ESKAPEE models: `--organism salmonella` reads
+# senterica.tsm, `tesseract-eskape --preset salmonella` uses it when installed and prints its
+# cost as measured on development isolates. Without an om2 variable a model run writes no genome/ directory, as in
+# 1.4.0; the experimental TESSERACT_OM2_LAYOUT_ONLY=1 writes the layout-only view and leaves
+# contigs.fasta as it was.
+# ---------------------------------------------------------------------------
+if [ -s "$D/g.fa" ] && n22model senterica "$D/models/senterica.tsm"; then
+    R1=$D/r_1.fq.gz; R2=$D/r_2.fq.gz
+    rm -rf "$D/asm_salm"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/asm_salm" -t 2 \
+        --organism salmonella >"$D/asm_salm.log" 2>&1
+    modelran "--organism salmonella reads senterica.tsm" $? "$D/asm_salm" senterica "$D/asm_salm.log"
+    [ ! -e "$D/asm_salm/genome" ]; check "no genome/ view without --layout-view" $? "1.4.0 output set"
+    rm -rf "$D/esk_salm"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset Salmonella \
+        -1 "$R1" -2 "$R2" -o "$D/esk_salm" -t 2 >"$D/esk_salm.out" 2>&1
+    st=$?
+    modelran "tesseract-eskape --preset Salmonella" $st "$D/esk_salm" senterica "$D/esk_salm/tesseract-eskape.log"
+    grep -q 'misassemblies 3 -> 10 on 15 development isolates' "$D/esk_salm.out"; check "the senterica preset prints its dev-measured cost" $? ""
+    # 1.5.0 ships no --layout-view (its dev gate G1 failed by one misassembly, RELEASE_PLAN_1.5.md);
+    # the organism-detection tokens stay behind TESSERACT_OM2_DETECT
+    rc=0
+    n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/lv_opt" --organism senterica --layout-view >"$D/lv_opt.log" 2>&1 && rc=1
+    grep -q "unknown option '--layout-view'" "$D/lv_opt.log" || rc=1
+    n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/lv_force" --organism-force >"$D/lv_force.log" 2>&1 && rc=1
+    grep -q "unknown option '--organism-force'" "$D/lv_force.log" || rc=1
+    check "no --layout-view option; --organism-force needs TESSERACT_OM2_DETECT" $rc ""
+    # the experimental environment path of the layout-only writer still runs end to end
+    rm -rf "$D/lv"
+    TESSERACT_OM2_LAYOUT_ONLY=1 TESSERACT_MODEL_DIR="$D/models" n22user "$TESSERACT" -1 "$R1" -2 "$R2" -o "$D/lv" -t 2 \
+        --organism salmonella >"$D/lv.log" 2>&1; st=$?
+    rc=0; detail="exit=$st"
+    [ "$st" -eq 0 ] || rc=1
+    for f in genome/genome.fasta genome/layout.agp genome/junctions.tsv contigs.fasta; do
+        [ -s "$D/lv/$f" ] || { rc=1; detail="$detail missing:$f"; }
+    done
+    grep -q '^\[om2-layout\] layout_only=1' "$D/lv.log" || { rc=1; detail="$detail no [om2-layout] line"; }
+    cmp -s "$D/lv/contigs.fasta" "$D/asm_salm/contigs.fasta" || { rc=1; detail="$detail contigs.fasta changed"; }
+    python3 - "$D/lv/report.json" <<'PYLV' || { rc=1; detail="$detail report.json"; }
+import json, sys
+r = json.load(open(sys.argv[1]))
+assert (r.get("om2") or {}).get("layout_only", {}).get("confirm") == "isolate"
+PYLV
+    check "TESSERACT_OM2_LAYOUT_ONLY=1 (experimental): layout.agp written, contigs.fasta unchanged" $rc "$detail"
+else
+    fail "senterica fixture model" "could not build it (log: $D/models/senterica.tsm.log)"
+fi
+
+# ---------------------------------------------------------------------------
 # 20. Where models come from, and that nothing fetches one unasked
 #
 # tesseract-get-models fetches from the models-v2 release (models-v1 is what 1.3.0 installs look

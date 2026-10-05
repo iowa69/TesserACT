@@ -157,6 +157,17 @@ struct Seg {
     std::string text;      // Comp/Fill: the bases as written into genome.fasta
 };
 
+// One genome.fasta record as written: a whole GRec, or (1.5 layout-only view) one piece of it.
+struct PieceOut {
+    std::string name;
+    char cls = 'u';
+    bool circular = false, rotated = false;
+    std::string circBasis = "none";
+    size_t gaps = 0, fills = 0, allocated = 0, length = 0;
+    double expMis = 0;
+    bool expNA = false;
+};
+
 struct GRec {
     TagInfo tag;
     size_t rec = 0;                   // source record
@@ -347,8 +358,26 @@ std::string sha256File(const std::string& path) {
 }
 // md5File is defined once, in om2_alloc.cpp (C2), since the integration.
 
-bool outputEnabled() { return env::on("TESSERACT_OM2_OUTPUT", false); }
+bool outputEnabled() { return env::on("TESSERACT_OM2_OUTPUT", false) || layoutOnlyEnabled(); }
 bool agpEvidenceEnabled() { return env::on("TESSERACT_OM2_AGP_EVIDENCE", false); }
+bool layoutOnlyEnabled() { return env::on("TESSERACT_OM2_LAYOUT_ONLY", false); }
+
+std::string confirmBasis(const Junction* j, bool c1pass, bool haveLedger, bool modelRan) {
+    if (!j) return (haveLedger || !modelRan) ? "unrecorded" : "";
+    if (j->source == Source::Resolver || j->source == Source::ResolverUnknown100) return "read_pairs_scaffolder";
+    if (c1pass) {
+        if (j->verdict == Verdict::PassExact) return "c1_pass_exact";
+        if (j->verdict == Verdict::PassWalk) return "c1_pass_walk";
+        return "";
+    }
+    if (fillValid(*j)) {
+        bool alloc = false;
+        for (const FillSpan& f : j->fillSpans) alloc = alloc || isAllocation(f.basis);
+        if (!alloc) return "graph_fill";
+    }
+    if (j->pairK >= 2 && j->pairContra == 0) return "read_pairs";
+    return "";
+}
 
 std::string validateAgp(const std::string& path) {
     std::ifstream in(path);
@@ -491,6 +520,31 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
     }
     st.seams = seams.size();
 
+    // ---- 1.5 layout-only view: which seams this isolate's own data confirm -------------------
+    // A seam nothing confirms is cut: it splits scaffolds.fasta and genome.fasta, and its order (the
+    // model's relatives) and its asserted size go to genome/layout.agp, with its labels in junctions.tsv.
+    st.layoutOnly = st.enabled && layoutOnlyEnabled();
+    std::vector<char> cut(seams.size(), 0);
+    std::vector<std::string> basisOf(seams.size());
+    if (st.layoutOnly) {
+        const char* cm = env::text("TESSERACT_OM2_LAYOUT_CONFIRM");
+        const bool c1pass = cm && std::strcmp(cm, "c1pass") == 0;
+        st.layoutConfirm = c1pass ? "c1pass" : "isolate";
+        for (size_t i = 0; i < seams.size(); ++i) {
+            const Seam& sm = seams[i];
+            if (sm.admit == Admit::Break) { basisOf[i] = "broken"; continue; }
+            const std::string b = confirmBasis(sm.ji >= 0 ? &J[static_cast<size_t>(sm.ji)] : nullptr, c1pass,
+                                               in.ledger != nullptr, in.modelRan);
+            basisOf[i] = b.empty() ? std::string("none") : b;
+            if (b.empty()) { cut[i] = 1; ++st.layoutCuts; }
+            else if (b == "read_pairs_scaffolder") ++st.confirmedPairsScaffolder;
+            else if (b == "read_pairs") ++st.confirmedReadPairs;
+            else if (b == "graph_fill") ++st.confirmedGraphFill;
+            else if (b == "unrecorded") ++st.confirmedUnrecorded;
+            else ++st.confirmedC1Pass;
+        }
+    }
+
     // ---- scaffolds.fasta: split where the ledger admits a join to the genome view only ----
     // part boundaries per record: [start, end) in record coordinates, and the part's name
     std::vector<std::vector<std::pair<size_t, size_t>>> parts(seqs.size());
@@ -500,7 +554,7 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
         size_t start = 0;
         for (size_t si : seamsOf[r]) {
             const Seam& s = seams[si];
-            if (s.admit == Admit::Scaffold) continue;
+            if (s.admit == Admit::Scaffold && !cut[si]) continue;
             parts[r].push_back({start, s.pos});
             start = s.pos + s.len;
         }
@@ -522,6 +576,9 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
                 pn.push_back(partNames[r][k]);
             }
         if (!writeFasta(in.outDir + "/scaffolds.fasta", ps, pn, 80, st.error)) { st.ok = false; return st; }
+        if (st.layoutOnly)
+            for (size_t r = 0; r < seqs.size(); ++r)
+                for (size_t k = 0; k < parts[r].size(); ++k) st.scaffoldParts.push_back({r, parts[r][k]});
     }
 
     // ---- scaffolds.agp: object renames at the splits, and per-gap evidence -------------------
@@ -546,7 +603,8 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
                     for (size_t si : seamsOf[r])
                         if (static_cast<long long>(seams[si].pos) + 1 == ob &&
                             static_cast<long long>(seams[si].len) == oe - ob + 1) seam = &seams[si];
-                if (seam && seam->admit != Admit::Scaffold) continue;   // the gap the split removed
+                if (seam && (seam->admit != Admit::Scaffold || cut[static_cast<size_t>(seam - seams.data())]))
+                    continue;   // the gap the split removed
                 size_t k = 0;
                 while (k + 1 < parts[r].size() && static_cast<long long>(parts[r][k + 1].first) < ob) ++k;
                 const long long shift = static_cast<long long>(parts[r][k].first);
@@ -858,7 +916,8 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
             "a_piece\ta_tail\tb_piece\tb_tail\tendA\tendB\tcopyA\tcopyB\tgmin\twalks\texhaustive\thairpin\tuA\tuB\t"
             "pairLambda\tpairK\tpairContra\tpanelSupport\tpanelGenomes\ttieMargin\tp_misjoin\tallowCloseGaps\t"
             "contigFilled\tfill_bases\tclosure_class\tflankL32\tflankR32" +
-            (in.clonal ? "\t" + ClonalSurface::header() : std::string()) + "\n";
+            (in.clonal ? "\t" + ClonalSurface::header() : std::string()) +
+            (st.layoutOnly ? "\tlayout_view\tconfirm_basis\tlayout_object\tleft_record\tright_record" : "") + "\n";
         auto ledgerCols = [&](const Junction* j) {
             if (!j) {
                 std::string s;
@@ -894,36 +953,175 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
         for (size_t i = 0; i < seams.size(); ++i)
             if (seams[i].ji < 0) unrecordedId[i] = "u" + std::to_string(++unrecordedNo);
         std::map<std::string, std::pair<size_t, int64_t>> closeCount;   // per record, reused
+        // 1.5 layout-only view. The records keep their segments (and the clonal labels computed on them,
+        // exactly as without the view); a cut seam ends one genome.fasta piece and starts the next, and
+        // genome/layout.agp keeps each record as an object built from its pieces, in the relatives' order.
+        // Without TESSERACT_OM2_LAYOUT_ONLY nothing is cut and every piece is its whole record.
+        std::string layoutAgp;
+        if (st.layoutOnly)
+            layoutAgp = "##agp-version\t2.1\n"
+                        "# TesserACT layout-only genome view (1.5). Each object is a record of the genome view as the\n"
+                        "# organism model's nearest relatives order it; its W components are genome.fasta records.\n"
+                        "# A gap row is a junction this isolate's reads and graph do not confirm: the order and\n"
+                        "# the size are the ones the view would have asserted, and no base is joined across it.\n";
+        std::vector<PieceOut> pieces;
+        std::map<uint32_t, std::tuple<std::string, size_t, char, size_t>> fillAt;   // junction -> where its fill landed
         for (GRec& g : recs) {
+            const size_t gIdx = static_cast<size_t>(&g - &recs[0]);
+            size_t nCut = 0;
+            if (st.layoutOnly)
+                for (const Seg& sg : g.segs)
+                    if (sg.kind != Seg::Comp && sg.seam >= 0 && cut[static_cast<size_t>(sg.seam)]) ++nCut;
+            const bool split = nCut > 0;
+            if (split) g.circular = false;   // a record cut into pieces is not a closed circle
+            if (st.layoutOnly) ++st.layoutObjects;
+            size_t flushed = 0;              // pieces of this record written so far
+            auto pieceName = [&](size_t k) { return split ? g.name + "." + std::to_string(k) : g.name; };
+            PieceOut cur;
             std::string seq;
             size_t part = 0;
-            closeCount.clear();
-            const size_t gIdx = static_cast<size_t>(&g - &recs[0]);
+            // layout.agp state of this object
+            size_t lpos = 0, lpart = 0;
+            bool pendingGap = false;
+            size_t pendingLen = 0;
+            std::string pendingRow, pendingComment;
+            auto startPiece = [&]() {
+                cur = PieceOut();
+                cur.name = pieceName(flushed + 1);
+                cur.cls = g.tag.cls;
+                cur.circular = g.circular;
+                cur.rotated = g.rotated && !split;
+                cur.circBasis = split ? std::string("none") : g.circBasis;
+                seq.clear();
+                part = 0;
+                closeCount.clear();
+            };
+            auto flushPiece = [&]() {
+                if (seq.empty()) return false;
+                cur.length = seq.size();
+                st.allocatedBp += cur.allocated;
+                ++st.records;
+                if (cur.cls == 'c') ++st.chrRecords;
+                if (cur.circular) ++st.circular;
+                char hdr[768];
+                std::string layoutField;
+                if (st.layoutOnly)
+                    layoutField = " layout=" + g.name + " layout_part=" + std::to_string(flushed + 1) + "/" +
+                                  std::to_string(split ? nCut + 1 : 1);
+                std::snprintf(hdr, sizeof hdr, "%s topology=%s replicon=%s gaps=%zu exp_misjoins=%s allocated_bp=%zu "
+                                               "circular_basis=%s model=%s%s",
+                              cur.name.c_str(), cur.circular ? "circular" : "linear",
+                              cur.cls == 'c' ? "chr" : cur.cls == 'p' ? "plasmid" : "unplaced", cur.gaps,
+                              cur.expNA ? "NA" : fmtFloat(cur.expMis, "%.3f").c_str(), cur.allocated,
+                              cur.circBasis.c_str(), modelSha8.c_str(), layoutField.c_str());
+                gHdr.push_back(hdr);
+                gSeq.push_back(seq);
+                closure += cur.name + "\tlength=" + std::to_string(cur.length) + "\ttopology=" +
+                           (cur.circular ? "circular" : "linear") + "\tstatus=" +
+                           (cur.circular && cur.gaps == 0 ? "closed" : "open") + "\tgaps=" + std::to_string(cur.gaps) +
+                           "\tfills=" + std::to_string(cur.fills) + "\tallocated_bp=" + std::to_string(cur.allocated) +
+                           "\tcircular_basis=" + cur.circBasis + (cur.rotated ? "\trotated=dnaA" : "") + "\n";
+                for (const auto& kv : closeCount)
+                    closure += "    " + std::to_string(kv.second.first) + " gap" + (kv.second.first == 1 ? "" : "s") +
+                               " " + kv.first + ": " + closureAdvice(kv.first, kv.second.second) + "\n";
+                if (st.layoutOnly) {
+                    if (pendingGap && lpart > 0) {
+                        layoutAgp += pendingComment;
+                        layoutAgp += g.name + "\t" + std::to_string(lpos + 1) + "\t" + std::to_string(lpos + pendingLen) +
+                                     "\t" + std::to_string(++lpart) + pendingRow;
+                        lpos += pendingLen;
+                    }
+                    pendingGap = false;
+                    pendingLen = 0;
+                    pendingRow.clear();
+                    pendingComment.clear();
+                    layoutAgp += g.name + "\t" + std::to_string(lpos + 1) + "\t" + std::to_string(lpos + cur.length) +
+                                 "\t" + std::to_string(++lpart) + "\tW\t" + cur.name + "\t1\t" +
+                                 std::to_string(cur.length) + "\t+\n";
+                    lpos += cur.length;
+                    ++st.layoutPieces;
+                }
+                pieces.push_back(cur);
+                ++flushed;
+                return true;
+            };
+            startPiece();
             for (const Seg& s : g.segs) {
                 const size_t ob = seq.size() + 1, oe = seq.size() + s.len;
                 const Junction* j = s.ji >= 0 ? &J[s.ji] : nullptr;
                 const ClonalAnnot* ca = in.clonal ? clonalOf(gIdx, static_cast<size_t>(&s - &g.segs[0])) : nullptr;
+                const bool isCut = st.layoutOnly && s.kind != Seg::Comp && s.seam >= 0 && cut[static_cast<size_t>(s.seam)];
+                auto layoutCols = [&](const char* view, const std::string& left, const std::string& right) {
+                    if (!st.layoutOnly) return std::string();
+                    return std::string("\t") + view + "\t" + (s.seam >= 0 ? basisOf[static_cast<size_t>(s.seam)] : "none") +
+                           "\t" + g.name + "\t" + left + "\t" + right;
+                };
+                if (isCut) {
+                    // A junction this isolate does not confirm: no base joined. The piece so far is written, the
+                    // junction goes to layout.agp as a gap row (a merge as two abutting components) and to
+                    // junctions.tsv as `layout_gap`.
+                    const Seam& sm = seams[s.seam];
+                    seamListed[s.seam] = 1;
+                    const std::string left = seq.empty() ? (flushed ? pieceName(flushed) : std::string(".")) : cur.name;
+                    const bool wrote = flushPiece();
+                    (void)wrote;
+                    const std::string right = pieceName(flushed + 1);
+                    const size_t glen = s.kind == Seg::Merge ? 0 : s.len;
+                    const char ct = s.kind == Seg::Gap ? gapComponent(j, s.len) : 'N';
+                    std::string cmt = ca ? in.clonal->agpComment(j ? std::to_string(j->id) : std::string("unrecorded"), *ca)
+                                         : std::string();
+                    cmt += "# layout junction=" + (j ? std::to_string(j->id) : unrecordedId[s.seam]) + " kind=" +
+                           (s.kind == Seg::Merge ? "merged_overlap:" + std::to_string(j ? j->mergeOverlap : 0)
+                                                 : s.kind == Seg::Fill ? std::string("fill_not_written")
+                                                                       : std::string("gap")) +
+                           " confirm=none source=" + (j ? sourceName(j->source) : "unrecorded") + " verdict=" +
+                           (j ? verdictName(j->verdict) : ".") + "\n";
+                    if (glen > 0) {
+                        if (pendingGap) {
+                            pendingLen += glen;   // two cuts with no base between them: one gap row
+                        } else {
+                            pendingGap = true;
+                            pendingLen = glen;
+                        }
+                        pendingRow = std::string("\t") + (ct == 'U' && pendingLen == 100 ? 'U' : 'N') + "\t" +
+                                     std::to_string(pendingLen) + "\t" + gapType(j) + "\tyes\t" + agpEvidence(j, in.modelRan) +
+                                     "\n";
+                        pendingComment += cmt;
+                    } else {
+                        pendingComment += cmt;   // a merge: the next component abuts
+                        if (!pendingGap) { layoutAgp += pendingComment; pendingComment.clear(); }
+                    }
+                    jt += (j ? std::to_string(j->id) : unrecordedId[s.seam]) + "\tlayout_gap\t" + g.name + "\t" +
+                          std::to_string(lpos) + "\t" + std::to_string(lpos + glen) + "\t" + names[sm.rec] + "\t" +
+                          std::to_string(sm.pos) + "\t" + std::to_string(sm.len) + "\t" +
+                          std::to_string(s.kind == Seg::Fill && j ? j->fillSeq.size() : 0) + "\tlayout_only\t" +
+                          agpEvidence(j, in.modelRan) + "\t" + gapType(j) + ledgerCols(j) + "\tlayout_gap\t" +
+                          (sm.fl.empty() ? "." : sm.fl) + "\t" + (sm.fr.empty() ? "." : sm.fr) + clonalCols(ca) +
+                          layoutCols("layout_only", left, right) + "\n";
+                    startPiece();
+                    continue;
+                }
                 if (ca && s.kind != Seg::Comp) agp += in.clonal->agpComment(j ? std::to_string(j->id) : std::string("unrecorded"), *ca);
                 if (s.kind == Seg::Merge) {
                     const Seam& sm = seams[s.seam];
                     seamListed[s.seam] = 1;
-                    jt += std::to_string(j->id) + "\tmerged_overlap\t" + g.name + "\t" + std::to_string(ob - 1) + "\t" +
+                    jt += std::to_string(j->id) + "\tmerged_overlap\t" + cur.name + "\t" + std::to_string(ob - 1) + "\t" +
                           std::to_string(ob - 1) + "\t" + names[sm.rec] + "\t" + std::to_string(sm.pos) + "\t" +
                           std::to_string(sm.len) + "\t0\t" +
                           (sm.admit == Admit::GenomeOnly ? "genome_only" : "scaffolds+genome") + "\t.\t." + ledgerCols(j) +
                           "\tmerged:" + std::to_string(j->mergeOverlap) + "\t" + (sm.fl.empty() ? "." : sm.fl) + "\t" +
-                          (sm.fr.empty() ? "." : sm.fr) + clonalCols(ca) + "\n";
+                          (sm.fr.empty() ? "." : sm.fr) + clonalCols(ca) + layoutCols("joined", cur.name, cur.name) + "\n";
                     continue;
                 }
                 if (s.kind == Seg::Gap) {
                     const Seam& sm = seams[s.seam];
                     const char ct = gapComponent(j, s.len);
-                    agp += g.name + "\t" + std::to_string(ob) + "\t" + std::to_string(oe) + "\t" +
+                    agp += cur.name + "\t" + std::to_string(ob) + "\t" + std::to_string(oe) + "\t" +
                            std::to_string(++part) + "\t" + ct + "\t" + std::to_string(s.len) + "\t" + gapType(j) +
                            "\tyes\t" + agpEvidence(j, in.modelRan) + "\n";
                     seq.append(s.len, 'N');
-                    ++g.gaps;
-                    if (!j || j->pMisjoin < 0) g.expNA = true; else g.expMis += j->pMisjoin;
+                    ++cur.gaps;
+                    if (!j || j->pMisjoin < 0) cur.expNA = true; else cur.expMis += j->pMisjoin;
                     const std::string cc = closureClass(j);
                     auto& c = closeCount[cc];
                     ++c.first;
@@ -934,17 +1132,21 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
                     }
                     seamListed[s.seam] = 1;
                     jt += (j ? std::to_string(j->id) : unrecordedId[s.seam]) + "\t" + (j ? "open_gap" : "unrecorded_gap") +
-                          "\t" + g.name + "\t" + std::to_string(ob - 1) + "\t" + std::to_string(oe) + "\t" +
+                          "\t" + cur.name + "\t" + std::to_string(ob - 1) + "\t" + std::to_string(oe) + "\t" +
                           names[sm.rec] + "\t" + std::to_string(sm.pos) + "\t" + std::to_string(sm.len) + "\t0\t" +
                           (sm.admit == Admit::GenomeOnly ? "genome_only" : "scaffolds+genome") + "\t" +
                           agpEvidence(j, in.modelRan) + "\t" + gapType(j) + ledgerCols(j) + "\t" + cc + "\t" +
-                          (sm.fl.empty() ? "." : sm.fl) + "\t" + (sm.fr.empty() ? "." : sm.fr) + clonalCols(ca) + "\n";
+                          (sm.fl.empty() ? "." : sm.fl) + "\t" + (sm.fr.empty() ? "." : sm.fr) + clonalCols(ca) +
+                          layoutCols("joined", cur.name, cur.name) + "\n";
                     continue;
                 }
-                agp += g.name + "\t" + std::to_string(ob) + "\t" + std::to_string(oe) + "\t" + std::to_string(++part) +
+                agp += cur.name + "\t" + std::to_string(ob) + "\t" + std::to_string(oe) + "\t" + std::to_string(++part) +
                        "\tW\t" + s.comp + "\t" + std::to_string(s.cb) + "\t" + std::to_string(s.ce) + "\t" + s.ori + "\n";
                 if (s.kind == Seg::Fill) {
-                    ++g.fills;
+                    ++cur.fills;
+                    // where the whole fill landed (repeat_variants.tsv), first occurrence
+                    if (s.cb == 1 && s.ce == j->fillSeq.size() && !fillAt.count(j->id))
+                        fillAt[j->id] = std::make_tuple(cur.name, ob - 1, s.ori, s.len);
                     // The fills.fasta record, once per junction, in the junction's own orientation.
                     if (std::find(fName.begin(), fName.end(), s.comp) == fName.end()) {
                         fName.push_back(s.comp);
@@ -958,56 +1160,43 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
                         size_t g0, g1;
                         if (s.ori == '+') { g0 = ob - 1 + (a - (s.cb - 1)); g1 = ob - 1 + (b - (s.cb - 1)); }
                         else { g0 = ob - 1 + (s.ce - b); g1 = ob - 1 + (s.ce - a); }
-                        bed += g.name + "\t" + std::to_string(g0) + "\t" + std::to_string(g1) + "\t" +
+                        bed += cur.name + "\t" + std::to_string(g0) + "\t" + std::to_string(g1) + "\t" +
                                basisName(f.basis) + "\t" + std::to_string(j->id) + "\t" + s.comp + ":" +
                                std::to_string(a + 1) + "-" + std::to_string(b) + (s.ori == '-' ? ":rc" : "") + "\n";
-                        if (isAllocation(f.basis)) g.allocated += b - a;
+                        if (isAllocation(f.basis)) cur.allocated += b - a;
                     }
-                    if (j->pMisjoin < 0) g.expNA = true; else g.expMis += j->pMisjoin;
+                    if (j->pMisjoin < 0) cur.expNA = true; else cur.expMis += j->pMisjoin;
                     const bool isWrap = j->source == Source::Wrap;
                     const bool firstPiece = s.seam < 0 ? true : !seamListed[s.seam];
                     if (s.seam >= 0) seamListed[s.seam] = 1;
                     if (firstPiece) {
                         const Seam* sm = s.seam >= 0 ? &seams[s.seam] : nullptr;
-                        jt += std::to_string(j->id) + "\t" + (isWrap ? "wrap_closed" : "filled_genome") + "\t" + g.name +
+                        jt += std::to_string(j->id) + "\t" + (isWrap ? "wrap_closed" : "filled_genome") + "\t" + cur.name +
                               "\t" + std::to_string(ob - 1) + "\t" + std::to_string(oe) + "\t" + names[g.rec] + "\t" +
                               (sm ? std::to_string(sm->pos) : std::string(".")) + "\t" +
                               (sm ? std::to_string(sm->len) : std::string("0")) + "\t" + std::to_string(j->fillSeq.size()) +
                               "\t" + ((sm && sm->admit == Admit::GenomeOnly) || isWrap ? "genome_only" : "scaffolds+genome") +
                               "\t.\t." + ledgerCols(j) + "\tfilled\t" + (j->flankL32.empty() ? "." : j->flankL32) + "\t" +
-                              (j->flankR32.empty() ? "." : j->flankR32) + clonalCols(ca) + "\n";
+                              (j->flankR32.empty() ? "." : j->flankR32) + clonalCols(ca) +
+                              layoutCols("joined", cur.name, cur.name) + "\n";
                     }
                 }
                 seq += s.text;
             }
-            g.length = seq.size();
-            st.allocatedBp += g.allocated;
-            ++st.records;
-            if (g.tag.cls == 'c') ++st.chrRecords;
-            if (g.circular) ++st.circular;
-            char hdr[512];
-            std::snprintf(hdr, sizeof hdr, "%s topology=%s replicon=%s gaps=%zu exp_misjoins=%s allocated_bp=%zu "
-                                           "circular_basis=%s model=%s",
-                          g.name.c_str(), g.circular ? "circular" : "linear",
-                          g.tag.cls == 'c' ? "chr" : g.tag.cls == 'p' ? "plasmid" : "unplaced", g.gaps,
-                          g.expNA ? "NA" : fmtFloat(g.expMis, "%.3f").c_str(), g.allocated, g.circBasis.c_str(),
-                          modelSha8.c_str());
-            gHdr.push_back(hdr);
-            gSeq.push_back(std::move(seq));
-            closure += g.name + "\tlength=" + std::to_string(g.length) + "\ttopology=" +
-                       (g.circular ? "circular" : "linear") + "\tstatus=" +
-                       (g.circular && g.gaps == 0 ? "closed" : "open") + "\tgaps=" + std::to_string(g.gaps) +
-                       "\tfills=" + std::to_string(g.fills) + "\tallocated_bp=" + std::to_string(g.allocated) +
-                       "\tcircular_basis=" + g.circBasis + (g.rotated ? "\trotated=dnaA" : "") + "\n";
-            for (const auto& kv : closeCount)
-                closure += "    " + std::to_string(kv.second.first) + " gap" + (kv.second.first == 1 ? "" : "s") + " " +
-                           kv.first + ": " + closureAdvice(kv.first, kv.second.second) + "\n";
-            if (!g.circular) {
+            flushPiece();
+            if (!g.circular && !split) {
                 if (g.wrapOpen) closure += "    wrap: a wrap junction is recorded but not closed with bases\n";
                 else if (g.circBasis == "pairs")
                     closure += "    wrap: the two ends are joined by read pairs, but no unique graph walk closes "
                                "them with bases; the record is written linear\n";
             }
+            if (split)
+                closure += "#layout\t" + g.name + "\tpieces=" + std::to_string(flushed) + "\tlayout_gaps=" +
+                           std::to_string(nCut) + "\tlayout_length=" + std::to_string(lpos) +
+                           "\tthe pieces are in the order of the organism model's nearest relatives (layout.agp); "
+                           "no base is joined at a layout gap, because this isolate's reads and graph do not "
+                           "confirm it. Read pairs spanning it, a long read or this isolate's own closed genome "
+                           "would settle it\n";
         }
         // Seams in no genome record (their record was split by a break), and ledger junctions
         // that are not an N-run of the finished records.
@@ -1018,7 +1207,8 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
             jt += (j ? std::to_string(j->id) : unrecordedId[i]) + "\tbroken\t.\t.\t.\t" + names[sm.rec] + "\t" +
                   std::to_string(sm.pos) + "\t" + std::to_string(sm.len) + "\t0\tnone\t.\t." + ledgerCols(j) +
                   "\tbroken\t" + (sm.fl.empty() ? "." : sm.fl) + "\t" + (sm.fr.empty() ? "." : sm.fr) +
-                  clonalCols(j && in.clonal ? in.clonal->stageRow(j->id) : nullptr) + "\n";
+                  clonalCols(j && in.clonal ? in.clonal->stageRow(j->id) : nullptr) +
+                  (st.layoutOnly ? "\tbroken\t" + basisOf[i] + "\t.\t.\t." : std::string()) + "\n";
         }
         for (size_t i = 0; i < J.size(); ++i) {
             if (jUsed[i]) continue;
@@ -1028,23 +1218,15 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
             jt += std::to_string(j.id) + "\t" + status + "\t.\t.\t.\t.\t.\t0\t" + std::to_string(j.fillSeq.size()) +
                   "\tnone\t.\t." + ledgerCols(&j) + "\t.\t" + (j.flankL32.empty() ? "." : j.flankL32) + "\t" +
                   (j.flankR32.empty() ? "." : j.flankR32) + clonalCols(in.clonal ? in.clonal->stageRow(j.id) : nullptr) +
-                  "\n";
+                  (st.layoutOnly ? std::string("\tnone\t.\t.\t.\t.") : std::string()) + "\n";
         }
 
         // repeat_variants.tsv: inter-copy diversity of multi-copy repeats, as data.
         std::string rv = "family\tcluster\tsite\tjunction\tgenome_record\tgenome_pos0\tsite_len\tstrand\tplaced_allele\tbasis\t"
                          "alleles(allele:carriers_est)\tn_alleles\tminority_carriers_est\tphasing\tcandidate_loci\n";
         if (in.variants) {
-            // where each junction's fill landed: junction id -> (record, genome start, orientation, fill length)
-            std::map<uint32_t, std::tuple<std::string, size_t, char, size_t>> fillAt;
-            for (const GRec& g : recs) {
-                size_t at = 0;
-                for (const Seg& s : g.segs) {
-                    if (s.kind == Seg::Fill && s.cb == 1 && s.ce == J[s.ji].fillSeq.size() && !fillAt.count(J[s.ji].id))
-                        fillAt[J[s.ji].id] = std::make_tuple(g.name, at, s.ori, s.len);
-                    at += s.len;
-                }
-            }
+            // where each junction's fill landed (junction id -> record, genome start, orientation, fill
+            // length): recorded by the write loop above, per genome.fasta record as written
             for (const RepeatVariant& v : *in.variants) {
                 std::string rec = ".", pos = ".", strand = ".";
                 if (v.junction >= 0) {
@@ -1136,12 +1318,34 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
                                 "allocation and no circle closure can occur.\n";
 
         if (in.clonal) closure = in.clonal->closureHeader() + closure;
+        if (st.layoutOnly) {
+            closure = "#layout_only\tconfirm=" + st.layoutConfirm + "\tobjects=" + std::to_string(st.layoutObjects) +
+                      "\tpieces=" + std::to_string(st.layoutPieces) + "\tlayout_gaps=" + std::to_string(st.layoutCuts) +
+                      "\tlayout=genome/layout.agp\n" + closure;
+            readme +=
+                "\nLayout-only view (TESSERACT_OM2_LAYOUT_ONLY=1, 1.5)\n"
+                "  Bases are joined only where this isolate's own data confirm the junction (" + st.layoutConfirm + "):\n"
+                "    read_pairs_scaffolder  an N-run of the release's own paired-end scaffolder\n"
+                "    read_pairs             >= 2 read pairs cross the junction and none leaves an end elsewhere\n"
+                "    graph_fill             the gap is filled from this isolate's graph with no allocated base\n"
+                "    unrecorded             an N-run no ledger row owns (kept as the release wrote it)\n"
+                "  Every other junction is cut: in scaffolds.fasta and in genome.fasta alike. The pieces of a record\n"
+                "  are named <record>.<k>, and layout.agp keeps each record as one object built from its pieces, in\n"
+                "  the order of the organism model's nearest relatives, with a gap row (the size the view would\n"
+                "  have asserted; linkage evidence align_genus) at every cut junction. junctions.tsv lists the cut\n"
+                "  junctions as `layout_gap`, with every label (clonal class, prior, claim, relatives' support).\n"
+                "  The order in layout.agp is a PRIOR from relatives, not an observation of this isolate: on 175\n"
+                "  ESKAPEE dev isolates about 95% of such junctions were in the true order (MEASURED, dev only).\n"
+                "  The `confidence` column is a hand-set prior, not a calibrated probability, and no junction is\n"
+                "  labelled `confident` (release rule KC1).\n";
+        }
         std::string err;
         if (!writeFasta(gdir + "/genome.fasta", gSeq, gHdr, 80, err) ||
             !writeFasta(gdir + "/fills.fasta", fSeq, fName, 80, err) ||
             !writeText(gdir + "/genome.agp", agp, err) || !writeText(gdir + "/genome.mask.bed", bed, err) ||
             !writeText(gdir + "/junctions.tsv", jt, err) || !writeText(gdir + "/repeat_variants.tsv", rv, err) ||
-            !writeText(gdir + "/closure.txt", closure, err) || !writeText(gdir + "/README.txt", readme, err)) {
+            !writeText(gdir + "/closure.txt", closure, err) || !writeText(gdir + "/README.txt", readme, err) ||
+            (st.layoutOnly && !writeText(gdir + "/layout.agp", layoutAgp, err))) {
             st.ok = false;
             st.error = err;
             return st;
@@ -1171,10 +1375,10 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
         }
         js.close(']');
         js.open("records", '[');
-        for (const GRec& g : recs) {
+        for (const PieceOut& g : pieces) {
             js.open(nullptr, '{');
             js.str("name", g.name);
-            js.str("replicon", g.tag.cls == 'c' ? "chr" : g.tag.cls == 'p' ? "plasmid" : "unplaced");
+            js.str("replicon", g.cls == 'c' ? "chr" : g.cls == 'p' ? "plasmid" : "unplaced");
             js.uint("length", g.length);
             js.str("topology", g.circular ? "circular" : "linear");
             js.str("status", g.circular && g.gaps == 0 ? "closed" : "open");
@@ -1187,9 +1391,32 @@ SurfaceStats writeSurface(const SurfaceInput& in, std::string& om2Json) {
             js.close('}');
         }
         js.close(']');
+        if (st.layoutOnly) {
+            js.open("layout_only", '{');
+            js.str("confirm", st.layoutConfirm);
+            js.uint("objects", st.layoutObjects);
+            js.uint("pieces", st.layoutPieces);
+            js.uint("layout_gaps", st.layoutCuts);
+            js.uint("confirmed_read_pairs_scaffolder", st.confirmedPairsScaffolder);
+            js.uint("confirmed_read_pairs", st.confirmedReadPairs);
+            js.uint("confirmed_graph_fill", st.confirmedGraphFill);
+            js.uint("confirmed_unrecorded", st.confirmedUnrecorded);
+            js.uint("confirmed_c1_pass", st.confirmedC1Pass);
+            js.str("layout_agp", "genome/layout.agp");
+            js.close('}');
+        }
+        if (in.clonal && in.clonal->stats().kc1) {
+            js.open("kc1", '{');
+            js.boolean("confident_label_shipped", false);
+            js.uint("confident_suppressed", in.clonal->stats().confidentSuppressed);
+            js.str("confidence_column", "uncalibrated prior (hand-set; no fitted calibration table)");
+            js.close('}');
+        }
         if (in.clonal) js.s += in.clonal->jsonBlock(js.indent);
         om2Json = js.s;
     }
+
+    if (in.clonal) { st.kc1 = in.clonal->stats().kc1; st.kc1Suppressed = in.clonal->stats().confidentSuppressed; }
 
     // Counters and detection go into the block even when only detection (or only the AGP
     // evidence) ran; the genome part above is present only with TESSERACT_OM2_OUTPUT=1.
@@ -1270,6 +1497,17 @@ void logSurfaceCounters(const SurfaceStats& s, std::FILE* log) {
                  s.detectSecond < 0 ? "NA" : fmtFloat(s.detectSecond, "%.4f").c_str(), s.seams, s.unrecorded,
                  s.ambiguous, s.scaffoldSplits, s.broken, s.variantRows, s.agpEvidence ? 1 : 0, s.ownedByC1,
                  s.overlapTrimmed, s.reversed);
+    // 1.5: a separate line, printed only when the layout-only view or the KC1 suppression acted, so that
+    // the [om2-out] line keeps its round-3c format.
+    if (s.layoutOnly || s.kc1)
+        std::fprintf(log,
+                     "[om2-layout] layout_only=%d confirm=%s objects=%zu pieces=%zu layout_gaps=%zu "
+                     "confirmed_read_pairs_scaffolder=%zu confirmed_read_pairs=%zu confirmed_graph_fill=%zu "
+                     "confirmed_unrecorded=%zu confirmed_c1_pass=%zu scaffold_records=%zu kc1=%d confident_suppressed=%zu\n",
+                     s.layoutOnly ? 1 : 0, s.layoutConfirm.empty() ? "-" : s.layoutConfirm.c_str(), s.layoutObjects,
+                     s.layoutPieces, s.layoutCuts, s.confirmedPairsScaffolder, s.confirmedReadPairs,
+                     s.confirmedGraphFill, s.confirmedUnrecorded, s.confirmedC1Pass, s.scaffoldParts.size(),
+                     s.kc1 ? 1 : 0, s.kc1Suppressed);
 }
 
 }  // namespace om2

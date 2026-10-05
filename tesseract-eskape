@@ -1,18 +1,19 @@
 #!/usr/bin/env bash
 #
 # tesseract-eskape - a friendly front end to the TesserACT assembler for the
-# seven ESKAPEE bacteria.
+# seven ESKAPEE bacteria and, since 1.5.0, Salmonella enterica.
 #
 # You give it two files of sequencing reads and the name of your bug.
 # It gives you back an assembled genome.
 #
-# Version 1.4.0, shipped with TesserACT 1.4.0. The presets add no tuning option, so they run
-# the 1.4.0 defaults. Organism models are optional and opt-in: a preset uses its organism's
-# model only if the user installed it with tesseract-get-models, and says what it costs.
+# Version 1.5.0, shipped with TesserACT 1.5.0. The presets add no tuning option, so they run
+# the 1.4.0 defaults (unchanged in 1.5.0). Organism models are optional and opt-in: a preset uses
+# its organism's model only if the user installed it with tesseract-get-models, and says what it
+# costs (for senterica, new in 1.5.0, measured on development isolates only).
 #
 set -euo pipefail
 
-VERSION="1.4.0"
+VERSION="1.5.0"
 
 # ---------------------------------------------------------------------------
 # Where things live. Override any of these with an environment variable if
@@ -33,8 +34,8 @@ else
     TESSERACT_ASM="$(command -v tesseract-asm 2>/dev/null || printf '%s' "$_here/tesseract-asm")"
 fi
 
-# Organism models are release assets, not part of the repository: the seven come to about
-# 1.4 GB, which does not belong in a git history.
+# Organism models are release assets, not part of the repository: the eight come to about
+# 1.7 GB, which does not belong in a git history.
 MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
 
 # Klebsiella resolves like every other preset -- $MODEL_DIR/<organism>.tsm, which is where
@@ -49,6 +50,7 @@ model_for() {
         saureus) printf '%s' "saureus.tsm" ;;  efaecium) printf '%s' "efaecium.tsm" ;;
         abaumannii) printf '%s' "abaumannii.tsm" ;;  paeruginosa) printf '%s' "paeruginosa.tsm" ;;
         ecloacae) printf '%s' "ecloacae.tsm" ;;  ecoli) printf '%s' "ecoli.tsm" ;;
+        senterica) printf '%s' "senterica.tsm" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -67,6 +69,11 @@ model_note() {
         efaecium) printf '%s' "median NGA50 49 -> 50 kb, but misassemblies 23 -> 47 in the 1.4.0 test" ;;
         ecoli) printf '%s' "median NGA50 117 -> 133 kb, but misassemblies 23 -> 45 in the 1.4.0 test" ;;
         kpneumoniae) printf '%s' "median NGA50 155 -> 204 kb, but misassemblies 70 -> 93 in the 1.4.0 test" ;;
+        # 1.5.0: measured on the 15 Salmonella DEVELOPMENT isolates only (not held-out), with the
+        # leave-clone-out model (novel-lineage scenario): arms cb3s_eb_t3 and m14lco2, QUAST 5.3
+        # --min-contig 500 on contigs.fasta. PLACEHOLDER: replace with the held-out figures once the
+        # 15 held-out isolates are scored, as for the seven ESKAPEE models.
+        senterica) printf '%s' "median NGA50 150 -> 267 kb, but misassemblies 3 -> 10 on 15 development isolates (held-out not yet measured)" ;;
         *) printf '%s' "" ;;
     esac
 }
@@ -115,6 +122,7 @@ preset_fullname() {
         paeruginosa) printf '%s' "Pseudomonas aeruginosa" ;;
         ecloacae)    printf '%s' "Enterobacter cloacae" ;;
         ecoli)       printf '%s' "Escherichia coli" ;;
+        senterica)   printf '%s' "Salmonella enterica" ;;
         *) return 1 ;;
     esac
 }
@@ -140,6 +148,8 @@ canonicalise_preset() {
             printf '%s' "ecloacae" ;;
         ecoli|escherichia|escherichiacoli|coli)
             printf '%s' "ecoli" ;;
+        senterica|salmonella|salmonellaenterica|salm)
+            printf '%s' "senterica" ;;
         *)
             return 1 ;;
     esac
@@ -158,12 +168,13 @@ Available presets (type either name - capital letters do not matter):
   paeruginosa    pseudomonas, pa         Pseudomonas aeruginosa      longer NGA50, more misassemblies
   ecloacae       enterobacter, ecl       Enterobacter cloacae        longer NGA50, more misassemblies
   ecoli          escherichia, coli       Escherichia coli            longer NGA50, more misassemblies
+  senterica      salmonella, salm        Salmonella enterica         longer NGA50, more misassemblies (dev only)
 
 What does a preset do?
   It adds no tuning option. We tried the assembler's tuning knobs on three real
-  genomes for each species, and none of them made the assembly meaningfully
+  genomes for each ESKAPEE species, and none of them made the assembly meaningfully
   better than leaving the settings alone. It uses the organism's model only if
-  you installed it.
+  you installed it. (senterica was not part of that screen; it too adds no option.)
 
   Models are optional and opt-in. Nothing is downloaded unless you run
   tesseract-get-models, and without a model every preset carries on with the
@@ -310,7 +321,8 @@ if [ -n "$PRESET_RAW" ]; then
         die "I do not know a preset called '$PRESET_RAW'.
   Run '$PROG --list' to see the names I accept.
   (Common ones: kpneumoniae, saureus, efaecium, abaumannii,
-   paeruginosa, ecloacae, ecoli - or klebsiella, staph, pseudomonas, ...)"
+   paeruginosa, ecloacae, ecoli, senterica - or klebsiella, staph,
+   pseudomonas, salmonella, ...)"
     fi
 fi
 
@@ -457,7 +469,7 @@ model_not_installed() {
 if [ -z "$PRESET" ]; then
     info "No --preset given, so I am using the assembler's default settings."
     info "That is a perfectly good choice. Presets available: kpneumoniae, saureus,"
-    info "efaecium, abaumannii, paeruginosa, ecloacae, ecoli  (see '$PROG --list')."
+    info "efaecium, abaumannii, paeruginosa, ecloacae, ecoli, senterica  (see '$PROG --list')."
     PRESET_DESC="none (assembler defaults)"
 else
     if [ "$PRESET" = "kpneumoniae" ]; then

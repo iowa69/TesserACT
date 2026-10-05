@@ -9,6 +9,26 @@ or single-end. No dependencies beyond zlib and a C++17 compiler.
 
 ---
 
+## What 1.5.0 changes
+
+**The default assembly does not change.** 1.5.0 writes the same `contigs.fasta`,
+`scaffolds.fasta`, `scaffolds.agp` and `assembly_graph.gfa`, byte for byte, as 1.4.0, and
+`--organism` runs the same 1.4.0 model path. Measured byte for byte against 1.4.0 on 9 isolates
+(one of each ESKAPEE species, *M. tuberculosis* and *S. enterica*), and with `--organism` on 4.
+
+* **A Salmonella model.** `senterica.tsm` (1,530 closed *S. enterica* chromosomes and the
+  Enterobacterales plasmid database) joins the seven ESKAPEE models in the `models-v2` release.
+  Select it with `--organism senterica` (`salmonella` is accepted) or
+  `tesseract-eskape --preset salmonella`. Like every model it is optional and has a cost: on 15
+  development isolates (held-out not yet measured) it raised the median NGA50 from 150 to 267 kb
+  and the misassemblies from 3 to 10. See [`models/README.md`](models/README.md).
+* The Organism Model 2.0 code (junction evidence, gap filling from the isolate's own graph, a
+  genome view with a layout-only mode, the nearest-relative layout) is included, every part of it
+  off by default and not reachable from the command line. It is still in development: on the
+  development isolates its layout-only mode came within 6 misassemblies of the default
+  (123 against 117 on 175 ESKAPEE isolates), which missed its own pre-set bar of at most 5 % more,
+  so it is not offered in this release.
+
 ## What 1.4.0 changed
 
 **Misassemblies first.** TesserACT assemblies are the raw material for genus models, and a
@@ -433,9 +453,11 @@ tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode aggressive
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --mode careful
 
 # With an organism model, for junctions no fragment spans. Reads kpneumoniae.tsm from
-# ~/.tesseract/models (tesseract-get-models puts the seven ESKAPEE models there), or from
-# the directory TESSERACT_MODEL_DIR names; `klebsiella` is accepted for kpneumoniae
+# ~/.tesseract/models (tesseract-get-models puts the seven ESKAPEE models and senterica
+# there), or from the directory TESSERACT_MODEL_DIR names; `klebsiella` is accepted for
+# kpneumoniae and `salmonella` for senterica
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
+
 
 # Hand it a QC report from scepter (see below)
 tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --qc sample.json
@@ -506,9 +528,9 @@ of a use is worth shipping as exactly that, and not as a feature.
 `--organism NAME` selects a model by organism: the assembler reads `NAME.tsm` from
 `~/.tesseract/models`, or from the directory `TESSERACT_MODEL_DIR` names, and the model must
 have been built for that organism. The names are `saureus`, `efaecium`, `abaumannii`,
-`paeruginosa`, `ecloacae`, `ecoli` and `kpneumoniae`; `klebsiella` is accepted as another name
-for `kpneumoniae`. `tesseract-get-models` downloads and checks the seven models from the
-`models-v2` release, and `tesseract-eskape` presets and `tesseract-klebsiella --with-model`
+`paeruginosa`, `ecloacae`, `ecoli`, `kpneumoniae` and, since 1.5.0, `senterica`; `klebsiella` is
+accepted as another name for `kpneumoniae`, and `salmonella` for `senterica`.
+`tesseract-get-models` downloads and checks the eight models from the `models-v2` release, and `tesseract-eskape` presets and `tesseract-klebsiella --with-model`
 select theirs the same way. The models are optional: each buys contiguity and costs
 misassemblies (see "With a genus model on 1.4.0" above). There is no option that takes a model
 file: `--model FILE` is kept for building and validating the bundled models and is refused

@@ -101,6 +101,7 @@ ClonalOptions ClonalOptions::fromEnv() {
     o.discord = static_cast<int>(env::integer("TESSERACT_OM2_CLONAL_DISCORD", 2));
     o.strict = env::on("TESSERACT_OM2_CLONAL_STRICT", false);
     o.strictNr0 = env::on("TESSERACT_OM2_CLONAL_STRICT_NR0", false);
+    o.allowConfident = env::on("TESSERACT_OM2_CLONAL_ALLOW_CONFIDENT", false);
     for (const char* f : {"TESSERACT_OM2_CLONAL_STRICT", "TESSERACT_OM2_CLONAL_STRICT_NR0", "TESSERACT_OM2_CLONAL_INDEL", "TESSERACT_OM2_CLONAL_UNVERIFIED", "TESSERACT_OM2_CLONAL_CAPWALK", "TESSERACT_OM2_CLONAL_WALKSIZE", "TESSERACT_OM2_CLONAL_KC2", "TESSERACT_OM2_CLONAL_CONFRULE",
                           "TESSERACT_OM2_CLONAL_DISCORD", "TESSERACT_OM2_CLONAL_RESIZE", "TESSERACT_OM2_CLONAL_OVERLAP", "TESSERACT_OM2_CLONAL_VOUCH", "TESSERACT_OM2_CLONAL_BRACKET",
                           "TESSERACT_OM2_CLONAL_NRP", "TESSERACT_OM2_CLONAL_WEIGHT", "TESSERACT_OM2_CLONAL_DSCALE", "TESSERACT_OM2_CLONAL_K", "TESSERACT_OM2_CLONAL_KMIN", "TESSERACT_OM2_CLONAL_LAYOUT",
@@ -1973,6 +1974,12 @@ std::vector<ClonalAnnot> ClonalSurface::annotate(const std::vector<Req>& reqs) {
         else if (a.confidence >= o.confident && a.dNear <= o.confDmax) a.claim = "confident";
         else if (a.confidence >= 0.9) a.claim = "supported";
         else a.claim = "provisional";
+        // 1.5, KC1: no `confident` label ships (no threshold of the hand-set prior reached >= 0.99 with Wilson LB >=
+        // 0.98 under the binding scorer on dev). The junction keeps its evidence columns and its numeric prior.
+        if (!o.allowConfident) {
+            stats_.kc1 = true;
+            if (a.claim == "confident") { a.claim = "supported"; ++stats_.confidentSuppressed; }
+        }
         ++stats_.annotated;
         if (a.claim == "confident") ++stats_.confident;
         else if (a.claim == "supported") ++stats_.supported;

@@ -274,7 +274,8 @@ if [ "$guided" = 1 ]; then
     printf '  TesserACT is complete without these, and nothing it does needs them. A model\n'
     printf '  lays the pieces out against closed genomes of the same species, for the seven\n'
     printf '  clinical bugs: Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas,\n'
-    printf '  S. aureus, Enterococcus. About 1.4 GB in total, downloaded once.\n\n'
+    printf '  S. aureus, Enterococcus, and (new in 1.5.0) Salmonella. About 1.7 GB in total,\n'
+    printf '  downloaded once. The Salmonella model was measured on 15 development isolates only.\n\n'
     printf '  It is a trade-off. Measured with the 1.4.0 defaults on 329 held-out isolates:\n'
     printf '    with a model   median NGA50 134 -> 156 kb, median contigs 99 -> 86\n'
     printf '    but            misassemblies 154 -> 290 (isolates whose reference matches)\n'
@@ -329,7 +330,7 @@ Organism models are optional, and nothing above needs them. A model buys
 contiguity and costs misassemblies: with the 1.4.0 defaults, on 329 held-out
 isolates, it raised the median NGA50 from 134 to 156 kb and the misassemblies
 from 154 to 290. None was downloaded. To add them:
-  tesseract-get-models                   fetch the models (about 1.4 GB, once)
+  tesseract-get-models                   fetch the models (about 1.7 GB, once)
 Then each preset uses its organism's model, tesseract-klebsiella --with-model
 uses the Klebsiella one, and the assembler takes one by organism name. It reads
 ~/.tesseract/models/<organism>.tsm, or the directory TESSERACT_MODEL_DIR names:

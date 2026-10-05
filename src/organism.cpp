@@ -40,7 +40,9 @@ bool readPod(std::FILE* f, T& v) {
 std::string canonicalOrganism(const std::string& name) {
     std::string lower = name;
     for (char& c : lower) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    return lower == "klebsiella" ? std::string("kpneumoniae") : name;
+    if (lower == "klebsiella") return "kpneumoniae";
+    if (lower == "salmonella") return "senterica";   // 1.5: the Salmonella enterica model is senterica.tsm
+    return name;
 }
 
 void OrganismModel::beginBuild(const std::string& organism, int k) {
