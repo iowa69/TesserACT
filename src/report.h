@@ -136,6 +136,24 @@ struct AssemblyReport {
     // and then no key is written: a flags-off report is the release's byte for byte.
     std::string om2Json;
 
+    // Phase 2 emit-B (p2_emitb.h): the report.json "p2" object, written whenever it is non-empty.
+    // Every assembler run sets it: EVAL_PLAN_P2 s5.2 registers the block, which with every P2 flag
+    // off holds only enabled=0 and zero counters. `p2` is what report.html shows of it.
+    std::string p2Json;
+    struct P2Html {
+        bool selfQa = false;
+        bool alarm = false;
+        std::string verdict;
+        double completeness = 0, qvRead0 = 0;
+        uint64_t missingGt10x = 0, missing3to10 = 0, spikeSolid = 0, spikeRef = 0;
+        bool ends = false;
+        size_t endRows = 0, endsAudited = 0, tipEnds = 0, tipBases = 0, lowercasedBases = 0;
+        bool detect = false;
+        std::string detectCall, detectBest;
+        double detectBestScore = 0;
+        bool provenance = false;
+    } p2;
+
     // Recomputes the derived summary fields from `contigs`.
     void finalize();
 };

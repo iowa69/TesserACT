@@ -34,6 +34,7 @@
 #include <cstddef>
 #include <cstdio>
 #include <string>
+#include <vector>
 
 namespace ts { namespace env {
 
@@ -90,5 +91,14 @@ bool isSet(const char* name);
 // TesserACT flag gets a warning line (it is ignored, as before). Returns 0 when every set
 // flag is valid; otherwise prints one error line per invalid flag and returns 2.
 int validateEnvironment(std::FILE* log);
+
+// Phase 2 emit-B (F10 provenance): every TESSERACT_* variable of the environment, sorted by name,
+// with its value, its parsed (canonical) value and kind when it is a registered flag. Reads the
+// environment the way validateEnvironment does; no flag is interpreted here.
+struct SetVariable {
+    std::string name, value, canonical, kind;
+    bool registered = false, valid = false;
+};
+std::vector<SetVariable> setVariables();
 
 }}  // namespace ts::env

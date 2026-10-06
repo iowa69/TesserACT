@@ -283,6 +283,13 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
         w.s += ",\n";
     }
 
+    // Phase 2 emit-B: present on every assembler run (enabled=0 and zero counters when off).
+    if (!rep.p2Json.empty()) {
+        w.key("p2");
+        w.s += rep.p2Json;
+        w.s += ",\n";
+    }
+
     w.openObj("assembly");
     w.uint("contigs", rep.contigs.size());
     w.uint("total_length", rep.totalLength);

@@ -1534,6 +1534,111 @@ rc=0
 "$ROOT/tesseract-get-models" --help | grep -q 'The models are optional' || rc=1
 check "help texts: models optional, with their cost" $rc "tesseract-asm, -eskape, -klebsiella, -get-models"
 
+# ---------------------------------------------------------------------------
+# 21. Phase 2 emit-B (EVAL_PLAN_P2 W1): ends.tsv + lower-case tips, self-QA, provenance, detection
+#     report. Flags off: the registered p2 block holds only enabled=0 and zero counters and no side
+#     file is written. Flags on: the -t 1/4/6 identity test (L-F10c) over every output, the case-only
+#     footprint of the lower-case tips (L-END-b) and the report-only footprint of the rest.
+# ---------------------------------------------------------------------------
+P2ENV="TESSERACT_P2_ENDS=1 TESSERACT_P2_TIPS_LOWERCASE=1 TESSERACT_P2_SELF_QA=1 TESSERACT_P2_PROVENANCE=1 TESSERACT_P2_DETECT_REPORT=1"
+p2check() {   # p2check DIR_OFF DIR_ON -- footprint and block checks; prints a detail, exit 0 on success
+    python3 - "$1" "$2" <<'P2PY'
+import json, os, re, sys
+off, on = sys.argv[1], sys.argv[2]
+def rd(p):
+    return open(p).read() if os.path.exists(p) else None
+def fa(p):
+    out, name = {}, None
+    for l in open(p):
+        l = l.rstrip('\n')
+        if l.startswith('>'): name = l[1:]; out[name] = ''
+        else: out[name] += l
+    return out
+bad = []
+ro, rn = json.load(open(off + '/report.json')), json.load(open(on + '/report.json'))
+p = ro.get('p2')
+if p is None or p.get('enabled') != 0 or set(p) != {'enabled', 'counters'} or any(v != 0 for v in p['counters'].values()):
+    bad.append('flags-off p2 block not enabled=0 + zero counters: %r' % (p,))
+for f in ('ends.tsv', 'p2_edits.tsv', 'p2_self_qa.tsv'):
+    if os.path.exists(off + '/' + f): bad.append('flags off wrote ' + f)
+for f in ('scaffolds.fasta', 'scaffolds.agp', 'assembly_graph.gfa'):
+    if rd(off + '/' + f) != rd(on + '/' + f): bad.append(f + ' differs')
+co, cn = rd(off + '/contigs.fasta'), rd(on + '/contigs.fasta')
+if co is None or cn is None or co.upper() != cn.upper(): bad.append('contigs.fasta differs beyond letter case')
+VOL = {'version', 'started_at', 'command', 'threads', 'total_seconds', 'peak_memory_bytes'}
+def mask(o):
+    if isinstance(o, dict): return {k: ('<m>' if (k in VOL or k.endswith('seconds') or k == 'ms') else mask(v)) for k, v in o.items() if k != 'p2'}
+    if isinstance(o, list): return [mask(x) for x in o]
+    return o
+if mask(ro) != mask(rn): bad.append('report.json differs outside p2')
+q = rn.get('p2', {})
+for k in ('ends', 'self_qa', 'provenance', 'organism_detect'):
+    if k not in q: bad.append('p2.%s missing' % k)
+if q.get('organism_detect', {}).get('model_applied') is not False: bad.append('detection applied a model')
+ends = [l.rstrip('\n').split('\t') for l in open(on + '/ends.tsv')]
+hdr, rows = ends[0], ends[1:]
+I = {h: i for i, h in enumerate(hdr)}
+recs = fa(on + '/contigs.fasta')
+want = sum(2 for v in recs.values() if len(v) >= 500)
+if len(rows) != want: bad.append('ends.tsv rows %d != 2 x records >= 500 bp (%d)' % (len(rows), want))
+tip = {(r[I['record']], r[I['end']]): int(r[I['unsupported_tip_bp']]) for r in rows}
+low = 0
+for name, sq in recs.items():
+    runs = [(m.start(), m.end()) for m in re.finditer('[acgtn]+', sq)]
+    low += sum(e - s for s, e in runs)
+    l, r = tip.get((name, 'L'), 0), tip.get((name, 'R'), 0)
+    exp = ([(0, l)] if l else []) + ([(len(sq) - r, len(sq))] if r else [])
+    if runs != exp: bad.append('lower-case runs of %s %r != tips %r' % (name, runs, exp)); break
+edits = [l for l in open(on + '/p2_edits.tsv')][1:]
+if len(edits) != sum(1 for v in tip.values() if v): bad.append('p2_edits.tsv rows != tipped ends')
+if q.get('counters', {}).get('lowercased_bases') != low: bad.append('lowercased_bases counter != lower-case bases')
+print('; '.join(bad) if bad else 'ends=%d tips=%d lowercase_bp=%d sqa_peak=%s' % (len(rows), sum(1 for v in tip.values() if v), low, q.get('self_qa', {}).get('peak')))
+sys.exit(1 if bad else 0)
+P2PY
+}
+p2same() {   # p2same DIR_A DIR_B -- every emit-B output and the p2 block (minus timing, threads, provenance) identical
+    local f d="$(same_outputs "$1" "$2")"
+    for f in ends.tsv p2_edits.tsv p2_self_qa.tsv p2_self_qa.contigs.tsv p2_self_qa.missing_hi.tsv p2_self_qa.absent.bed; do
+        if [ -e "$1/$f" ] || [ -e "$2/$f" ]; then cmp -s "$1/$f" "$2/$f" || d="$d $f"; fi
+    done
+    python3 - "$1/report.json" "$2/report.json" <<'P2PY' || d="$d report.json:p2"
+import json, sys
+def strip(o):
+    if isinstance(o, dict): return {k: strip(v) for k, v in o.items() if not (k.endswith('seconds') or k in ('provenance', 'threads'))}
+    if isinstance(o, list): return [strip(x) for x in o]
+    return o
+a, b = (strip(json.load(open(p)).get('p2')) for p in sys.argv[1:3])
+sys.exit(0 if a == b else 1)
+P2PY
+    printf '%s' "$d"
+}
+for fx in t5 t15d; do
+    D=$TMP/$fx
+    rc=0; detail=""
+    asm "$D/p2off" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4 || rc=1
+    grep -q '^\[p2-ends\] enabled=0 lowercase=0 records=0 ends=0' "$LOG" && grep -q '^\[p2-sqa\] enabled=0 ran=0' "$LOG" \
+        && grep -q '^\[p2-prov\] enabled=0 files=0 bytes=0' "$LOG" && grep -q '^\[p2-detect\] enabled=0 ran=0' "$LOG" \
+        && grep -q '^\[p2-readpass\] enabled=0 files=0 reads=0 bases=0' "$LOG" || { rc=1; detail="counter lines missing"; }
+    for t in 1 4 6; do
+        (export $P2ENV; asm "$D/p2on_t$t" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t $t) || rc=1
+    done
+    if [ $rc -eq 0 ]; then
+        detail=$(p2check "$D/p2off" "$D/p2on_t4") || rc=1
+    fi
+    check "p2 emit-B footprint and flags-off block ($fx)" $rc "$detail"
+    rc=0
+    asm "$D/p2off_t1" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 1 || rc=1
+    asm "$D/p2off_t6" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 6 || rc=1
+    diffs=""
+    if [ $rc -eq 0 ]; then
+        diffs="$(same_outputs "$D/p2off_t1" "$D/p2off")$(same_outputs "$D/p2off_t1" "$D/p2off_t6")"
+        diffs="$diffs$(p2same "$D/p2on_t1" "$D/p2on_t4")$(p2same "$D/p2on_t1" "$D/p2on_t6")"
+    fi
+    [ -z "$diffs" ] || rc=1
+    check "thread identity -t 1/4/6, emit-B flags off and on ($fx)" $rc \
+          "${diffs:-byte-identical $(present_outputs "$D/p2on_t1"),ends.tsv,p2_edits.tsv,p2_self_qa.*,report.json p2}"
+done
+
 echo
 echo "-----------------------------------------------------------------------"
 printf '%d passed, %d failed, %d known open defects (XFAIL), %d skipped\n' \

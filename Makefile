@@ -77,6 +77,21 @@ $(BUILDDIR)/%.o: $(SRCDIR)/%.cpp | $(BUILDDIR)
 $(BUILDDIR):
 	@mkdir -p $(BUILDDIR)
 
+# Phase 2 emit-B (F10 provenance): report.json records the commit the binary was built from. The
+# commit goes into a generated header that is rewritten only when it changes, so p2_provenance.o is
+# rebuilt exactly when the commit (or the dirty state of src/ and the Makefile) changes. Outside a
+# checkout of this tree it reads "unknown".
+GIT_TOP    := $(shell git -C $(CURDIR) rev-parse --show-toplevel 2>/dev/null)
+GIT_HEAD   := $(if $(filter $(realpath $(CURDIR)),$(realpath $(GIT_TOP))),$(shell git -C $(CURDIR) rev-parse --short=12 HEAD 2>/dev/null))
+GIT_DIRTY  := $(if $(GIT_HEAD),$(shell git -C $(CURDIR) diff --quiet HEAD -- src Makefile 2>/dev/null || echo +dirty))
+GIT_COMMIT := $(or $(GIT_HEAD)$(GIT_DIRTY),unknown)
+.PHONY: gitcommit-force
+gitcommit-force:
+$(BUILDDIR)/git_commit.h: gitcommit-force | $(BUILDDIR)
+	@c='#define TS_GIT_COMMIT "$(GIT_COMMIT)"'; [ -f $@ ] && [ "$$(cat $@)" = "$$c" ] || echo "$$c" > $@
+$(BUILDDIR)/p2_provenance.o: $(BUILDDIR)/git_commit.h
+$(BUILDDIR)/p2_provenance.o: CXXFLAGS += -include $(BUILDDIR)/git_commit.h
+
 -include $(DEPS)
 -include $(BUILDDIR)/test_units.d
 
