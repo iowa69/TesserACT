@@ -30,6 +30,7 @@
 #include "organism_join.h"
 #include "om2_ledger.h"
 #include "p2_emit.h"
+#include "p2_emitb.h"
 #include "pairends.h"
 #include "replicon.h"
 #include "gfa.h"
@@ -924,6 +925,27 @@ bool Assembler::run(std::string& error) {
     // G-emit fix switches: a malformed value would otherwise run as a silent null arm.
     if (!emitfix::validate(error)) return false;
     emitfix::logSummary();
+
+    // Phase 2 emit-B (p2_emitb.h; every flag default off). The provenance hashes run on a
+    // background thread from here, so hashing the read files overlaps the assembly. Under the
+    // developer fork batch they run at the end instead (no thread may be alive across fork()).
+    p2::EmitBState p2state;
+    p2state.opt = p2::EmitBOptions::fromEnv();
+    p2::ProvenanceInput p2provIn;
+    p2::ProvenanceJob p2prov;
+    if (p2state.opt.provenance) {
+        for (size_t li = 0; li < opt_.libraries.size(); ++li) {
+            const Library& l = opt_.libraries[li];
+            const bool pairLib = !l.r2.empty() || l.interleaved;
+            if (!l.r1.empty()) p2provIn.inputs.push_back({l.interleaved ? "--12" : (pairLib ? "-1" : "-s"), l.r1});
+            if (!l.r2.empty()) p2provIn.inputs.push_back({"-2", l.r2});
+        }
+        p2provIn.namedFiles = {{"model", opt_.organismModelPath}, {"--qc", opt_.qcPath},
+                               {"--is-panel", opt_.isPanelPath}, {"--is-sites", opt_.isSitesPath}};
+        p2provIn.defaultsLine = defaults::line(opt_.tieRatio);
+        p2provIn.mode = runModeName(opt_.mode);
+        if (!env::isSet("TESSERACT_DEV_FORK_BATCH")) p2prov.start(p2provIn);
+    }
 
     // Check the output directory is usable before spending the run on it. This
     // is checked here rather than at the final stage, so a run that cannot
@@ -1951,7 +1973,9 @@ bool Assembler::run(std::string& error) {
     {
         size_t staleRemoved = 0;
         for (const char* nm : {"scaffolds.fasta", "scaffolds.agp", "unitigs.fasta",
-                               "assembly_graph.gfa", "report.html", "replicons.tsv", "p2_edits.tsv"}) {
+                               "assembly_graph.gfa", "report.html", "replicons.tsv", "p2_edits.tsv",
+                               "ends.tsv", "p2_self_qa.tsv", "p2_self_qa.contigs.tsv",
+                               "p2_self_qa.missing_hi.tsv", "p2_self_qa.absent.bed"}) {
             const std::string p = opt_.outDir + "/" + nm;
             if (std::remove(p.c_str()) == 0) ++staleRemoved;
         }
@@ -2153,18 +2177,49 @@ bool Assembler::run(std::string& error) {
     // T17: the contig statistics describe the records contigs.fasta holds.
     computeContigStats(splitSeqs, outSeqs, report_);
 
+    // Phase 2 emit-B (default off): ends.tsv and lower-case unsupported tips, k-mer self-QA and the
+    // detection report, from one pass over the raw read files. Runs on the records exactly as they
+    // are written; with TESSERACT_P2_TIPS_LOWERCASE only the bytes written to contigs.fasta change
+    // case -- splitSeqs, the pieces, the AGP, the GFA and every statistic keep the upper-case records.
+    std::vector<std::string> p2Written;
+    bool p2Replaced = false;
+    if (p2state.opt.needsReadPass()) {
+        p2::EmitBRecords pr;
+        pr.outDir = opt_.outDir;
+        pr.seqs = &splitSeqs;
+        pr.names = &splitNames;
+        for (size_t j : live) pr.covs.push_back(pieces[j].cov);
+        pr.reads = &reads_;
+        pr.insert = report_.resolve.insert;
+        pr.threads = opt_.threads;
+        pr.libraries = opt_.libraries;
+        p2Replaced = p2::runEmitBRecords(pr, p2state, p2Written);
+    }
+
+    // Phase 2 (EVAL_PLAN_P2 s5.2): ONE per-record edit log for every W1 feature that edits a record
+    // -- emit-A's R3 / F5 rows, then emit-B's lower-case tip rows -- written here, by this one writer,
+    // before contigs.fasta (the lower-case tips are never written without their log). Coordinates are
+    // 0-based, half-open, in the record as assembled before that edit. With those flags off no edit
+    // log is written.
+    if (p2cfg.recordStage() || p2state.opt.lowercase) {
+        std::vector<std::string> p2EditRows;
+        if (p2cfg.recordStage()) p2EditRows = p2::formatEditRows(p2res, pieces);
+        p2EditRows.insert(p2EditRows.end(), p2state.edits.begin(), p2state.edits.end());
+        if (!p2::writeEditLog(opt_.outDir + "/p2_edits.tsv", p2EditRows, error)) return false;
+    }
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
-    if (!writeFasta(contigPath, splitSeqs, splitNames, 80, error)) return false;
+    if (!writeFasta(contigPath, p2Replaced ? p2Written : splitSeqs, splitNames, 80, error)) return false;
     if (p2cfg.recordStage()) {
         std::string p2err;
-        if (!p2::writeRepliconsTsv(opt_.outDir + "/replicons.tsv", p2res, pieces, p2err) ||
-            !p2::writeEditsTsv(opt_.outDir + "/p2_edits.tsv", p2res, pieces, p2err)) {
+        if (!p2::writeRepliconsTsv(opt_.outDir + "/replicons.tsv", p2res, pieces, p2err)) {
             error = p2err;
             return false;
         }
     }
-    report_.p2Json = p2::reportJson(p2cfg, report_.resolve.libGuard, p2cfg.recordStage() ? &p2res : nullptr,
-                                    p2cfg.recordStage() ? &pieces : nullptr);
+    // emit-A's members of the report.json "p2" block (r2, r3, f5); merged into the one block below.
+    const std::string p2aMembers = p2::reportJsonMembers(p2cfg, report_.resolve.libGuard,
+                                                         p2cfg.recordStage() ? &p2res : nullptr,
+                                                         p2cfg.recordStage() ? &pieces : nullptr);
     if (opt_.verbose) {
         if (gapBasesTotal > 0) {
             std::fprintf(stderr,
@@ -2332,6 +2387,46 @@ bool Assembler::run(std::string& error) {
     }
     // Organism Model 2.0 C4 counter line, on every run (zeros without TESSERACT_OM2_CLONAL).
     om2::logClonalCounters(om2ClonalStats);
+
+    // Phase 2 emit-B: the provenance manifest, the report.json "p2" block (always written; enabled=0
+    // and zero counters when every flag is off) and the counter lines (always printed).
+    if (p2state.opt.provenance) {
+        if (!p2prov.started()) p2prov.start(p2provIn);
+        p2state.provenanceJson = p2prov.finishJson(opt_.threads, stats_.kUsed);
+        p2state.provFiles = p2prov.filesHashed();
+        p2state.provBytes = p2prov.bytesHashed();
+    }
+    report_.p2Json = p2::p2BlockJson(p2state, p2aMembers, p2cfg.any());
+    {
+        AssemblyReport::P2Html& h = report_.p2;
+        h.selfQa = p2state.sqa.ran;
+        if (h.selfQa) {
+            h.alarm = p2state.sqa.alarm;
+            h.verdict = p2::selfQaVerdict(p2state.sqa);
+            h.completeness = p2state.sqa.completeness;
+            h.qvRead0 = p2state.sqa.qvRead0;
+            h.missingGt10x = p2state.sqa.missingBpEst(p2::kSqaBins - 1);
+            h.missing3to10 = p2state.sqa.missingBpEst(p2::kSqaBins - 2);
+            h.spikeSolid = p2state.sqa.spikeSolid;
+            h.spikeRef = p2state.sqa.spikeRef;
+        }
+        h.ends = p2state.endsRan;
+        if (h.ends) {
+            h.endRows = p2state.ends.ends;
+            h.endsAudited = p2state.ends.audited;
+            h.tipEnds = p2state.ends.tipEnds;
+            h.tipBases = p2state.ends.tipBases;
+            h.lowercasedBases = p2state.ends.lowercasedBases;
+        }
+        h.detect = p2state.det.ran;
+        if (h.detect && !p2state.det.scores.empty()) {
+            h.detectBest = p2state.det.scores[0].name;
+            h.detectBestScore = p2state.det.best();
+            h.detectCall = p2state.det.accepted() ? p2state.det.scores[0].name : std::string("none");
+        }
+        h.provenance = p2state.opt.provenance;
+    }
+    p2::logEmitBCounters(p2state, stderr);
 
     stats_.contigs = report_.contigs.size();   // == outSeqs.size() unless the 1.5 layout-only view cut scaffolds
     stats_.totalLength = report_.totalLength;

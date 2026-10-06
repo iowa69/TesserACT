@@ -198,6 +198,12 @@ bool writeRepliconsTsv(const std::string& path, const RecordStageResult& r,
                        const std::vector<EmitPiece>& pieces, std::string& error);
 bool writeEditsTsv(const std::string& path, const RecordStageResult& r,
                    const std::vector<EmitPiece>& pieces, std::string& error);
+// The rows of p2_edits.tsv for this stage's edits ("record\tfeature\toperation\tstart\tend\tbases",
+// 0-based half-open coordinates in the record before the edit), in edit order.
+std::vector<std::string> formatEditRows(const RecordStageResult& r, const std::vector<EmitPiece>& pieces);
+// Writes p2_edits.tsv: the header line, then `rows` as given. The integration build writes every W1
+// feature's rows through this one writer (EVAL_PLAN_P2 s5.2).
+bool writeEditLog(const std::string& path, const std::vector<std::string>& rows, std::string& error);
 
 // Counter lines, printed on every run (zeros when the flag is off).
 std::string formatLibGuardCounters(const LibGuardStats& s);
@@ -207,6 +213,11 @@ std::string formatSpikeinCounters(const EmitConfig& c, const RecordStageStats& s
 // zero counters.
 std::string reportJson(const EmitConfig& c, const LibGuardStats& lg, const RecordStageResult* r,
                        const std::vector<EmitPiece>* pieces);
+// The same object's members without the braces and without "enabled" ("r2": {...}, "r3": {...},
+// "f5": {...}): the integration build merges them into the single report.json "p2" block that
+// p2::p2BlockJson (p2_emitb.h) renders, so there is one "p2" key with one "enabled" flag.
+std::string reportJsonMembers(const EmitConfig& c, const LibGuardStats& lg, const RecordStageResult* r,
+                              const std::vector<EmitPiece>* pieces);
 
 }  // namespace p2
 }  // namespace ts

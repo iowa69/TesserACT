@@ -176,6 +176,28 @@ def cmd_repeat_genome(a):
     print("length=%d" % (3 * uniq + 2 * rep))
 
 
+def cmd_circgenome(a):
+    """circgenome OUT SEED EXT PHIX_HEADER LEN:COPIES [LEN:COPIES...] -- circular replicons: each random
+    record is written COPIES times (depth), every record extended by its own first EXT bases so that
+    the simulated fragments span the wrap; plus the phiX174 sequence of PHIX_HEADER (src/p2_phix.h,
+    kPhiX174) the same way, unless PHIX_HEADER is '-'."""
+    out, seed, ext, phix = a[0], int(a[1]), int(a[2]), a[3]
+    rng = random.Random(seed)
+    recs = []
+    for i, spec in enumerate(a[4:]):
+        L, n = (int(x) for x in spec.split(":"))
+        s = rand_seq(rng, L)
+        for c in range(n):
+            recs.append(("rep%d_%d" % (i + 1, c + 1), s + s[:ext]))
+    if phix != "-":
+        txt = open(phix).read()
+        body = txt.split("kPhiX174 =", 1)[1].split(";", 1)[0]
+        s = "".join(re.findall(r'"([ACGT]+)"', body))
+        recs.append(("phix", s + s[:ext]))
+    write_fasta(out, recs)
+    print("records=%d" % len(recs))
+
+
 def mutate(rng, seq, err):
     if err <= 0:
         return seq
@@ -640,7 +662,8 @@ def cmd_dotnames(a):
 
 
 if __name__ == "__main__":
-    table = {"genome": cmd_genome, "repeat_genome": cmd_repeat_genome, "reads": cmd_reads,
+    table = {"genome": cmd_genome, "repeat_genome": cmd_repeat_genome, "circgenome": cmd_circgenome,
+             "reads": cmd_reads,
              "tiny": cmd_tiny, "stats": cmd_stats, "exact": cmd_exact, "substr": cmd_substr,
              "kmercheck": cmd_kmercheck, "identity": cmd_identity, "sameset": cmd_sameset,
              "format": cmd_format, "contigstats": cmd_contigstats,
@@ -1533,6 +1556,203 @@ rc=0
 "$ROOT/tesseract-klebsiella" --help | grep -q -- '--with-model' || rc=1
 "$ROOT/tesseract-get-models" --help | grep -q 'The models are optional' || rc=1
 check "help texts: models optional, with their cost" $rc "tesseract-asm, -eskape, -klebsiella, -get-models"
+
+# ---------------------------------------------------------------------------
+# 21. Phase 2 emit-B (EVAL_PLAN_P2 W1): ends.tsv + lower-case tips, self-QA, provenance, detection
+#     report. Flags off: the registered p2 block holds only enabled=0 and zero counters and no side
+#     file is written. Flags on: the -t 1/4/6 identity test (L-F10c) over every output, the case-only
+#     footprint of the lower-case tips (L-END-b) and the report-only footprint of the rest.
+# ---------------------------------------------------------------------------
+P2ENV="TESSERACT_P2_ENDS=1 TESSERACT_P2_TIPS_LOWERCASE=1 TESSERACT_P2_SELF_QA=1 TESSERACT_P2_PROVENANCE=1 TESSERACT_P2_DETECT_REPORT=1"
+p2check() {   # p2check DIR_OFF DIR_ON -- footprint and block checks; prints a detail, exit 0 on success
+    python3 - "$1" "$2" <<'P2PY'
+import json, os, re, sys
+off, on = sys.argv[1], sys.argv[2]
+def rd(p):
+    return open(p).read() if os.path.exists(p) else None
+def fa(p):
+    out, name = {}, None
+    for l in open(p):
+        l = l.rstrip('\n')
+        if l.startswith('>'): name = l[1:]; out[name] = ''
+        else: out[name] += l
+    return out
+bad = []
+ro, rn = json.load(open(off + '/report.json')), json.load(open(on + '/report.json'))
+p = ro.get('p2')
+def zero(o):
+    if isinstance(o, dict): return all(zero(v) for v in o.values())
+    if isinstance(o, bool): return not o
+    if isinstance(o, (int, float)): return o == 0
+    return False
+# the one integrated block: emit-B's counters plus emit-A's r2/r3/f5 members, all zero when off
+if p is None or p.get('enabled') != 0 or set(p) != {'enabled', 'counters', 'r2', 'r3', 'f5'} or not zero(p):
+    bad.append('flags-off p2 block not enabled=0 + zero counters: %r' % (p,))
+for f in ('ends.tsv', 'p2_edits.tsv', 'p2_self_qa.tsv'):
+    if os.path.exists(off + '/' + f): bad.append('flags off wrote ' + f)
+for f in ('scaffolds.fasta', 'scaffolds.agp', 'assembly_graph.gfa'):
+    if rd(off + '/' + f) != rd(on + '/' + f): bad.append(f + ' differs')
+co, cn = rd(off + '/contigs.fasta'), rd(on + '/contigs.fasta')
+if co is None or cn is None or co.upper() != cn.upper(): bad.append('contigs.fasta differs beyond letter case')
+VOL = {'version', 'started_at', 'command', 'threads', 'total_seconds', 'peak_memory_bytes'}
+def mask(o):
+    if isinstance(o, dict): return {k: ('<m>' if (k in VOL or k.endswith('seconds') or k == 'ms') else mask(v)) for k, v in o.items() if k != 'p2'}
+    if isinstance(o, list): return [mask(x) for x in o]
+    return o
+if mask(ro) != mask(rn): bad.append('report.json differs outside p2')
+q = rn.get('p2', {})
+for k in ('ends', 'self_qa', 'provenance', 'organism_detect'):
+    if k not in q: bad.append('p2.%s missing' % k)
+if q.get('organism_detect', {}).get('model_applied') is not False: bad.append('detection applied a model')
+ends = [l.rstrip('\n').split('\t') for l in open(on + '/ends.tsv')]
+hdr, rows = ends[0], ends[1:]
+I = {h: i for i, h in enumerate(hdr)}
+recs = fa(on + '/contigs.fasta')
+want = sum(2 for v in recs.values() if len(v) >= 500)
+if len(rows) != want: bad.append('ends.tsv rows %d != 2 x records >= 500 bp (%d)' % (len(rows), want))
+tip = {(r[I['record']], r[I['end']]): int(r[I['unsupported_tip_bp']]) for r in rows}
+low = 0
+for name, sq in recs.items():
+    runs = [(m.start(), m.end()) for m in re.finditer('[acgtn]+', sq)]
+    low += sum(e - s for s, e in runs)
+    l, r = tip.get((name, 'L'), 0), tip.get((name, 'R'), 0)
+    exp = ([(0, l)] if l else []) + ([(len(sq) - r, len(sq))] if r else [])
+    if runs != exp: bad.append('lower-case runs of %s %r != tips %r' % (name, runs, exp)); break
+edits = [l for l in open(on + '/p2_edits.tsv')][1:]
+if len(edits) != sum(1 for v in tip.values() if v): bad.append('p2_edits.tsv rows != tipped ends')
+if q.get('counters', {}).get('lowercased_bases') != low: bad.append('lowercased_bases counter != lower-case bases')
+print('; '.join(bad) if bad else 'ends=%d tips=%d lowercase_bp=%d sqa_peak=%s' % (len(rows), sum(1 for v in tip.values() if v), low, q.get('self_qa', {}).get('peak')))
+sys.exit(1 if bad else 0)
+P2PY
+}
+p2same() {   # p2same DIR_A DIR_B -- every emit-B output and the p2 block (minus timing, threads, provenance) identical
+    local f d="$(same_outputs "$1" "$2")"
+    for f in replicons.tsv ends.tsv p2_edits.tsv p2_self_qa.tsv p2_self_qa.contigs.tsv p2_self_qa.missing_hi.tsv p2_self_qa.absent.bed; do
+        if [ -e "$1/$f" ] || [ -e "$2/$f" ]; then cmp -s "$1/$f" "$2/$f" || d="$d $f"; fi
+    done
+    python3 - "$1/report.json" "$2/report.json" <<'P2PY' || d="$d report.json:p2"
+import json, sys
+def strip(o):
+    if isinstance(o, dict): return {k: strip(v) for k, v in o.items() if not (k.endswith('seconds') or k in ('provenance', 'threads'))}
+    if isinstance(o, list): return [strip(x) for x in o]
+    return o
+a, b = (strip(json.load(open(p)).get('p2')) for p in sys.argv[1:3])
+sys.exit(0 if a == b else 1)
+P2PY
+    printf '%s' "$d"
+}
+for fx in t5 t15d; do
+    D=$TMP/$fx
+    rc=0; detail=""
+    asm "$D/p2off" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4 || rc=1
+    grep -q '^\[p2-ends\] enabled=0 lowercase=0 records=0 ends=0' "$LOG" && grep -q '^\[p2-sqa\] enabled=0 ran=0' "$LOG" \
+        && grep -q '^\[p2-prov\] enabled=0 files=0 bytes=0' "$LOG" && grep -q '^\[p2-detect\] enabled=0 ran=0' "$LOG" \
+        && grep -q '^\[p2-readpass\] enabled=0 files=0 reads=0 bases=0' "$LOG" || { rc=1; detail="counter lines missing"; }
+    for t in 1 4 6; do
+        (export $P2ENV; asm "$D/p2on_t$t" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t $t) || rc=1
+    done
+    if [ $rc -eq 0 ]; then
+        detail=$(p2check "$D/p2off" "$D/p2on_t4") || rc=1
+    fi
+    check "p2 emit-B footprint and flags-off block ($fx)" $rc "$detail"
+    rc=0
+    asm "$D/p2off_t1" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 1 || rc=1
+    asm "$D/p2off_t6" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 6 || rc=1
+    diffs=""
+    if [ $rc -eq 0 ]; then
+        diffs="$(same_outputs "$D/p2off_t1" "$D/p2off")$(same_outputs "$D/p2off_t1" "$D/p2off_t6")"
+        diffs="$diffs$(p2same "$D/p2on_t1" "$D/p2on_t4")$(p2same "$D/p2on_t1" "$D/p2on_t6")"
+    fi
+    [ -z "$diffs" ] || rc=1
+    check "thread identity -t 1/4/6, emit-B flags off and on ($fx)" $rc \
+          "${diffs:-byte-identical $(present_outputs "$D/p2on_t1"),ends.tsv,p2_edits.tsv,p2_self_qa.*,report.json p2}"
+done
+
+# ---------------------------------------------------------------------------
+# 22. Phase 2 W1 integration (emit-A + emit-B; EVAL_PLAN_P2 s5.2, s5.3, L-F10c). Every W1 flag on,
+#     as arm 903 sets them (R2 guard, R3 verify, F5 spike-in, ends + lower-case tips, self-QA,
+#     provenance, detection report), on a fixture that exercises them: two circular replicons
+#     (60 kb, and 5 kb at twice the depth) and a phiX174 spike-in. Flags off: ONE "p2" block that
+#     holds only enabled=0 and zeros, all 8 counter lines with enabled=0 and zeros, no side file.
+#     Flags on: R3 verifies and closes the circles (no duplicated end), F5 labels the phiX record,
+#     one p2_edits.tsv lists every edit, and -t 1/4/6 give byte-identical outputs, side files and
+#     p2 block.
+# ---------------------------------------------------------------------------
+W1ENV="TESSERACT_P2_LIBGUARD=1 TESSERACT_P2_CIRC=verify TESSERACT_P2_SPIKEIN=1 $P2ENV"
+D=$TMP/t22; mkdir -p "$D"
+gen circgenome "$D/g.fa" 2026 800 "$ROOT/src/p2_phix.h" 60000:1 5000:2 >/dev/null
+gen reads "$D/g.fa" "$D/r" 50 150 400 40 0.002 1011 paired fastq gz >/dev/null
+rc=0; detail=""
+asm "$D/w1off" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t 4 || rc=1
+cp "$LOG" "$D/w1off.log"
+for t in 1 4 6; do
+    (export $W1ENV; asm "$D/w1on_t$t" -1 "$D/r_1.fq.gz" -2 "$D/r_2.fq.gz" -t $t) || rc=1
+done
+if [ $rc -eq 0 ]; then
+    detail=$(python3 - "$D/w1off" "$D/w1off.log" "$D/w1on_t4" <<'P2PY'
+import json, os, re, sys
+off, offlog, on = sys.argv[1:4]
+bad = []
+def zero(o):
+    if isinstance(o, dict): return all(zero(v) for v in o.values())
+    if isinstance(o, bool): return not o
+    if isinstance(o, (int, float)): return o == 0
+    return False
+p = json.load(open(off + '/report.json')).get('p2')
+if p is None or p.get('enabled') != 0 or set(p) != {'enabled', 'counters', 'r2', 'r3', 'f5'} or not zero(p):
+    bad.append('flags-off p2 block: %r' % (p,))
+log = open(offlog).read().splitlines()
+nums = lambda s: [float(v) for v in re.findall(r'(?<![A-Za-z_])-?\d+(?:\.\d+)?', s)]
+for c in ('[p2-r2]', '[p2-r3]', '[p2-f5]', '[p2-ends]', '[p2-sqa]', '[p2-prov]', '[p2-detect]', '[p2-readpass]'):
+    hit = [l for l in log if l.startswith(c + ' ')]
+    if len(hit) != 1 or 'enabled=0' not in hit[0] or any(v != 0 for v in nums(hit[0][len(c):])):
+        bad.append('flags-off counter line %s: %r' % (c, hit))
+side = ('replicons.tsv', 'p2_edits.tsv', 'ends.tsv', 'p2_self_qa.tsv', 'p2_self_qa.contigs.tsv',
+        'p2_self_qa.missing_hi.tsv', 'p2_self_qa.absent.bed')
+for f in side:
+    if os.path.exists(off + '/' + f): bad.append('flags off wrote ' + f)
+q = json.load(open(on + '/report.json'))['p2']
+if q.get('enabled') != 1: bad.append('flags-on p2.enabled != 1')
+for k in ('r2', 'r3', 'f5', 'ends', 'self_qa', 'provenance', 'organism_detect'):
+    if k not in q: bad.append('p2.%s missing' % k)
+if q['r2'].get('verdict') != 'pass': bad.append('R2 guard verdict %r on an FR library' % q['r2'].get('verdict'))
+if q['r3'].get('verified', 0) < 2 or q['r3'].get('written_circular') != 2: bad.append('R3 did not verify both circles: %r' % q['r3'])
+if q['f5'].get('spikein') != 1: bad.append('F5 did not label the phiX record')
+recs, name = {}, None
+for l in open(on + '/contigs.fasta'):
+    l = l.rstrip('\n')
+    if l.startswith('>'): name = l[1:]; recs[name] = ''
+    else: recs[name] += l
+circ = [n for n in recs if n.endswith('_circular')]
+spk = [n for n in recs if n.endswith('_spikein')]
+if len(circ) != 2 or len(spk) != 1: bad.append('records: circular %d spikein %d' % (len(circ), len(spk)))
+for n in circ:
+    s = recs[n].upper()
+    if any(s[:o] == s[-o:] for o in range(20, min(3000, len(s) - 1) + 1)):
+        bad.append('%s keeps a duplicated end' % n)
+    if len(s) not in (60000, 5000): bad.append('%s length %d is not the replicon length' % (n, len(s)))
+ed = [l.rstrip('\n').split('\t') for l in open(on + '/p2_edits.tsv')]
+if ed[0] != ['record', 'feature', 'operation', 'start', 'end', 'bases']: bad.append('p2_edits.tsv header %r' % ed[0])
+feats = sorted(set(r[1] for r in ed[1:]))
+if 'R3' not in feats or 'F5' not in feats: bad.append('p2_edits.tsv features %r' % feats)
+if any(r[0] not in recs for r in ed[1:]): bad.append('p2_edits.tsv names a record contigs.fasta lacks')
+rep = [l for l in open(on + '/replicons.tsv') if not l.startswith('#')]
+if len(rep) != len(recs) + 1: bad.append('replicons.tsv rows %d != records %d' % (len(rep) - 1, len(recs)))
+print('; '.join(bad) if bad else 'records=%d circular=%d (verified, exact length) spikein=%d edits=%d features=%s' % (
+    len(recs), len(circ), len(spk), len(ed) - 1, ','.join(feats)))
+sys.exit(1 if bad else 0)
+P2PY
+) || rc=1
+fi
+check "p2 W1 integration: flags-off block and 8 counter lines, R3 + F5 + emit-B on" $rc "$detail"
+rc2=0; diffs=""
+for t in 1 4 6; do [ -s "$D/w1on_t$t/contigs.fasta" ] || { rc2=1; diffs="$diffs run_t$t"; }; done
+if [ $rc2 -eq 0 ]; then
+    diffs="$(p2same "$D/w1on_t1" "$D/w1on_t4")$(p2same "$D/w1on_t1" "$D/w1on_t6")"
+fi
+[ -z "$diffs" ] || rc2=1
+check "thread identity -t 1/4/6, every W1 flag on (L-F10c)" $rc2 \
+      "${diffs:-byte-identical $(present_outputs "$D/w1on_t1"),replicons.tsv,ends.tsv,p2_edits.tsv,p2_self_qa.*,report.json p2}"
 
 echo
 echo "-----------------------------------------------------------------------"

@@ -1000,6 +1000,13 @@ Verdict judge(const AssemblyReport& rep) {
     else if (v.score >= 70) { v.grade = "Good";      v.cls = "ok"; }
     else if (v.score >= 50) { v.grade = "Fair";      v.cls = "warn"; }
     else                    { v.grade = "Poor";      v.cls = "bad"; }
+    // Phase 2 emit-B (TESSERACT_P2_SELF_QA): the score above sees contiguity only, and called 184
+    // held-out assemblies that had lost content "excellent". With the k-mer self-QA run, a
+    // lost-replicon alarm caps the verdict: the grade is qualified and never shown as plain "ok".
+    if (rep.p2.selfQa && rep.p2.alarm) {
+        v.grade += " \u2014 content missing";
+        if (v.cls == "ok") v.cls = "warn";
+    }
     return v;
 }
 
@@ -1297,6 +1304,35 @@ std::string sectionRun(const AssemblyReport& rep, const Verdict& v) {
         s += "</div>";
     }
     s += "</div></div>";
+
+    // Phase 2 emit-B: what the run measured about its own content (each block only with its flag).
+    if (rep.p2.selfQa || rep.p2.ends || rep.p2.detect || rep.p2.provenance) {
+        s += "<h4>Content and provenance checks</h4><ul class=\"note\">";
+        if (rep.p2.selfQa) {
+            s += std::string("<li><b>K-mer self-QA</b> ") + (rep.p2.alarm ? "<b>ALARM</b>: " : "") +
+                 htmlEscape(rep.p2.verdict) + ". Completeness " + fmtNum(100.0 * rep.p2.completeness, 2) +
+                 "% of the solid read k-mers; QV " + fmtNum(rep.p2.qvRead0, 1) +
+                 " from read-absent assembly k-mers; absent from the assembly: " + fmtBp(static_cast<double>(rep.p2.missingGt10x)) +
+                 " at &gt;10x depth, " + fmtBp(static_cast<double>(rep.p2.missing3to10)) + " at 3&ndash;10x; PhiX spike-in k-mers solid in the reads: " +
+                 fmtInt(static_cast<double>(rep.p2.spikeSolid)) + " of " + fmtInt(static_cast<double>(rep.p2.spikeRef)) + ".</li>";
+        }
+        if (rep.p2.ends) {
+            s += "<li><b>Contig ends</b> (ends.tsv): " + fmtInt(static_cast<double>(rep.p2.endRows)) + " ends of contigs of 500 bp "
+                 "or more; " + fmtInt(static_cast<double>(rep.p2.endsAudited)) + " audited against their own reads, of which " +
+                 fmtInt(static_cast<double>(rep.p2.tipEnds)) + " carry " + fmtInt(static_cast<double>(rep.p2.tipBases)) +
+                 " terminal bases the reads do not support" +
+                 (rep.p2.lowercasedBases ? std::string(", written in lower case in contigs.fasta") : std::string()) + ".</li>";
+        }
+        if (rep.p2.detect) {
+            s += "<li><b>Organism detection</b> (report only, no model applied): best match " + htmlEscape(rep.p2.detectBest) +
+                 " at " + fmtNum(rep.p2.detectBestScore, 3) + "; call " + htmlEscape(rep.p2.detectCall) + ".</li>";
+        }
+        if (rep.p2.provenance) {
+            s += "<li><b>Provenance</b>: input, binary and model hashes, every TESSERACT_* variable and the full "
+                 "command line are in report.json (p2.provenance).</li>";
+        }
+        s += "</ul>";
+    }
 
     std::vector<const Criterion*> order;
     for (const Criterion& c : v.criteria) order.push_back(&c);

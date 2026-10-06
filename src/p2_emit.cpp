@@ -938,21 +938,32 @@ bool writeRepliconsTsv(const std::string& path, const RecordStageResult& r,
     return true;
 }
 
-bool writeEditsTsv(const std::string& path, const RecordStageResult& r, const std::vector<EmitPiece>& pieces,
-                   std::string& error) {
-    std::FILE* f = std::fopen(path.c_str(), "w");
-    if (!f) { error = "cannot write " + path; return false; }
+std::vector<std::string> formatEditRows(const RecordStageResult& r, const std::vector<EmitPiece>& pieces) {
     // EVAL_PLAN_P2 s5.2: record, feature, operation, start, end, bases. start/end are 0-based,
     // half-open, in the record as assembled before the edit; bases = bases removed or inserted.
-    std::fprintf(f, "record\tfeature\toperation\tstart\tend\tbases\n");
+    std::vector<std::string> rows;
+    rows.reserve(r.edits.size());
     for (const EditRow& e : r.edits) {
-        std::fprintf(f, "%s\t%s\t%s\t%zu\t%zu\t%zu\n", pieces[e.piece].name.c_str(), e.feature.c_str(),
-                     e.operation.c_str(), e.start, e.end, e.bases);
+        rows.push_back(pieces[e.piece].name + "\t" + e.feature + "\t" + e.operation + "\t" + std::to_string(e.start) +
+                       "\t" + std::to_string(e.end) + "\t" + std::to_string(e.bases));
     }
+    return rows;
+}
+
+bool writeEditLog(const std::string& path, const std::vector<std::string>& rows, std::string& error) {
+    std::FILE* f = std::fopen(path.c_str(), "w");
+    if (!f) { error = "cannot write " + path; return false; }
+    std::fprintf(f, "record\tfeature\toperation\tstart\tend\tbases\n");
+    for (const std::string& row : rows) std::fprintf(f, "%s\n", row.c_str());
     const bool ok = std::ferror(f) == 0;
     const bool closed = std::fclose(f) == 0;
     if (!ok || !closed) { error = "write failed on " + path; return false; }
     return true;
+}
+
+bool writeEditsTsv(const std::string& path, const RecordStageResult& r, const std::vector<EmitPiece>& pieces,
+                   std::string& error) {
+    return writeEditLog(path, formatEditRows(r, pieces), error);
 }
 
 // ---- counter lines and report.json ---------------------------------------------------------------
@@ -1013,13 +1024,17 @@ std::string jnum(double v) {
 
 std::string reportJson(const EmitConfig& c, const LibGuardStats& lg, const RecordStageResult* r,
                        const std::vector<EmitPiece>* pieces) {
+    return "{\"enabled\": " + std::to_string(c.any() ? 1 : 0) + ", " + reportJsonMembers(c, lg, r, pieces) + "}";
+}
+
+std::string reportJsonMembers(const EmitConfig& c, const LibGuardStats& lg, const RecordStageResult* r,
+                              const std::vector<EmitPiece>* pieces) {
     static const RecordStageResult kEmpty;
     const RecordStageResult& rr = r ? *r : kEmpty;
     const RecordStageStats& s = rr.st;
-    std::string o = "{";
-    o += "\"enabled\": " + std::to_string(c.any() ? 1 : 0);
+    std::string o;
     // R2
-    o += ", \"r2\": {\"enabled\": " + std::to_string(lg.enabled ? 1 : 0) +
+    o += "\"r2\": {\"enabled\": " + std::to_string(lg.enabled ? 1 : 0) +
          ", \"evaluated\": " + std::to_string(lg.evaluated ? 1 : 0) + ", \"fired\": " + std::to_string(lg.fired ? 1 : 0) +
          ", \"reason\": " + std::to_string(lg.reason) + ", \"pairs\": " + std::to_string(lg.pairs) +
          ", \"same_unitig\": " + std::to_string(lg.sameUnitig) + ", \"inward\": " + std::to_string(lg.inward) +
@@ -1099,7 +1114,6 @@ std::string reportJson(const EmitConfig& c, const LibGuardStats& lg, const Recor
         }
         o += "]";
     }
-    o += "}";
     o += "}";
     return o;
 }

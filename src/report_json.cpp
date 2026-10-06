@@ -283,6 +283,14 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
         w.s += ",\n";
     }
 
+    // Phase 2 (EVAL_PLAN_P2 s5.2): the one "p2" block of every W1 feature, present on every
+    // assembler run (enabled=0 and zero counters when every TESSERACT_P2_* flag is off).
+    if (!rep.p2Json.empty()) {
+        w.key("p2");
+        w.s += rep.p2Json;
+        w.s += ",\n";
+    }
+
     w.openObj("assembly");
     w.uint("contigs", rep.contigs.size());
     w.uint("total_length", rep.totalLength);
@@ -322,12 +330,6 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     }
     w.close(']');
     w.close('}');
-
-    if (!rep.p2Json.empty()) {
-        w.key("p2");
-        w.s += rep.p2Json;
-        w.s += ",\n";
-    }
 
     if (w.s.size() >= 2 && w.s[w.s.size() - 2] == ',') w.s.erase(w.s.size() - 2, 1);
     w.s += "}\n";

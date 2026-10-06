@@ -214,10 +214,18 @@ const Spec kTable[] = {
     // 1.5 layout-only genome view (om2_output.cpp); default off
     K("TESSERACT_OM2_LAYOUT_ONLY", Kind::Binary),            // join bases only at isolate-confirmed junctions
     C("TESSERACT_OM2_LAYOUT_CONFIRM", "isolate|c1pass"),     // what confirms a junction (isolate)
-    // Phase 2 (om2/design/EVAL_PLAN_P2.md), W1 emit-A; all default off, unset = release behaviour
+    // Phase 2 (om2/design/EVAL_PLAN_P2.md), W1; all default off, unset = release behaviour
+    // emit-A (p2_emit.h)
     K("TESSERACT_P2_LIBGUARD", Kind::Binary),                // R2: library orientation / insert-model guard
     C("TESSERACT_P2_CIRC", "off|close|verify"),              // R3: circle closure (close) + verified claims (verify)
     K("TESSERACT_P2_SPIKEIN", Kind::Binary),                 // F5: PhiX174 spike-in screen, `_spikein` label
+    // emit-B (p2_emitb.h)
+    K("TESSERACT_P2_ENDS", Kind::Binary),                    // ends.tsv (report-only)
+    K("TESSERACT_P2_TIPS_LOWERCASE", Kind::Binary),          // lower-case unsupported tips (case-only)
+    K("TESSERACT_P2_SELF_QA", Kind::Binary),                 // k-mer self-QA, report.json p2.self_qa (report-only)
+    K("TESSERACT_P2_PROVENANCE", Kind::Binary),              // provenance manifest (report-only)
+    K("TESSERACT_P2_DETECT_REPORT", Kind::Binary),           // organism detection as a report (report-only)
+    K("TESSERACT_P2_DETECT_SKETCH", Kind::Text),             // its sketch (else OM2_DETECT_SKETCH / MODEL_DIR)
     // read by tesseract-eskape, tesseract-klebsiella and tesseract-get-models
     K("TESSERACT_ASM", Kind::External),
     K("TESSERACT_KP_MODEL", Kind::External),
@@ -468,6 +476,28 @@ int validateEnvironment(std::FILE* log) {
     for (const auto& l : lines) std::fprintf(log, "%s\n", l.second.c_str());
     std::fflush(log);
     return 0;
+}
+
+std::vector<SetVariable> setVariables() {
+    std::vector<SetVariable> out;
+    for (char** e = ::environ; e && *e; ++e) {
+        if (std::strncmp(*e, "TESSERACT_", 10) != 0) continue;
+        const char* eq = std::strchr(*e, '=');
+        SetVariable v;
+        v.name = eq ? std::string(*e, static_cast<size_t>(eq - *e)) : std::string(*e);
+        v.value = eq ? std::string(eq + 1) : std::string();
+        if (const Spec* s = find(v.name.c_str())) {
+            v.registered = true;
+            v.kind = kindName(s->kind);
+            Parsed p;
+            std::string why;
+            v.valid = parse(*s, v.value.c_str(), p, why);
+            v.canonical = v.valid ? p.canonical : why;
+        }
+        out.push_back(v);
+    }
+    std::sort(out.begin(), out.end(), [](const SetVariable& a, const SetVariable& b) { return a.name < b.name; });
+    return out;
 }
 
 }}  // namespace ts::env
