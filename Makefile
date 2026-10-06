@@ -204,3 +204,13 @@ om2clonaltest: $(BIN) $(MODELBIN)
 	@d=$$(mktemp -d "$${TMPDIR:-/tmp}/tesseract-om2clonal.XXXXXXXX"); set -e; \
 	python3 tests/om2_clonal_e2e.py --asm $(CURDIR)/$(BIN) --model $(CURDIR)/$(MODELBIN) --out $$d --threads 2; \
 	rm -rf $$d
+
+# EVAL_PLAN_P2 W1 R3: runs the assembler's circle-closure and junction-verification code on a finished
+# assembly directory (contigs.fasta + assembly_graph.gfa [+ reads]) for comparison with the prototype's
+# registered verdicts. A development tool; never built by `all`.
+.PHONY: p2probe
+P2PROBESRC := devtools/p2_r3_probe.cpp
+P2PROBEBIN := $(BUILDDIR)/p2_r3_probe
+p2probe: $(P2PROBEBIN)
+$(P2PROBEBIN): $(P2PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
+	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(P2PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@

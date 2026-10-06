@@ -136,6 +136,10 @@ struct AssemblyReport {
     // and then no key is written: a flags-off report is the release's byte for byte.
     std::string om2Json;
 
+    // Phase 2 (EVAL_PLAN_P2): the report.json "p2" object, rendered by p2_emit.cpp. Always written;
+    // with every TESSERACT_P2_* flag off it holds only enabled=0 and zero counters.
+    std::string p2Json;
+
     // Recomputes the derived summary fields from `contigs`.
     void finalize();
 };

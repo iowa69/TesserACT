@@ -323,6 +323,12 @@ bool writeJsonReport(const std::string& path, const AssemblyReport& rep, std::st
     w.close(']');
     w.close('}');
 
+    if (!rep.p2Json.empty()) {
+        w.key("p2");
+        w.s += rep.p2Json;
+        w.s += ",\n";
+    }
+
     if (w.s.size() >= 2 && w.s[w.s.size() - 2] == ',') w.s.erase(w.s.size() - 2, 1);
     w.s += "}\n";
 

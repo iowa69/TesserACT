@@ -29,6 +29,7 @@
 #include "om2_output.h"
 #include "organism_join.h"
 #include "om2_ledger.h"
+#include "p2_emit.h"
 #include "pairends.h"
 #include "replicon.h"
 #include "gfa.h"
@@ -1381,6 +1382,23 @@ bool Assembler::run(std::string& error) {
         // The resolver's counter lines, run=0, so they appear on every run (A2).
         printResolverCountersNotRun();
     }
+    // EVAL_PLAN_P2 R2 (TESSERACT_P2_LIBGUARD, default off): the library guard's verdict, measured
+    // by the resolver; the counter line prints on every run (zeros when the flag is off).
+    const p2::EmitConfig p2cfg = p2::readConfig();
+    {
+        LibGuardStats& lg = report_.resolve.libGuard;
+        if (!report_.resolveRun) {
+            lg = LibGuardStats();
+            lg.enabled = p2cfg.libGuard;
+        }
+        std::fprintf(stderr, "%s\n", p2::formatLibGuardCounters(lg).c_str());
+        if (lg.fired && opt_.verbose) {
+            std::fprintf(stderr,
+                         "      library guard: %.1f%% of oriented pairs point outward, FR model fitted on %.1f%% "
+                         "of pairs -- no pair-based joins or circle calls\n",
+                         100.0 * lg.outwardFrac, 100.0 * lg.frFit);
+        }
+    }
 
     if (opt_.ladderUnion && !ladderReserve.empty()) {
         const size_t before = seqs.size();
@@ -1719,7 +1737,9 @@ bool Assembler::run(std::string& error) {
     RepliconAssignment replicons;
     {
         std::unique_ptr<ContigEndLinks> links;
-        if (reads_.pairCount() > 0 && report_.resolve.insert.usable && seqs.size() > 1) {
+        // R2: a library the guard rejected gives no pair-based circle or plasmid-grouping call.
+        if (reads_.pairCount() > 0 && report_.resolve.insert.usable && seqs.size() > 1 &&
+            !report_.resolve.libGuard.fired) {
             if (opt_.verbose) std::fprintf(stderr, "      anchoring pairs onto final contigs\n");
             links.reset(new ContigEndLinks(seqs, reads_, report_.resolve.insert,
                                            opt_.threads));
@@ -1931,7 +1951,7 @@ bool Assembler::run(std::string& error) {
     {
         size_t staleRemoved = 0;
         for (const char* nm : {"scaffolds.fasta", "scaffolds.agp", "unitigs.fasta",
-                               "assembly_graph.gfa", "report.html"}) {
+                               "assembly_graph.gfa", "report.html", "replicons.tsv", "p2_edits.tsv"}) {
             const std::string p = opt_.outDir + "/" + nm;
             if (std::remove(p.c_str()) == 0) ++staleRemoved;
         }
@@ -1962,7 +1982,9 @@ bool Assembler::run(std::string& error) {
         for (char c : sq) if (c == 'N' || c == 'n') ++gapBasesTotal;
     }
 
-    if (gapBasesTotal > 0) {
+    // EVAL_PLAN_P2 R3/F5 edit records and their names after the split, so with either flag on the
+    // scaffold files are written after that stage (the same writer, the edited records).
+    auto writeScaffoldFiles = [&]() -> bool {
         const std::string scafPath = opt_.outDir + "/scaffolds.fasta";
         if (!writeFasta(scafPath, outSeqs, outNames, 80, error)) return false;
         if (opt_.verbose) std::fprintf(stderr, "      %s\n", scafPath.c_str());
@@ -2000,6 +2022,10 @@ bool Assembler::run(std::string& error) {
             std::fclose(agp);
             if (opt_.verbose) std::fprintf(stderr, "      %s\n", agpPath.c_str());
         }
+        return true;
+    };
+    if (gapBasesTotal > 0 && !p2cfg.recordStage()) {
+        if (!writeScaffoldFiles()) return false;
     }
 
     // ---- split at every gap -------------------------------------------------
@@ -2063,6 +2089,57 @@ bool Assembler::run(std::string& error) {
     report_.trimmedOverlaps = trimmedN;
     report_.trimmedOverlapBases = trimmedBases;
 
+    // ---- EVAL_PLAN_P2 W1 emit-A: F5 spike-in labels and R3 exact / verified circles ----------
+    // On the records as they will be written (after the split and the terminal trim), the frame
+    // the backward finishing prototype measured. Default off; the counter lines print on every run.
+    p2::RecordStageResult p2res;
+    if (p2cfg.recordStage()) {
+        p2::RecordStageIn rin;
+        rin.cfg = p2cfg;
+        rin.pieces = &pieces;
+        rin.scaffolds = &outSeqs;
+        rin.scaffoldTags = &outTags;
+        rin.scaffoldPaths = &outPathOf;
+        rin.graph = &graph;
+        rin.reads = &reads_;
+        rin.ladder = ladder;
+        rin.threads = opt_.threads;
+        p2res = p2::applyRecordStage(rin);
+        for (size_t j = 0; j < live.size(); ++j) splitSeqs[j] = pieces[live[j]].seq;
+        for (size_t sc : p2res.scaffoldsChanged) {
+            char name[224];
+            std::snprintf(name, sizeof(name), "NODE_%zu_length_%zu_cov_%.4f%s", sc + 1, outSeqs[sc].size(),
+                          outCovs[sc], outTags[sc].c_str());
+            outNames[sc] = name;
+            if (sc < report_.contigs.size()) {
+                ContigRecord& rec = report_.contigs[sc];
+                size_t gc = 0, ns = 0;
+                for (char c : outSeqs[sc]) {
+                    if (c == 'G' || c == 'C') ++gc;
+                    else if (c == 'N') ++ns;
+                }
+                rec.length = outSeqs[sc].size();
+                const size_t called = rec.length - ns;
+                rec.gcPercent = called ? 100.0 * static_cast<double>(gc) / static_cast<double>(called) : 0;
+                rec.gapBases = ns;
+            }
+        }
+        if (!p2res.scaffoldsChanged.empty()) report_.finalize();
+        if (opt_.verbose && p2cfg.circ != p2::CircMode::Off) {
+            std::fprintf(stderr, "      circles (%s): %zu candidates, %zu written circular, %zu linear\n",
+                         p2::circModeName(p2cfg.circ), p2res.st.candidates, p2res.st.writtenCircular,
+                         p2res.st.writtenLinear);
+        }
+        if (opt_.verbose && p2cfg.spikein && p2res.st.spikein) {
+            std::fprintf(stderr, "      %zu phiX174 spike-in record(s) labelled _spikein\n", p2res.st.spikein);
+        }
+    }
+    std::fprintf(stderr, "%s\n", p2::formatCircCounters(p2cfg, p2res.st).c_str());
+    std::fprintf(stderr, "%s\n", p2::formatSpikeinCounters(p2cfg, p2res.st).c_str());
+    if (gapBasesTotal > 0 && p2cfg.recordStage()) {
+        if (!writeScaffoldFiles()) return false;
+    }
+
     std::vector<std::string> splitNames;
     splitNames.reserve(splitSeqs.size());
     for (size_t j = 0; j < live.size(); ++j) {
@@ -2078,6 +2155,16 @@ bool Assembler::run(std::string& error) {
 
     const std::string contigPath = opt_.outDir + "/contigs.fasta";
     if (!writeFasta(contigPath, splitSeqs, splitNames, 80, error)) return false;
+    if (p2cfg.recordStage()) {
+        std::string p2err;
+        if (!p2::writeRepliconsTsv(opt_.outDir + "/replicons.tsv", p2res, pieces, p2err) ||
+            !p2::writeEditsTsv(opt_.outDir + "/p2_edits.tsv", p2res, pieces, p2err)) {
+            error = p2err;
+            return false;
+        }
+    }
+    report_.p2Json = p2::reportJson(p2cfg, report_.resolve.libGuard, p2cfg.recordStage() ? &p2res : nullptr,
+                                    p2cfg.recordStage() ? &pieces : nullptr);
     if (opt_.verbose) {
         if (gapBasesTotal > 0) {
             std::fprintf(stderr,

@@ -214,6 +214,10 @@ const Spec kTable[] = {
     // 1.5 layout-only genome view (om2_output.cpp); default off
     K("TESSERACT_OM2_LAYOUT_ONLY", Kind::Binary),            // join bases only at isolate-confirmed junctions
     C("TESSERACT_OM2_LAYOUT_CONFIRM", "isolate|c1pass"),     // what confirms a junction (isolate)
+    // Phase 2 (om2/design/EVAL_PLAN_P2.md), W1 emit-A; all default off, unset = release behaviour
+    K("TESSERACT_P2_LIBGUARD", Kind::Binary),                // R2: library orientation / insert-model guard
+    C("TESSERACT_P2_CIRC", "off|close|verify"),              // R3: circle closure (close) + verified claims (verify)
+    K("TESSERACT_P2_SPIKEIN", Kind::Binary),                 // F5: PhiX174 spike-in screen, `_spikein` label
     // read by tesseract-eskape, tesseract-klebsiella and tesseract-get-models
     K("TESSERACT_ASM", Kind::External),
     K("TESSERACT_KP_MODEL", Kind::External),

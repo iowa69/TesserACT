@@ -395,11 +395,16 @@ void PairedResolver::buildSupport() {
     std::atomic<size_t> mappedCount{0}, linkCount{0};
     const bool keepAnchors = pairAnchoredPrefixSetting() != 0;
     if (keepAnchors) readAnchors_.assign(reads_.size(), Anchor{});
+    // R2 (EVAL_PLAN_P2, p2_libguard.h): orientation classes of the same-unitig pairs, counted
+    // only when TESSERACT_P2_LIBGUARD is on. Counting changes nothing the resolver decides.
+    const bool libGuard = env::on("TESSERACT_P2_LIBGUARD", false);
+    std::atomic<size_t> lgSame{0}, lgInward{0}, lgOutward{0}, lgDovetail{0}, lgSameStrand{0};
 
     auto worker = [&](int tid) {
         auto& samples = insertSamples[static_cast<size_t>(tid)];
         auto& sup = localSupport[static_cast<size_t>(tid)];
         size_t localMapped = 0, localLinks = 0;
+        size_t lSame = 0, lIn = 0, lOut = 0, lDove = 0, lStrand = 0;
 
         for (size_t p = static_cast<size_t>(tid); p < pairs; p += static_cast<size_t>(threads_)) {
             const size_t i1 = p * 2, i2 = p * 2 + 1;
@@ -418,6 +423,18 @@ void PairedResolver::buildSupport() {
             const int len2 = static_cast<int>(reads_.length(i2));
 
             if (a1.unitig == a2.unitig) {
+                if (libGuard) {
+                    ++lSame;
+                    if (a1.orient == a2.orient) {
+                        ++lStrand;
+                    } else {
+                        const bool firstFwd = a1.orient == 0;
+                        const int cls = libguard::classifyOpposite(
+                            firstFwd ? a1.pos : a2.pos, firstFwd ? len1 : len2,
+                            firstFwd ? a2.pos : a1.pos, firstFwd ? len2 : len1);
+                        if (cls == 0) ++lIn; else if (cls == 1) ++lOut; else ++lDove;
+                    }
+                }
                 // Same unitig: a properly oriented pair measures the fragment
                 // length directly, which is how the insert model is learned.
                 if (a1.orient == 0 && a2.orient == 1 && a2.pos + len2 > a1.pos) {
@@ -468,6 +485,10 @@ void PairedResolver::buildSupport() {
         }
         mappedCount += localMapped;
         linkCount += localLinks;
+        if (libGuard) {
+            lgSame += lSame; lgInward += lIn; lgOutward += lOut; lgDovetail += lDove;
+            lgSameStrand += lStrand;
+        }
     };
 
     std::vector<std::thread> pool;
@@ -547,6 +568,30 @@ void PairedResolver::buildSupport() {
     stats_.pairsLinking = linkCount.load();
     stats_.distinctLinks = distinct;
     stats_.insert = insert_;
+
+    // R2: decide on the counts above. When the guard fires the library's pairs say nothing
+    // this resolver can use: the pair support goes (repeats are then crossed only where the
+    // graph topology or a single read thread decides), so does the pair-anchored prefix
+    // evidence, and no scaffold join is made. The insert model is reported as fitted.
+    LibGuardStats lg;
+    lg.enabled = libGuard;
+    if (libGuard) {
+        lg.pairs = pairs;
+        lg.sameUnitig = lgSame.load();
+        lg.inward = lgInward.load();
+        lg.outward = lgOutward.load();
+        lg.dovetail = lgDovetail.load();
+        lg.sameStrand = lgSameStrand.load();
+        lg.frObservations = insert_.observations;
+        libguard::decide(lg);
+    }
+    libGuardFired_ = lg.fired;
+    if (libGuardFired_) {
+        support_.clear();
+        readAnchors_.clear();
+        scaffolding_ = false;
+    }
+    stats_.libGuard = lg;
 }
 
 
@@ -759,7 +804,7 @@ void PairedResolver::resolve(std::vector<std::string>& contigs, std::vector<doub
             const auto& route = threadEvidence.routes[i];
             for (size_t fragment : route.fragments) {
                 bool alreadyPaired = false;
-                if (fragment < reads_.pairCount()) {
+                if (!libGuardFired_ && fragment < reads_.pairCount()) {
                     const Anchor first = anchorRead(fragment * 2);
                     const Anchor second = anchorRead(fragment * 2 + 1);
                     if (first.mapped() && second.mapped() && first.unitig != second.unitig) {

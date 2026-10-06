@@ -14,6 +14,7 @@
 #include <vector>
 
 #include "graph.h"
+#include "p2_libguard.h"
 #include "seqio.h"
 #include "resolve_route_density.h"
 
@@ -66,6 +67,9 @@ struct ResolveStats {
     double legacyMedian = 0;
     const char* thetaEstimator = "unweighted";
     size_t thetaPopulation = 0;
+    // EVAL_PLAN_P2 R2 (TESSERACT_P2_LIBGUARD, default off): the library orientation and
+    // insert-model guard, measured in buildSupport(). All zero when the flag is off.
+    LibGuardStats libGuard;
 };
 
 // T03 (TESSERACT_FIX_GAP_FLANK): how one scaffold gap must look if it is still OPEN after
@@ -229,6 +233,9 @@ private:
     bool scaffolding_ = false;
     int forcedMin_ = 0, forcedMax_ = 0;
     bool haveForcedBounds_ = false;
+    // R2 (p2_libguard.h): set by buildSupport() when the guard fires; the pair support table
+    // is then empty, scaffolding is off and no fragment counts as already paired.
+    bool libGuardFired_ = false;
 };
 
 }  // namespace ts
