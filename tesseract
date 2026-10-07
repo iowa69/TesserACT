@@ -1,0 +1,308 @@
+#!/usr/bin/env bash
+# tesseract -- one command for the best TesserACT assembly of a bacterial isolate.
+#
+#   tesseract -1 R1.fq.gz -2 R2.fq.gz -t 32 -o OUT                      vanilla assembly
+#   tesseract -1 R1.fq.gz -2 R2.fq.gz -t 32 -o OUT --organism kpneumoniae   with the Klebsiella model
+#   tesseract check -1 R1.fq.gz -2 R2.fq.gz                             check the reads only
+#
+# A run does three things, in order, and stops at the first one that fails:
+#   1. preflight  every read file is readable, complete (gzip -t), well-formed FASTQ in Phred+33,
+#                 and the two files pair record for record. It measures read length, depth,
+#                 adapter read-through and two-colour poly-G tails, and checks disk and memory.
+#   2. assembly   tesseract-asm with the 1.6 profile. Vanilla means no prediction: an organism
+#                 model is used ONLY when --organism is given.
+#   3. postflight every output file exists, parses and is internally consistent; the k-mer
+#                 self-check, the circle verification and (if minimap2 is installed) a read
+#                 map-back are summarised in OUT/SUMMARY.txt. If the reads look like an organism
+#                 that has a model, the summary says so -- it never applies the model by itself.
+set -uo pipefail
+
+VERSION="1.6.0"
+here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+ASM="${TESSERACT_ASM:-}"
+if [ -z "$ASM" ]; then
+    if [ -x "$here/tesseract-asm" ]; then ASM="$here/tesseract-asm"; else ASM="$(command -v tesseract-asm || true)"; fi
+fi
+
+say()  { printf '%s\n' "$*"; }
+die()  { printf 'tesseract: %s\n' "$*" >&2; exit 2; }
+
+usage() {
+cat <<'EOF2'
+tesseract -- check the reads, assemble, check the outputs
+
+USAGE
+  tesseract -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [-t N] [--organism NAME] [tesseract-asm options]
+  tesseract check -1 R1.fq.gz -2 R2.fq.gz [--genome-size MB]
+  tesseract --version
+
+OPTIONS
+  -1, -2 FILE          paired reads (FASTQ, gzipped or not). Names may contain spaces.
+  -o DIR               output directory
+  -t N                 threads (default: all cores)
+  --organism NAME      use this organism's model (manual only; never applied automatically):
+                       kpneumoniae, ecoli, ecloacae, abaumannii, paeruginosa, saureus, efaecium,
+                       senterica (klebsiella and salmonella are accepted). Install the models once
+                       with tesseract-get-models. Also sets the expected genome size.
+  --genome-size MB     expected genome size, for the depth estimate (default: from --organism, else 5)
+  --force              assemble even if a preflight check fails
+  --keep-going         with --force, also ignore failed postflight checks in the exit status
+  anything else        passed to tesseract-asm unchanged (e.g. --mode careful, --min-contig 500)
+
+EXIT STATUS
+  0 every check passed (warnings are listed in SUMMARY.txt), 1 a check failed, 2 usage error.
+EOF2
+}
+
+# ---------------------------------------------------------------- arguments
+cmd=run
+case "${1:-}" in
+    check) cmd=check; shift ;;
+    run) shift ;;
+    version|--version|-v) say "tesseract $VERSION"; [ -n "$ASM" ] && "$ASM" --version 2>/dev/null | grep -m1 TesserACT; exit 0 ;;
+    ""|-h|--help|help) usage; exit 0 ;;
+esac
+R1=""; R2=""; OUT=""; TH="$(nproc 2>/dev/null || echo 4)"; ORG=""; GSIZE=""; FORCE=0; KEEPGOING=0; EXTRA=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -1|--read1) R1="${2:-}"; shift 2 ;;
+        -2|--read2) R2="${2:-}"; shift 2 ;;
+        -o|--out) OUT="${2:-}"; shift 2 ;;
+        -t|--threads) TH="${2:-}"; shift 2 ;;
+        --organism|-organism) ORG="${2:-}"; shift 2 ;;
+        --genome-size) GSIZE="${2:-}"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        --keep-going) KEEPGOING=1; shift ;;
+        -h|--help) usage; exit 0 ;;
+        --) shift; EXTRA+=("$@"); break ;;
+        *) EXTRA+=("$1"); shift ;;   # passed to tesseract-asm unchanged
+    esac
+done
+[ -n "$R1" ] && [ -n "$R2" ] || die "give both read files: -1 R1.fq.gz -2 R2.fq.gz"
+[ "$cmd" = check ] || [ -n "$OUT" ] || die "give an output directory: -o OUTDIR"
+[[ "$TH" =~ ^[0-9]+$ ]] && [ "$TH" -ge 1 ] || die "-t needs a positive integer"
+case "$ORG" in klebsiella) ORG=kpneumoniae ;; salmonella) ORG=senterica ;; esac
+case "$ORG" in ""|kpneumoniae|ecoli|ecloacae|abaumannii|paeruginosa|saureus|efaecium|senterica) ;;
+    *) die "unknown organism '$ORG' (kpneumoniae, ecoli, ecloacae, abaumannii, paeruginosa, saureus, efaecium, senterica)" ;; esac
+[ -n "$ASM" ] && [ -x "$ASM" ] || die "tesseract-asm not found (put it on PATH or set TESSERACT_ASM)"
+
+genome_mb_for() {
+    case "$1" in kpneumoniae) echo 5.5 ;; ecoli) echo 5.1 ;; ecloacae) echo 5.0 ;; abaumannii) echo 4.0 ;;
+        paeruginosa) echo 6.6 ;; saureus) echo 2.8 ;; efaecium) echo 3.0 ;; senterica) echo 4.9 ;; *) echo "" ;; esac
+}
+
+# The detection sketch ships next to the binary (share/tesseract) or in the source tree (models/).
+SKETCH="${TESSERACT_P2_DETECT_SKETCH:-}"
+if [ -z "$SKETCH" ]; then
+    for c in "$here/../share/tesseract/om2detect.sketch" "$here/models/om2detect.sketch" "${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}/om2detect.sketch"; do
+        [ -s "$c" ] && { SKETCH="$c"; break; }
+    done
+fi
+MODEL_DIR=""
+
+# ---------------------------------------------------------------- preflight
+LOG=/dev/null
+fails=0; warns=0
+pf()   { printf '  %-6s %-22s %s\n' "$1" "$2" "$3" | tee -a "$LOG"; case "$1" in FAIL) fails=$((fails+1)) ;; WARN) warns=$((warns+1)) ;; esac; }
+
+if [ "$cmd" = run ]; then
+    mkdir -p "$OUT" || die "cannot create $OUT"
+    [ -e "$OUT/contigs.fasta" ] && die "$OUT already holds an assembly; choose a new output directory"
+    LOG="$OUT/preflight.txt"; : > "$LOG"
+fi
+say "TesserACT $VERSION preflight: $R1 + $R2" | tee -a "$LOG"
+
+reader() {   # print the file decompressed, whatever its extension says
+    if [ "$(head -c2 "$1" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then gzip -dc "$1"; else cat "$1"; fi
+}
+for f in "$R1" "$R2"; do
+    if [ ! -r "$f" ]; then pf FAIL "file" "cannot read '$f'"; continue; fi
+    if [ ! -s "$f" ]; then pf FAIL "file" "'$f' is empty"; continue; fi
+    if [ "$(head -c2 "$f" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
+        if gzip -t "$f" 2>/dev/null; then pf OK "gzip" "'$(basename "$f")' is complete"
+        else pf FAIL "gzip" "'$f' is truncated or corrupt (gzip -t failed)"; fi
+    fi
+done
+[ "$(readlink -f "$R1")" = "$(readlink -f "$R2")" ] && pf FAIL "pairing" "-1 and -2 are the same file"
+
+if [ "$fails" -eq 0 ]; then
+    # One pass over both files, record by record: format, pairing, length, quality, adapters, poly-G.
+    stats="$(paste <(reader "$R1" | paste - - - -) <(reader "$R2" | paste - - - -) | LC_ALL=C awk -F'\t' '
+        function nm(h,  s) { s = h; sub(/^@/, "", s); sub(/[ \t].*$/, "", s); sub(/\/[12]$/, "", s); return s }
+        BEGIN { for (i = 33; i < 127; i++) ord[sprintf("%c", i)] = i; qmin = 999; qmax = 0; qmin2 = 999; qmax2 = 0 }
+        {
+            n++
+            if (NF == 4 || (NF > 4 && $5 == "" && $6 == "")) { short2++; next }
+            if ($1 == "" && NF <= 5) { short1++; next }
+            if (NF < 8 || substr($1,1,1) != "@" || substr($5,1,1) != "@" || substr($3,1,1) != "+" || substr($7,1,1) != "+") { bad++; if (!badrec) badrec = n; next }
+            if (length($2) != length($4) || length($6) != length($8)) { badlen++; if (!badrec) badrec = n }
+            if (nm($1) != nm($5)) { mism++; if (!firstm) firstm = nm($1) " vs " nm($5) }
+            l1 = length($2); l2 = length($6); bases += l1 + l2
+            if (l1 > maxlen) maxlen = l1; if (l2 > maxlen) maxlen = l2
+            if (n <= 200000) {
+                s++; sumlen += l1 + l2
+                if (index($2, "AGATCGGAAGAGC") || index($6, "AGATCGGAAGAGC")) adapt++
+                if ($2 ~ /GGGGGGGGGG$/ || $6 ~ /GGGGGGGGGG$/) polyg++
+                for (i = 1; i <= length($4); i += 7) { c = ord[substr($4, i, 1)]; if (c < qmin) qmin = c; if (c > qmax) qmax = c }
+                for (i = 1; i <= length($8); i += 7) { c = ord[substr($8, i, 1)]; if (c < qmin2) qmin2 = c; if (c > qmax2) qmax2 = c }
+                nn += gsub(/N/, "N", $2) + gsub(/N/, "N", $6)
+            }
+        }
+        END {
+            printf "pairs=%d bad=%d badlen=%d badrec=%d mism=%d bases=%d maxlen=%d meanlen=%.1f adapt=%.4f polyg=%.4f qmin=%d qmax=%d qmin2=%d qmax2=%d nfrac=%.5f short1=%d short2=%d firstm=%s\n",
+                n, bad, badlen, badrec, mism, bases, maxlen, (s ? sumlen / (2 * s) : 0), (s ? adapt / s : 0), (s ? polyg / s : 0), qmin, qmax, qmin2, qmax2, (sumlen ? nn / sumlen : 0), short1 + 0, short2 + 0, (firstm ? firstm : "-")
+        }')"
+    get() { printf '%s\n' "$stats" | tr ' ' '\n' | sed -n "s/^$1=//p" | head -1; }
+    pairs=$(get pairs); bad=$(get bad); badlen=$(get badlen); mism=$(get mism); bases=$(get bases)
+    maxlen=$(get maxlen); meanlen=$(get meanlen); adapt=$(get adapt); polyg=$(get polyg); qmin=$(get qmin); qmax=$(get qmax); nfrac=$(get nfrac)
+    if [ "${pairs:-0}" -eq 0 ]; then pf FAIL "format" "no FASTQ records read"
+    else
+        [ "$bad" -eq 0 ] && pf OK "format" "$pairs read pairs, every record well-formed" || pf FAIL "format" "$bad malformed records (first at pair $(get badrec)); is this FASTQ?"
+        [ "$badlen" -eq 0 ] || pf FAIL "format" "$badlen records whose sequence and quality lengths differ"
+        [ "$(get short1)" -eq 0 ] || pf FAIL "pairing" "the -1 file has $(get short1) fewer reads than the -2 file (truncated, or not the mate file)"
+        [ "$(get short2)" -eq 0 ] || pf FAIL "pairing" "the -2 file has $(get short2) fewer reads than the -1 file (truncated, or not the mate file)"
+        # Unequal file lengths show up as a short paste row on the shorter side.
+        [ "$mism" -eq 0 ] && pf OK "pairing" "mate names agree on every pair" || pf FAIL "pairing" "$mism pairs whose mate names differ (first: $(get firstm)); the files are not in the same order, or one is truncated"
+        qmin2=$(get qmin2); qmax2=$(get qmax2); qok=1
+        for side in "-1 $qmin $qmax" "-2 $qmin2 $qmax2"; do
+            set -- $side
+            if [ "$2" -lt 33 ]; then pf FAIL "quality" "$1 file: quality characters below '!' (code $2): not FASTQ Phred+33"; qok=0
+            elif [ "$2" -ge 64 ] && [ "$3" -gt 74 ]; then pf FAIL "quality" "$1 file: qualities look Phred+64 (codes $2-$3); convert to Phred+33 first (e.g. seqtk seq -VQ64)"; qok=0; fi
+        done
+        [ "$qok" -eq 1 ] && pf OK "quality" "Phred+33 (codes $qmin-$qmax / $qmin2-$qmax2)"
+        pf OK "read length" "max ${maxlen} bp, mean ${meanlen} bp ($( [ "$maxlen" -ge 240 ] && echo 'long-read MiSeq-type library: 2x250/2x300' || echo 'short-read library: 2x150 or shorter'))"
+        [ -n "$ORG" ] && [ -z "$GSIZE" ] && GSIZE="$(genome_mb_for "$ORG")"
+        gs="${GSIZE:-5}"
+        depth=$(awk -v b="$bases" -v g="$gs" 'BEGIN { printf "%.0f", b / (g * 1e6) }')
+        dnote="for a ${gs} Mb genome$( [ -z "$GSIZE" ] && echo ' (assumed; set --genome-size for a better estimate)')"
+        if [ "$depth" -lt 15 ]; then pf WARN "depth" "about ${depth}x ${dnote}: too thin for a reliable assembly; expect many breaks"
+        elif [ "$depth" -lt 30 ]; then pf WARN "depth" "about ${depth}x ${dnote}: low; dropouts are likely"
+        elif [ "$depth" -gt 400 ]; then pf WARN "depth" "about ${depth}x ${dnote}: very deep; runtime and memory grow with depth, results do not improve beyond ~150x"
+        else pf OK "depth" "about ${depth}x ${dnote}"; fi
+        awk -v a="$adapt" 'BEGIN { exit !(a > 0.05) }' && pf WARN "adapters" "$(awk -v a="$adapt" 'BEGIN{printf "%.1f", a*100}')% of read pairs carry Illumina adapter sequence: trim them first (fastp, cutadapt)" \
+            || pf OK "adapters" "$(awk -v a="$adapt" 'BEGIN{printf "%.2f", a*100}')% of read pairs with adapter read-through"
+        awk -v a="$polyg" 'BEGIN { exit !(a > 0.02) }' && pf WARN "poly-G" "$(awk -v a="$polyg" 'BEGIN{printf "%.1f", a*100}')% of read pairs end in a poly-G run (two-colour chemistry): consider fastp --trim_poly_g" \
+            || pf OK "poly-G" "$(awk -v a="$polyg" 'BEGIN{printf "%.2f", a*100}')% of read pairs end in a poly-G run"
+        awk -v a="$nfrac" 'BEGIN { exit !(a > 0.05) }' && pf WARN "N bases" "$(awk -v a="$nfrac" 'BEGIN{printf "%.1f", a*100}')% of bases are N" || true
+    fi
+fi
+if [ "$cmd" = run ]; then
+    avail_kb=$(df -Pk "$OUT" | awk 'NR==2 {print $4}')
+    need_kb=$(( ( $(stat -c %s "$R1" 2>/dev/null || echo 0) + $(stat -c %s "$R2" 2>/dev/null || echo 0) ) * 3 / 1024 + 2097152 ))
+    [ "${avail_kb:-0}" -ge "$need_kb" ] && pf OK "disk" "$((avail_kb / 1048576)) GB free in $OUT" || pf FAIL "disk" "only $((avail_kb / 1048576)) GB free in $OUT; need about $((need_kb / 1048576)) GB"
+    mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
+    [ "${mem_kb:-0}" -ge 4194304 ] && pf OK "memory" "$((mem_kb / 1048576)) GB available" || pf WARN "memory" "only $((mem_kb / 1048576)) GB available; a bacterial assembly needs 2-6 GB"
+fi
+say "preflight: $fails failed, $warns warnings" | tee -a "$LOG"
+[ "$cmd" = check ] && { [ "$fails" -eq 0 ] && exit 0 || exit 1; }
+if [ "$fails" -gt 0 ] && [ "$FORCE" -eq 0 ]; then
+    say "Stopping before assembly. Fix the failures above, or rerun with --force." >&2; exit 1
+fi
+
+# ---------------------------------------------------------------- assembly
+# The 1.6 profile: verified circles, library guard, spike-in labels, end audit, k-mer
+# self-check, provenance, organism report, and high-copy plasmid recovery. Values the user
+# sets in the environment win.
+PROFILE=(TESSERACT_P2_LIBGUARD=1 TESSERACT_P2_CIRC=verify TESSERACT_P2_SPIKEIN=1 TESSERACT_P2_ENDS=1
+         TESSERACT_P2_TIPS_LOWERCASE=1 TESSERACT_P2_SELF_QA=1 TESSERACT_P2_PROVENANCE=1
+         TESSERACT_DEEP_NORM=30 TESSERACT_DEEP_NORM_MATE=both)
+[ -n "$SKETCH" ] && PROFILE+=(TESSERACT_P2_DETECT_REPORT=1 "TESSERACT_P2_DETECT_SKETCH=$SKETCH")
+ENVS=()
+for kv in "${PROFILE[@]}"; do k="${kv%%=*}"; [ -n "${!k:-}" ] || ENVS+=("$kv"); done
+
+MODEL_ARGS=()
+if [ -n "$ORG" ]; then
+    MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
+    [ -s "$MODEL_DIR/$ORG.tsm" ] || { say "The $ORG model is not installed in $MODEL_DIR. Run tesseract-get-models once, or set TESSERACT_MODEL_DIR." >&2; exit 1; }
+    MODEL_ARGS=(--organism "$ORG")
+    ENVS+=("TESSERACT_MODEL_DIR=$MODEL_DIR")
+fi
+say "assembling into $OUT $( [ -n "$ORG" ] && echo "with the $ORG model" || echo "(vanilla)") ..."
+env "${ENVS[@]}" "$ASM" -1 "$R1" -2 "$R2" -o "$OUT" -t "$TH" "${MODEL_ARGS[@]}" "${EXTRA[@]}" > "$OUT/assembly.log" 2>&1
+rc_v=$?
+detected=""
+if [ "$rc_v" -eq 0 ] && [ -s "$OUT/report.json" ]; then
+    detected=$(tr -d '\n ' < "$OUT/report.json" | grep -o '"organism_detect":{.*' | grep -o '"call":"[a-z]*"' | head -1 | sed 's/"call":"\(.*\)"/\1/')
+    case "$detected" in kpneumoniae|ecoli|ecloacae|abaumannii|paeruginosa|saureus|efaecium|senterica) ;; *) detected="" ;; esac
+fi
+
+# ---------------------------------------------------------------- postflight
+SUM="$OUT/SUMMARY.txt"; LOG="$SUM"; : > "$SUM"
+fails=0; warns=0
+say "TesserACT $VERSION run summary" | tee -a "$SUM"
+say "  reads    $R1 + $R2" | tee -a "$SUM"
+say "  binary   $ASM ($("$ASM" --version 2>/dev/null | head -1))" | tee -a "$SUM"
+say "  profile  ${ENVS[*]:-(environment overrides only)}" | tee -a "$SUM"
+say "  preflight $(tail -1 "$OUT/preflight.txt")" | tee -a "$SUM"
+
+check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
+    local d="$1" lab="$2" rc="$3"
+    say "[$lab] $d" | tee -a "$SUM"
+    [ "$rc" -eq 0 ] && pf OK "exit status" "0" || { pf FAIL "exit status" "$rc (see $d.log)"; return; }
+    local f
+    for f in contigs.fasta report.json assembly_graph.gfa; do
+        [ -s "$d/$f" ] || { [ "$f" = assembly_graph.gfa ] && printf '%s\n' "${EXTRA[@]:-}" | grep -qx -- --no-gfa && continue; pf FAIL "file" "$f missing or empty"; }
+    done
+    # scaffolds.fasta is written only when some scaffold still carries a gap; otherwise the
+    # contigs are the complete result (1.5.0 behaves the same way).
+    [ -s "$d/scaffolds.fasta" ] && pf OK "scaffolds.fasta" "$(grep -c '>' "$d/scaffolds.fasta") records (scaffolds with N gaps; scaffolds.agp lists them)" \
+        || pf OK "scaffolds.fasta" "not written: every scaffold join was closed with sequence, contigs.fasta is complete"
+    [ -s "$d/contigs.fasta" ] || return
+    local st
+    st=$(LC_ALL=C awk '
+        /^>/ { if (name != "") { if (len == 0) empty++; print len > "/dev/stderr"; tot += len; n++ }
+               name = substr($1, 2); if (seen[name]++) dup++; len = 0; next }
+        { if ($0 ~ /[^ACGTNacgtn]/) badch++; len += length($0) }
+        END { if (name != "") { if (len == 0) empty++; print len > "/dev/stderr"; tot += len; n++ }
+              printf "%d %d %d %d %d\n", n, tot, dup + 0, empty + 0, badch + 0 }' "$d/contigs.fasta" 2> "$d/.lens")
+    local big n50
+    big=$(sort -n "$d/.lens" | tail -1)
+    n50=$(sort -rn "$d/.lens" | awk -v t="$(printf '%s' "$st" | cut -d' ' -f2)" '{ a += $1; if (a >= t / 2) { print $1; exit } }')
+    rm -f "$d/.lens"
+    st="$(printf '%s' "$st" | awk -v b="${big:-0}" -v m="${n50:-0}" '{ print $1, $2, b, m, $3, $4, $5 }')"
+    read -r n tot big n50 dup empty badch <<< "$st"
+    [ "$dup$empty$badch" = "000" ] && pf OK "contigs.fasta" "$n records, $tot bp, largest $big, N50 $n50" \
+        || pf FAIL "contigs.fasta" "malformed: $dup duplicate names, $empty empty records, $badch lines with non-ACGTN characters"
+    if [ -n "${gs:-}" ] && [ "$tot" -gt 0 ]; then
+        awk -v t="$tot" -v g="$gs" 'BEGIN { r = t / (g * 1e6); exit !(r < 0.8 || r > 1.3) }' \
+            && pf WARN "size" "total $(awk -v t="$tot" 'BEGIN{printf "%.2f", t/1e6}') Mb vs ~${gs} Mb expected: contamination, a mixed sample, or the wrong genome size" || true
+    fi
+    local js; js=$(tr -d '\n' < "$d/report.json")
+    printf '%s' "$js" | grep -q '"version"' || pf FAIL "report.json" "unreadable"
+    local ncirc nlin spike q="$d/p2_self_qa.tsv"
+    if [ -s "$q" ]; then
+        local comp qv alarm lost
+        comp=$(awk -F'\t' '$1=="completeness"{print $2}' "$q"); qv=$(awk -F'\t' '$1=="qv_read0"{print $2}' "$q")
+        alarm=$(awk -F'\t' '$1=="lost_replicon_alarm"{print $2}' "$q"); lost=$(awk -F'\t' '$1=="missing_bp_est_gt10x"{print $2}' "$q")
+        if [ "$alarm" = 1 ]; then
+            pf WARN "self-check" "k-mer completeness ${comp}, QV ${qv}; about $(awk -v b="${lost:-0}" 'BEGIN{printf "%.1f", b/1000}') kb of sequence seen in the reads at >10x genome depth is not in the assembly (a small high-copy plasmid, rRNA or IS copies); see p2_self_qa.missing_hi.tsv"
+        else
+            pf OK "self-check" "k-mer completeness ${comp}, QV ${qv}; no high-copy sequence lost"
+        fi
+    fi
+    ncirc=$(printf '%s' "$js" | grep -o '"written_circular": *[0-9]*' | head -1 | sed 's/.*: *//')
+    nlin=$(printf '%s' "$js" | grep -o '"written_linear": *[0-9]*' | head -1 | sed 's/.*: *//')
+    [ -n "$ncirc" ] && pf OK "circles" "${ncirc} replicons written circular (read-verified join), ${nlin:-0} circle candidates failed verification and were written linear"
+    spike=$(printf '%s' "$js" | grep -o '"spikein": *[0-9]*' | head -1 | sed 's/.*: *//')
+    [ "${spike:-0}" -gt 0 ] && pf WARN "spike-in" "${spike} PhiX record(s) labelled _spikein: remove them before submission" || true
+    local guard; guard=$(printf '%s' "$js" | grep -o '"r2": *{[^}]*"verdict": *"[a-z]*"' | sed 's/.*"verdict": *"//; s/"$//')
+    [ -n "$guard" ] && [ "$guard" != pass ] && pf WARN "library" "pair orientation check '$guard': not a standard FR library; pair-based joins were disabled" || true
+    if command -v minimap2 >/dev/null 2>&1; then
+        local tmp; tmp=$(mktemp -d)
+        reader "$R1" | head -n 400000 > "$tmp/s.fq"
+        local m; m=$(minimap2 -x sr -t "$TH" --secondary=no "$d/contigs.fasta" "$tmp/s.fq" 2>/dev/null | cut -f1 | sort -u | wc -l)
+        local pct; pct=$(awk -v m="$m" 'BEGIN { printf "%.1f", m / 100000 * 100 }')
+        awk -v p="$pct" 'BEGIN { exit !(p < 95) }' && pf WARN "map-back" "${pct}% of 100,000 reads map to the contigs: some of the genome is not assembled" \
+            || pf OK "map-back" "${pct}% of 100,000 reads map to the contigs"
+        rm -rf "$tmp"
+    fi
+}
+check_dir "$OUT" "$( [ -n "$ORG" ] && echo "assembly with the $ORG model" || echo "vanilla assembly")" "$rc_v"
+if [ -n "$detected" ] && [ -z "$ORG" ]; then
+    say "  hint     the reads look like $detected; a genus model exists. To use it (manual choice), rerun with --organism $detected" | tee -a "$SUM"
+elif [ -n "$detected" ] && [ -n "$ORG" ] && [ "$detected" != "$ORG" ]; then
+    pf WARN "organism" "--organism $ORG was given but the reads look like $detected"
+fi
+say "" | tee -a "$SUM"
+say "postflight: $fails failed, $warns warnings (details above; this text is in $SUM)" | tee -a "$SUM"
+[ "$fails" -eq 0 ] || [ "$KEEPGOING" -eq 1 ] && exit 0 || exit 1

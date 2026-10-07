@@ -30,3 +30,8 @@ install -m 0755 tesseract-get-models "${PREFIX}/bin/tesseract-get-models"
 # tesseract-get-models resolves the checksum list as $(dirname $0)/models.sha256, so it has to
 # sit beside the script: without it every downloaded model fails verification and is deleted.
 install -m 0644 models.sha256 "${PREFIX}/bin/models.sha256"
+
+# 1.6.0: the one-command entry point and the organism-detection sketch it reports with.
+install -m 0755 tesseract "${PREFIX}/bin/tesseract"
+mkdir -p "${PREFIX}/share/tesseract"
+install -m 0644 models/om2detect.sketch "${PREFIX}/share/tesseract/om2detect.sketch"

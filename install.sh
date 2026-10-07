@@ -235,7 +235,12 @@ install -m 0755 "$here/tesseract-get-models" "$prefix/bin/tesseract-get-models"
 # tesseract-get-models reads the checksum list from beside itself, so the list has to travel
 # with it or every model it downloads fails verification and is deleted.
 install -m 0644 "$here/models.sha256"        "$prefix/bin/models.sha256"
-say "installed tesseract-asm, tesseract-klebsiella, tesseract-eskape and tesseract-get-models into $prefix/bin"
+# 1.6.0: `tesseract` is the one-command entry point (read check, assembly, output check). It
+# finds tesseract-asm beside itself and the organism-detection sketch in ../share/tesseract.
+install -m 0755 "$here/tesseract"            "$prefix/bin/tesseract"
+mkdir -p "$prefix/share/tesseract"
+install -m 0644 "$here/models/om2detect.sketch" "$prefix/share/tesseract/om2detect.sketch"
+say "installed tesseract, tesseract-asm, tesseract-klebsiella, tesseract-eskape and tesseract-get-models into $prefix/bin"
 
 # ---- verify ----------------------------------------------------------------
 if ! "$prefix/bin/tesseract-asm" --version >/dev/null 2>&1; then

@@ -49,6 +49,8 @@ test:
   commands:
     - tesseract-asm --version
     - tesseract-asm --help
+    - tesseract --help
+    - tesseract --version
     - tesseract-eskape --help
     - tesseract-get-models --help
     - tesseract-klebsiella --help
