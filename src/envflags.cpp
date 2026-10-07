@@ -28,6 +28,12 @@ constexpr Spec C(const char* n, const char* words) { return {n, Kind::Choice, 0,
 constexpr Spec CI(const char* n, const char* words, long long lo, long long hi) {
     return {n, Kind::Choice, lo, hi, 0.0, 0.0, words};
 }
+// p2/plasmid: a Choice whose word list holds the token "~" also accepts a finite number in
+// [lo, hi], parsed as a Real flag is (TESSERACT_DEEP_NORM_MATE=both|<fraction>). The integer
+// token is disabled (ilo > ihi).
+constexpr Spec CR(const char* n, const char* words, double lo, double hi) {
+    return {n, Kind::Choice, 0, -1, lo, hi, words};
+}
 
 // Ranges. An integer flag the release read with atoi accepts exactly the values atoi was
 // defined on (int), narrowed to >= 0 where the result was cast to an unsigned type, which
@@ -70,6 +76,10 @@ const Spec kTable[] = {
     R("TESSERACT_CHIMERA_FLOOR", -kAny, kAny),
     R("TESSERACT_EC_LEN_MULT", -1e15, 1e15),                 // times k, then cast to size_t
     R("TESSERACT_LOCAL_WEAK", -kAny, kAny),
+    // phase 2, workstream plasmid (deep_norm.cpp): DEEP_NORM read thinning, off unless set
+    R("TESSERACT_DEEP_NORM", 0.0, 1e9),                      // thin pairs whose median k-mer count >= F x peak; 0 = off
+    R("TESSERACT_DEEP_NORM_TARGET", 0.0, 1e9),               // ... keeping about F x peak (2)
+    CR("TESSERACT_DEEP_NORM_MATE", "both|~", 0.0, 1.0),      // both = dn7 rule; F = b3b6d41 rule, other mate >= F x bar (1/6)
     I("TESSERACT_JOIN_DEADENDS", 0, kIntMax),                // size_t
     K("TESSERACT_GRAPH_PHASES", Kind::Presence),             // timing log only
     K("TESSERACT_GF_DEBUG", Kind::Presence),                 // gap-fill log only
@@ -257,17 +267,23 @@ std::string shortest(double x) {
     return buf;
 }
 
-bool isChoice(const char* words, const char* v, long long lo = 0, long long hi = -1) {
+bool isChoice(const char* words, const char* v, long long lo = 0, long long hi = -1,
+              double rlo = 0.0, double rhi = -1.0) {
     const size_t n = std::strlen(v);
     if (n == 0) return false;
     for (const char* p = words; *p;) {
         const char* bar = std::strchr(p, '|');
         const size_t len = bar ? static_cast<size_t>(bar - p) : std::strlen(p);
-        if (len == n && std::strncmp(p, v, n) == 0) return true;
+        if (len == n && std::strncmp(p, v, n) == 0 && !(len == 1 && *p == '~')) return true;
         if (len == 1 && *p == '#' && lo <= hi) {   // an integer in [lo, hi]
             long long x = 0;
             std::string whyNot;
             if (parseInteger(v, lo, hi, x, whyNot)) return true;
+        }
+        if (len == 1 && *p == '~' && rlo <= rhi && !startsWithSpace(v)) {   // a number in [rlo, rhi]
+            char* end = nullptr;
+            const double x = std::strtod(v, &end);
+            if (end != v && *end == '\0' && std::isfinite(x) && x >= rlo && x <= rhi) return true;
         }
         if (!bar) break;
         p = bar + 1;
@@ -390,11 +406,14 @@ bool parse(const Spec& s, const char* v, Parsed& out, std::string& why) {
             out.canonical = v;
             return true;
         case Kind::Choice:
-            if (!isChoice(s.choices, v, s.ilo, s.ihi)) {
+            if (!isChoice(s.choices, v, s.ilo, s.ihi, s.rlo, s.rhi)) {
                 why = std::string("expected one of ") + s.choices;
                 if (s.ilo <= s.ihi && std::strchr(s.choices, '#'))
                     why += " (# = a base-10 integer in [" + std::to_string(s.ilo) + ", " +
                            std::to_string(s.ihi) + "])";
+                if (s.rlo <= s.rhi && std::strchr(s.choices, '~'))
+                    why += " (~ = a finite number in [" + shortest(s.rlo) + ", " +
+                           shortest(s.rhi) + "])";
                 return false;
             }
             out.canonical = v;

@@ -15,6 +15,7 @@
 
 #include "carry_gate.h"
 #include "correct.h"
+#include "deep_norm.h"
 #include "dev_fork_batch.h"
 #include "emit_fixflags.h"
 #include "emit_post.h"
@@ -1084,6 +1085,21 @@ bool Assembler::run(std::string& error) {
         }
         KmerTable trusted;
         cc.extractSolid(opt_.trustCutoff, trusted);
+        // Phase 2 (p2/plasmid): DEEP_NORM thinning of ultra-deep read pairs, off unless
+        // TESSERACT_DEEP_NORM > 0 (deep_norm.h). Unset, nothing is computed and no read is
+        // touched; the counter line is printed either way.
+        {
+            const DeepNormConfig dn = deepNormConfigFromEnv();
+            const DeepNormStats dns = deepNormApply(reads_, trusted, kc, opt_.threads,
+                                                    cc.stats().peakCoverage, dn);
+            if (dn.enabled() && opt_.verbose) {
+                // The line of the dn7 and b3b6d41 binaries, unchanged.
+                std::fprintf(stderr, "  [deep_norm] sel=%.1f target=%.1f peak=%.1f "
+                                     "candidates=%zu dropped=%zu\n",
+                             dn.sel, dn.target, dns.peak, dns.candidates(), dns.dropped());
+            }
+            deepNormPrintCounts(stderr, dn, dns);
+        }
         // Default-off experiment: preserve pairing and rescue only retained
         // ACGT bases independently corroborated by the overlapping mate.
         const bool mateRescue = env::on("TESSERACT_MATE_RESCUE", false);
@@ -1128,6 +1144,8 @@ bool Assembler::run(std::string& error) {
     } else {
         // build_v3 (A2): the T30 counter correctReads() prints on every call, idle form for a
         // run without read correction (--no-correct), so the flag's line is on every run.
+        // p2/plasmid: DEEP_NORM runs inside read correction; idle form of its counter line.
+        deepNormPrintCounts(stderr, deepNormConfigFromEnv(), DeepNormStats());
         std::fprintf(stderr, "  [ec_cap_mask] enabled=%d capTruncatedWalks=0 capStops=0 "
                              "basesMaskedAtCap=0\n",
                      fixflags::fixLevel("TESSERACT_FIX_EC_CAP_MASK") > 0 ? 1 : 0);

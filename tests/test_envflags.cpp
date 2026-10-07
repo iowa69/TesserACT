@@ -122,7 +122,14 @@ void parseContract() {
                     for (size_t a = 0, b; (b = list.find('|', a)) != std::string::npos; a = b + 1)
                         if (list.compare(a, b - a, v) == 0 && std::string(v) != "#") word = true;
                     const bool numeric = std::strchr(s.choices, '#') != nullptr && !word;
-                    if (numeric) {
+                    // p2/plasmid: a "~" in the list accepts a finite number in [rlo, rhi],
+                    // which atof reads the same way.
+                    const bool real = std::strchr(s.choices, '~') != nullptr && !word;
+                    if (real) {
+                        check(p.canonical == v, "number choice kept verbatim " + at);
+                        check(std::isfinite(std::atof(v)) && std::atof(v) >= s.rlo &&
+                              std::atof(v) <= s.rhi, "number choice in range " + at);
+                    } else if (numeric) {
                         check(p.canonical == v, "integer choice kept verbatim " + at);
                         check(std::atoi(v) >= s.ilo && std::atoi(v) <= s.ihi, "integer choice in range " + at);
                     } else {
@@ -165,6 +172,11 @@ void parseContract() {
         {"TESSERACT_MODEL_MIN_PANEL", "-1"},          // double -> uint32 undefined
         {"TESSERACT_MODEL_MATCH", "Greedy"},          // silently mutual
         {"TESSERACT_COMEMBER_WEAK", "99999999999999999999"},
+        // p2/plasmid: DEEP_NORM_MATE is "both" or a number in [0, 1]; the token itself is no value
+        {"TESSERACT_DEEP_NORM_MATE", "~"}, {"TESSERACT_DEEP_NORM_MATE", "Both"},
+        {"TESSERACT_DEEP_NORM_MATE", "1.5"}, {"TESSERACT_DEEP_NORM_MATE", "-0.1"},
+        {"TESSERACT_DEEP_NORM_MATE", "nan"}, {"TESSERACT_DEEP_NORM_MATE", " 0.5"},
+        {"TESSERACT_DEEP_NORM_MATE", "0.5x"}, {"TESSERACT_DEEP_NORM", "-1"},
     };
     for (const auto& r : rejected) {
         const ts::env::Spec* s = ts::env::find(r.first);
@@ -191,6 +203,10 @@ void parseContract() {
         {"TESSERACT_MODEL_MIN_PANEL", "3"}, {"TESSERACT_NO_PLASMID_VOUCH", "1"},
         {"TESSERACT_RC_DOVETAIL", "0"}, {"TESSERACT_GRAPH_PHASES", "1"},
         {"TESSERACT_MODEL_DIR", "/home/x/models100/bundled"}, {"TESSERACT_EC_REQUIRE_UNIQUE_BEST", "1"},
+        // p2/plasmid: the sg_dn30b / R6a configuration and the b3b6d41 default spelled out
+        {"TESSERACT_DEEP_NORM", "30"}, {"TESSERACT_DEEP_NORM_TARGET", "2"},
+        {"TESSERACT_DEEP_NORM_MATE", "both"}, {"TESSERACT_DEEP_NORM_MATE", "0.16666666666666666"},
+        {"TESSERACT_DEEP_NORM_MATE", "0"}, {"TESSERACT_DEEP_NORM_MATE", "1"},
     };
     for (const auto& u : used) {
         const ts::env::Spec* s = ts::env::find(u.first);
