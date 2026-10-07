@@ -124,7 +124,11 @@ panel: a stronger connector cleaning that helped one 2x301 project made no diffe
 long-read panel isolates and cost misassemblies on 2x150, so it is not used.
 
 **Low depth (below 30x).** Reported as a warning; below 15x as a strong one. Expect more
-breaks where coverage drops (AT- or GC-rich stretches). More sequencing is the only real fix.
+breaks where coverage drops (AT- or GC-rich stretches). If a very thin library (around 10x)
+assembles almost nothing with the default k ladder, `tesseract` retries automatically with
+k = 21,33,55, keeps the first attempt in `attempt1_default_k/`, and says so in the summary. At
+normal depth the short ladder is worse, so it is never used there. More sequencing is the only
+real fix.
 
 **Very deep runs (above ~150x).** Handled: depth beyond ~150x does not improve the result, and
 runtime and memory grow with it; above 400x the read check warns. Small multicopy plasmids --
@@ -262,7 +266,40 @@ be switched off (`=0`, or `TESSERACT_P2_CIRC=off`):
 
 ## What 1.6 changes
 
-{{WHAT16}}
+**One command, with checks.** `tesseract -1 R1 -2 R2 -t N -o OUT` checks the reads before
+assembling (truncated gzip, broken FASTQ, unpaired or misordered mates, Phred+64 qualities,
+adapters, poly-G, depth, disk, memory), assembles, and checks every output, with a plain-language
+`SUMMARY.txt`. The organism model is applied only when you ask for it (`--organism`). For very
+thin data it retries automatically with a short k ladder.
+
+**Verified circular replicons.** A circle is claimed only when the graph closes it, the component
+is isolated, and reads span the join; the duplicated (k-1)-bp end that 1.5.0 (and SPAdes) wrote
+is removed. On 273 development isolates with closed references: circle claims exact as written
+2 -> 81, false circle claims 65 -> 3, claim precision 0.63 -> 0.97.
+
+**Small multicopy plasmids.** Reads of replicons at more than 30x the genome depth (ColE-type
+plasmids at hundreds of copies) are thinned before assembly, so their sequencing errors no
+longer turn them into a tangle. On 133 development isolates: small replicons (< 10 kb)
+assembled whole 28 -> 38, present 63 -> 77. The same step stops a failure on thin libraries
+where an ultra-abundant contaminant set the abundance cutoff: a ~10x *S. aureus* library went
+from 0 contigs to a 2.71 Mb assembly.
+
+**Labels and self-checks.** PhiX spike-ins are labelled `_spikein`; non-paired-end libraries
+(mate-pair, wrong orientation) are detected and their pair joins disabled; contig ends are
+audited (`ends.tsv`, unsupported tip bases in lowercase); a k-mer self-check reports sequence
+present in the reads but missing from the assembly; `report.json` records input checksums,
+binary and settings; organism detection is reported as a hint.
+
+**Correctness unchanged.** Misassemblies are identical on every development panel, isolate for
+isolate (108 diverse isolates: 350 = 350; 189 ESKAPEE: 935 = 935; 27 *Salmonella*: 4 = 4;
+133 isolates with plasmid recovery: 354 = 354), and NGA50 is never lower. Through the full
+`tesseract` command, 13 isolates covering 2x100 to 2x300 reads and 8x to 258x depth give the
+same misassemblies (4 = 4) and NGA50 as 1.5.0, with more genome where small plasmids were lost.
+`tesseract-asm` on its own still produces the 1.5.0 output byte for byte.
+
+What did not change: the organism models (models-v2) and their cost. A redesigned model that
+would order chromosomes from relatives was tested against true junctions and rejected for
+this release (it added 0.4 misjoins per isolate).
 
 ---
 
@@ -271,7 +308,7 @@ be switched off (`=0`, or `TESSERACT_P2_CIRC=off`):
 Held-out isolates with closed reference genomes, QUAST 5.3.0, contigs >= 500 bp. "Correct
 reference" excludes isolates whose public reference is a different strain from the reads.
 
-| | TesserACT 1.5/1.6 | SPAdes 4.3.0 |
+| | TesserACT 1.6 (same as 1.5.0) | SPAdes 4.3.0 |
 |---|---|---|
 | ESKAPEE, 140 fresh isolates: misassemblies (correct reference) | 48 | 114 |
 | ESKAPEE, 140 fresh isolates: mismatches per 100 kb | 0.5 | 2.1 |
