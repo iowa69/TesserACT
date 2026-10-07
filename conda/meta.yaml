@@ -1,6 +1,6 @@
 {% set name = "tesseract-assembler" %}
-{% set version = "1.6.0" %}
-{# sha256 of the v1.6.0 tag.s tarball, computed as: #}
+{% set version = "1.6.1" %}
+{# sha256 below is still the v1.6.0 tarball.s. It is set once the v1.6.1 tag exists: #}
 {# git archive --prefix=TesserACT-1.6.0/ v1.6.0 | gzip -n | sha256sum #}
 {% set sha256 = "808d96b3189f2ca89428bb65f97b4717229fb3aa95d86db1564000e02fd4f5df" %}
 
@@ -47,13 +47,9 @@ requirements:
 
 test:
   commands:
-    - tesseract-asm --version
-    - tesseract-asm --help
-    - tesseract --help
     - tesseract --version
-    - tesseract-eskape --help
-    - tesseract-get-models --help
-    - tesseract-klebsiella --help
+    - tesseract --help
+    - tesseract models --help
     # The flag checks live in run_test.sh, against help text captured to a file.
     #
     # They were `tesseract-asm --help | grep -q -- --flag` and that is a race: grep -q exits on
@@ -73,24 +69,14 @@ about:
   license: MIT
   license_family: MIT
   license_file: LICENSE
-  summary: De novo short-read assembler for bacterial isolates, with optional genus models
+  summary: De novo assembler for bacterial isolates from paired-end Illumina reads, with optional organism models
   description: |
-    TesserACT assembles bacterial isolates from paired-end Illumina reads. It builds a de
-    Bruijn graph over a ladder of k-mer sizes, simplifies it, resolves repeats with
-    paired-end information, closes gaps and polishes the result, in C++17 with no
-    dependencies beyond a compiler, zlib and pthreads.
-
-    Where a repeat is longer than a sequencing fragment there is no paired evidence to
-    settle it, and TesserACT stops rather than guessing. Supplying a genus model built from
-    closed genomes of the same organism lets it settle those junctions from independent
-    evidence instead. Measured on 666 Klebsiella pneumoniae isolates that each have a closed
-    reference genome, with leave-cluster-out models so no test genome is in its own panel:
-    higher genome fraction and fewer mismatches per 100 kb than SPAdes, longer NGA50, at the
-    cost of slightly more redundant sequence and slightly more misassemblies.
-
-    With a model carrying a plasmid panel it also labels every contig chromosomal, plasmid
-    or unknown, groups the contigs of one plasmid, and marks contigs whose two ends join as
-    complete replicons. Pre-built Klebsiella models are attached to the GitHub releases.
+    TesserACT assembles bacterial genomes from paired-end Illumina reads with one command,
+    `tesseract -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR`. It checks the reads before assembling,
+    builds de Bruijn graphs over a ladder of k-mer sizes, resolves repeats with read pairs,
+    writes verified circular replicons, and checks every output, with a plain-language summary.
+    Optional organism models (tesseract models download; --organism NAME) lay the chromosome
+    out from the conserved gene order of closed genomes of the same species.
   doc_url: https://github.com/iowa69/TesserACT#readme
   dev_url: https://github.com/iowa69/TesserACT
 

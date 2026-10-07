@@ -221,32 +221,22 @@ make -C "$here" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)" CXX="$cxx
 
 # ---- install ---------------------------------------------------------------
 [ "$guided" = 1 ] && step "Step 4 of 5: installing the commands"
-mkdir -p "$prefix/bin"
-install -m 0755 "$here/tesseract-asm"        "$prefix/bin/tesseract-asm"
-# tesseract-model is not installed: models are curated artifacts, distributed
-# checksummed via tesseract-get-models and selected with --organism.
-install -m 0755 "$here/tesseract-klebsiella" "$prefix/bin/tesseract-klebsiella"
-# tesseract-eskape and tesseract-get-models are the whole ESKAPEE path: one command per
-# organism, and the fetcher that puts the models where it looks for them. Leaving them out
-# of the install -- as this script did until now -- meant a finished install where the
-# documented commands did not exist, and no error saying so.
-install -m 0755 "$here/tesseract-eskape"     "$prefix/bin/tesseract-eskape"
-install -m 0755 "$here/tesseract-get-models" "$prefix/bin/tesseract-get-models"
-# tesseract-get-models reads the checksum list from beside itself, so the list has to travel
-# with it or every model it downloads fails verification and is deleted.
-install -m 0644 "$here/models.sha256"        "$prefix/bin/models.sha256"
-# 1.6.0: `tesseract` is the one-command entry point (read check, assembly, output check). It
-# finds tesseract-asm beside itself and the organism-detection sketch in ../share/tesseract.
-install -m 0755 "$here/tesseract"            "$prefix/bin/tesseract"
-mkdir -p "$prefix/share/tesseract"
-install -m 0644 "$here/models/om2detect.sketch" "$prefix/share/tesseract/om2detect.sketch"
-say "installed tesseract, tesseract-asm, tesseract-klebsiella, tesseract-eskape and tesseract-get-models into $prefix/bin"
+# One command on the PATH: `tesseract`. The engine and the model fetcher are its helpers in
+# libexec/tesseract (the fetcher reads models.sha256 from beside itself); the organism-detection
+# sketch goes to share/tesseract. The same layout as `make install` and the conda package.
+mkdir -p "$prefix/bin" "$prefix/libexec/tesseract" "$prefix/share/tesseract"
+install -m 0755 "$here/tesseract"                     "$prefix/bin/tesseract"
+install -m 0755 "$here/tesseract-asm"                 "$prefix/libexec/tesseract/tesseract-asm"
+install -m 0755 "$here/scripts/tesseract-get-models"  "$prefix/libexec/tesseract/tesseract-get-models"
+install -m 0644 "$here/scripts/models.sha256"         "$prefix/libexec/tesseract/models.sha256"
+install -m 0644 "$here/models/om2detect.sketch"       "$prefix/share/tesseract/om2detect.sketch"
+say "installed tesseract into $prefix/bin"
 
 # ---- verify ----------------------------------------------------------------
-if ! "$prefix/bin/tesseract-asm" --version >/dev/null 2>&1; then
-    die "the installed binary does not run"
+if ! "$prefix/bin/tesseract" --version >/dev/null 2>&1; then
+    die "the installed command does not run"
 fi
-say "$("$prefix/bin/tesseract-asm" --version)"
+say "$("$prefix/bin/tesseract" --version | head -1)"
 
 on_path=1
 case ":$PATH:" in
@@ -276,30 +266,25 @@ fi
 # ---- models ----------------------------------------------------------------
 if [ "$guided" = 1 ]; then
     step "Step 5 of 5: the organism models (optional)"
-    printf '  TesserACT is complete without these, and nothing it does needs them. A model\n'
-    printf '  lays the pieces out against closed genomes of the same species, for the seven\n'
-    printf '  clinical bugs: Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas,\n'
-    printf '  S. aureus, Enterococcus, and (new in 1.5.0) Salmonella. About 1.7 GB in total,\n'
-    printf '  downloaded once. The Salmonella model was measured on 15 development isolates only.\n\n'
-    printf '  It is a trade-off. Measured with the 1.4.0 defaults on 329 held-out isolates:\n'
-    printf '    with a model   median NGA50 134 -> 156 kb, median contigs 99 -> 86\n'
-    printf '    but            misassemblies 154 -> 290 (isolates whose reference matches)\n'
-    printf '  Either way, no isolate had 90%% of its chromosome in one correct block.\n'
-    printf '  TesserACT puts misassemblies first, so the answer here defaults to no. An\n'
-    printf '  improved model (Organism Model 2.0) is in development.\n\n'
+    printf '  TesserACT is complete without these. A model lays the chromosome out from the\n'
+    printf '  conserved gene order of thousands of closed genomes of one species, for\n'
+    printf '  Klebsiella, E. coli, Enterobacter, Acinetobacter, Pseudomonas, S. aureus,\n'
+    printf '  Enterococcus and Salmonella: more contiguous, at some risk of joins seen in\n'
+    printf '  other genomes rather than in your reads. About 1.7 GB, downloaded once, and\n'
+    printf '  used only when you ask for it (--organism).\n\n'
     if yesno "  Download them now?" "no"; then
         printf '\n'
         # Not fatal. A failed download is a network problem, not an install problem: the
         # assembler is already installed and working, and the fetch is one command to retry.
-        if "$prefix/bin/tesseract-get-models"; then
+        if "$prefix/bin/tesseract" models download; then
             ok "models are in ${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
         else
             printf '\n'
             say "the download did not finish. Nothing is broken -- retry any time with:"
-            printf '      tesseract-get-models\n'
+            printf '      tesseract models download\n'
         fi
     else
-        say "skipped. TesserACT works fully without them. To add them later: tesseract-get-models"
+        say "skipped. TesserACT works fully without them. To add them later: tesseract models download"
     fi
 fi
 
@@ -308,37 +293,21 @@ cat <<EOF
 
 $(printf '\033[1mDone.\033[0m') Assemble a genome like this:
 
-  tesseract-eskape --preset kpneumoniae -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o my_result
+  tesseract -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o my_result
 
-Your assembled genome is then the file  my_result/contigs.fasta
-
-  tesseract-eskape --list     the preset name for each organism
-  tesseract-eskape --help     every option, explained
-
-A preset uses its organism's model only if you downloaded the models
-(tesseract-get-models); without them it runs the plain 1.4.0 defaults.
+The assembly is then  my_result/contigs.fasta  and  my_result/SUMMARY.txt  says what was checked.
+  tesseract --help     every option, explained
 EOF
 else
 cat <<EOF
 
 Next:
-  tesseract-asm -1 reads_1.fq.gz -2 reads_2.fq.gz -o assembly
+  tesseract -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o my_result
+  tesseract --help                       every option, explained
 
-For Klebsiella, one command assembles every read pair and labels each contig:
-  tesseract-klebsiella reads/            every read pair in the directory
-  tesseract-klebsiella R1.fq.gz          the mate is found automatically
-
-For the seven ESKAPEE organisms:
-  tesseract-eskape --list                the preset name for each organism
-
-Organism models are optional, and nothing above needs them. A model buys
-contiguity and costs misassemblies: with the 1.4.0 defaults, on 329 held-out
-isolates, it raised the median NGA50 from 134 to 156 kb and the misassemblies
-from 154 to 290. None was downloaded. To add them:
-  tesseract-get-models                   fetch the models (about 1.7 GB, once)
-Then each preset uses its organism's model, tesseract-klebsiella --with-model
-uses the Klebsiella one, and the assembler takes one by organism name. It reads
-~/.tesseract/models/<organism>.tsm, or the directory TESSERACT_MODEL_DIR names:
-  tesseract-asm -1 R1.fq.gz -2 R2.fq.gz -o out/ --organism kpneumoniae
+Organism models are optional, and nothing above needs them. None was downloaded.
+To add them (about 1.7 GB, once), then use one by name:
+  tesseract models download
+  tesseract -1 R1.fq.gz -2 R2.fq.gz -o my_result --organism kpneumoniae
 EOF
 fi

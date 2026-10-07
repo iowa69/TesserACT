@@ -27,7 +27,7 @@ with open("r1.fq", "w") as a, open("r2.fq", "w") as b:
         b.write("@r%d/2\n%s\n+\n%s\n" % (i, rc(g[p + ins - read:p + ins]), "I" * read))
 PY
 
-tesseract-asm -1 r1.fq -2 r2.fq -o testasm -t 2
+tesseract -1 r1.fq -2 r2.fq -o testasm -t 2 --genome-size 0.006
 
 test -s testasm/contigs.fasta
 
@@ -43,9 +43,9 @@ echo "assembled $n contig(s), $len bp (expected 1 contig, about 6000 bp)"
 # that was never there: a pipeline built against it breaks with no explanation.
 # --model is not listed: since 1.3.0 it is an author-only option (TESSERACT_MODEL_AUTHOR) and
 # the help documents --organism instead; tesseract-model itself is not packaged.
-tesseract-asm --help > tesseract_help.txt
+tesseract --help-all > tesseract_help.txt
 for f in --organism --is-panel --map-polish; do
-    grep -q -- "$f" tesseract_help.txt || { echo "tesseract-asm --help lost $f" >&2; exit 1; }
+    grep -q -- "$f" tesseract_help.txt || { echo "tesseract --help-all lost $f" >&2; exit 1; }
 done
 echo "help lists every expected flag"
 

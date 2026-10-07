@@ -1337,71 +1337,30 @@ else
         --organism klebsiella >"$D/asm_kleb.log" 2>&1
     modelran "--organism klebsiella reads kpneumoniae.tsm" $? "$D/asm_kleb" kpneumoniae "$D/asm_kleb.log"
 
-    # tesseract-eskape: the Klebsiella preset from the model folder and from --model FILE under
-    # another name, and one of the other six presets
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset kpneumoniae \
-        -1 "$R1" -2 "$R2" -o "$D/esk_kp" -t 2 >"$D/esk_kp.out" 2>&1
-    modelran "tesseract-eskape --preset kpneumoniae" $? "$D/esk_kp" kpneumoniae "$D/esk_kp/tesseract-eskape.log"
-    n22user "$ROOT/tesseract-eskape" --preset klebsiella --model "$D/elsewhere/my-kleb-model.tsm" \
-        -1 "$R1" -2 "$R2" -o "$D/esk_file" -t 2 >"$D/esk_file.out" 2>&1
-    modelran "tesseract-eskape --model FILE" $? "$D/esk_file" kpneumoniae "$D/esk_file/tesseract-eskape.log"
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset ecoli \
-        -1 "$R1" -2 "$R2" -o "$D/esk_ec" -t 2 >"$D/esk_ec.out" 2>&1
-    modelran "tesseract-eskape --preset ecoli" $? "$D/esk_ec" ecoli "$D/esk_ec/tesseract-eskape.log"
-
-    # tesseract-klebsiella. By default no model, although kpneumoniae.tsm is installed where
-    # --with-model looks; --with-model uses that file and prints its measured cost; --model FILE
-    # implies --with-model (here a 1.2-named file, built as `klebsiella` as the 1.2 models were)
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_def" \
-        -t 2 >"$D/kl_def.out" 2>&1
-    nomodelran "tesseract-klebsiella: no model by default" $? "$D/kl_def/r" "$D/kl_def/r/run.log"
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_with" \
-        -t 2 --with-model >"$D/kl_with.out" 2>&1; st=$?
-    if [ "$st" -eq 0 ] && ! grep -q 'misassemblies 70 -> 93' "$D/kl_with.out"; then
-        fail "tesseract-klebsiella --with-model" "the run did not print the model's measured cost"
-    else
-        modelran "tesseract-klebsiella --with-model" $st "$D/kl_with/r" kpneumoniae "$D/kl_with/r/run.log"
-    fi
-    n22user "$ROOT/tesseract-klebsiella" "$R1" "$R2" -o "$D/kl_file" -t 2 \
-        --model "$D/cache/tesseract-klebsiella-default-v1.2.0.tsm" >"$D/kl_file.out" 2>&1
-    modelran "tesseract-klebsiella --model FILE" $? "$D/kl_file/r" klebsiella "$D/kl_file/r/run.log"
-
-    # tesseract-eskape: the Klebsiella preset without its model installed carries on with the
-    # defaults (it used to stop), and a model named explicitly but missing still stops it
+    # tesseract, the user command: vanilla by default even with the model installed; the model
+    # only with --organism (the alias included); a missing model stops it before assembling.
+    rm -rf "$D/run_def" "$D/run_kp" "$D/run_none"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract" -1 "$R1" -2 "$R2" -o "$D/run_def" \
+        -t 2 >"$D/run_def.out" 2>&1
+    nomodelran "tesseract: no model by default" $? "$D/run_def" "$D/run_def/assembly.log"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract" -1 "$R1" -2 "$R2" -o "$D/run_kp" \
+        -t 2 --organism klebsiella >"$D/run_kp.out" 2>&1
+    modelran "tesseract --organism klebsiella" $? "$D/run_kp" kpneumoniae "$D/run_kp/assembly.log"
     mkdir -p "$D/nomodels"
-    TESSERACT_MODEL_DIR="$D/nomodels" n22user "$ROOT/tesseract-eskape" \
-        --preset kpneumoniae -1 "$R1" -2 "$R2" -o "$D/esk_none" --dry-run >"$D/esk_none.out" 2>&1; st=$?
-    run=$(grep -m1 '^Running: ' "$D/esk_none.out")
+    TESSERACT_MODEL_DIR="$D/nomodels" n22user "$ROOT/tesseract" -1 "$R1" -2 "$R2" -o "$D/run_none" \
+        -t 2 --organism ecoli >"$D/run_none.out" 2>&1; st=$?
     rc=0
-    [ "$st" -eq 0 ] || rc=1
-    case "$run" in *--organism*|"") rc=1 ;; esac
-    grep -q '^Preset: .*no model installed' "$D/esk_none.out" || rc=1
-    n22user "$ROOT/tesseract-eskape" --preset kpneumoniae --model "$D/nomodels/absent.tsm" \
-        -1 "$R1" -2 "$R2" -o "$D/esk_absent" --dry-run >"$D/esk_absent.out" 2>&1 && rc=1
-    check "tesseract-eskape preset without its model" $rc \
-          "dry-run exit=$st, no --organism; an explicit missing --model still stops it"
-
-    # Neither helper hands the assembler --model any more.
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset kpneumoniae \
-        -1 "$R1" -2 "$R2" -o "$D/esk_dry" --dry-run >"$D/esk_dry.out" 2>&1; st=$?
-    run=$(grep -m1 '^Running: ' "$D/esk_dry.out")
-    case "$run" in
-        *" --model "*) rc=1 ;;
-        *"--organism kpneumoniae"*) rc=0 ;;
-        *) rc=1 ;;
-    esac
-    [ "$st" -eq 0 ] || rc=1
-    grep -q -- '--model' "$D/kl_file/r/report.json" 2>/dev/null && rc=1
-    check "helpers pass --organism, never --model" $rc \
-          "dry-run exit=$st, $(printf '%s' "$run" | grep -o -- '--organism [a-z]*')"
+    [ "$st" -ne 0 ] || rc=1
+    grep -q "tesseract models download ecoli" "$D/run_none.out" || rc=1
+    [ -e "$D/run_none/contigs.fasta" ] && rc=1
+    check "tesseract --organism without its model stops before assembling" $rc "exit=$st"
 fi
 
 # ---------------------------------------------------------------------------
 # 19b. 1.5.0: the Salmonella model (senterica, alias salmonella), and the gated CLI surface
 #
 # senterica.tsm is selected like the seven ESKAPEE models: `--organism salmonella` reads
-# senterica.tsm, `tesseract-eskape --preset salmonella` uses it when installed and prints its
-# cost as measured on development isolates. Without an om2 variable a model run writes no genome/ directory, as in
+# senterica.tsm, and `tesseract --organism salmonella` uses it. Without an om2 variable a model run writes no genome/ directory, as in
 # 1.4.0; the experimental TESSERACT_OM2_LAYOUT_ONLY=1 writes the layout-only view and leaves
 # contigs.fasta as it was.
 # ---------------------------------------------------------------------------
@@ -1412,12 +1371,10 @@ if [ -s "$D/g.fa" ] && n22model senterica "$D/models/senterica.tsm"; then
         --organism salmonella >"$D/asm_salm.log" 2>&1
     modelran "--organism salmonella reads senterica.tsm" $? "$D/asm_salm" senterica "$D/asm_salm.log"
     [ ! -e "$D/asm_salm/genome" ]; check "no genome/ view without --layout-view" $? "1.4.0 output set"
-    rm -rf "$D/esk_salm"
-    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract-eskape" --preset Salmonella \
-        -1 "$R1" -2 "$R2" -o "$D/esk_salm" -t 2 >"$D/esk_salm.out" 2>&1
-    st=$?
-    modelran "tesseract-eskape --preset Salmonella" $st "$D/esk_salm" senterica "$D/esk_salm/tesseract-eskape.log"
-    grep -q 'misassemblies 3 -> 10 on 15 development isolates' "$D/esk_salm.out"; check "the senterica preset prints its dev-measured cost" $? ""
+    rm -rf "$D/run_salm"
+    TESSERACT_MODEL_DIR="$D/models" n22user "$ROOT/tesseract" -1 "$R1" -2 "$R2" -o "$D/run_salm" \
+        -t 2 --organism salmonella >"$D/run_salm.out" 2>&1
+    modelran "tesseract --organism salmonella" $? "$D/run_salm" senterica "$D/run_salm/assembly.log"
     # 1.5.0 ships no --layout-view (its dev gate G1 failed by one misassembly, RELEASE_PLAN_1.5.md);
     # the organism-detection tokens stay behind TESSERACT_OM2_DETECT
     rc=0
@@ -1452,7 +1409,7 @@ fi
 #
 # tesseract-get-models fetches from the models-v2 release (models-v1 is what 1.3.0 installs look
 # for, with a different checksum list), keeps only what matches models.sha256 and skips what it
-# already has; tesseract-klebsiella --with-model installs kpneumoniae.tsm through it; and the
+# already has; `tesseract models download` installs kpneumoniae.tsm through it; and the
 # non-interactive install downloads no model and says models are optional. No network: a curl
 # stand-in on PATH records each URL and serves files from a local folder, or answers 404.
 # ---------------------------------------------------------------------------
@@ -1478,8 +1435,8 @@ printf '#!/bin/sh\nexit 0\n' > "$D/mk/make"; chmod +x "$D/mk/make"
 # (a) the published URL, for every model in the manifest
 rm -f "$D/urls_a"
 env -u TESSERACT_MODEL_URL PATH="$D/shim:$PATH" CURL_LOG="$D/urls_a" \
-    "$ROOT/tesseract-get-models" --dir "$D/dest" >"$D/get_a.out" 2>&1; st=$?
-want=$(awk '!/^#/ && NF==2 {print "https://github.com/iowa69/TesserACT/releases/download/models-v2/" $2}' "$ROOT/models.sha256")
+    "$ROOT/scripts/tesseract-get-models" --dir "$D/dest" >"$D/get_a.out" 2>&1; st=$?
+want=$(awk '!/^#/ && NF==2 {print "https://github.com/iowa69/TesserACT/releases/download/models-v2/" $2}' "$ROOT/scripts/models.sha256")
 rc=0
 [ "$st" -ne 0 ] || rc=1                      # every asset 404s here, which must fail
 [ -n "$want" ] && [ "$(cat "$D/urls_a" 2>/dev/null)" = "$want" ] || rc=1
@@ -1490,7 +1447,7 @@ check "tesseract-get-models fetches from models-v2" $rc \
 
 # (b) keeps what verifies, discards what does not, then skips what it has
 mkdir -p "$D/gm"
-cp "$ROOT/tesseract-get-models" "$D/gm/"
+cp "$ROOT/scripts/tesseract-get-models" "$D/gm/"
 printf 'model bytes\n' > "$D/serve/good.tsm"; printf 'truncated\n' > "$D/serve/bad.tsm"
 { echo "$(sha256sum < "$D/serve/good.tsm" | cut -c1-64)  good.tsm"
   echo "$(printf 'the real thing\n' | sha256sum | cut -c1-64)  bad.tsm"; } > "$D/gm/models.sha256"
@@ -1508,40 +1465,46 @@ grep -q 'have  good.tsm' "$D/get_b2.out" || rc=1
 check "tesseract-get-models verifies, discards, skips" $rc \
       "exit $st1 then $st2, $(grep -c . "$D/urls_b") fetches"
 
-# (c) tesseract-klebsiella --with-model installs kpneumoniae.tsm through tesseract-get-models and
-# assembles with it. A copy of the helpers with a manifest for the fixture model stands in for
-# an install; the fixture model is the one section 19 built.
+# (c) `tesseract models download kpneumoniae` fetches the model through the fetcher, and
+# `tesseract --organism kpneumoniae` then assembles with it. A copy of the source layout with a
+# manifest for the fixture model stands in for an install; the fixture model is section 19's.
 KPFIX=$TMP/t19/models/kpneumoniae.tsm
 if [ -s "$KPFIX" ]; then
-    mkdir -p "$D/kit" "$D/serve_kp"
-    cp "$ROOT/tesseract-klebsiella" "$ROOT/tesseract-get-models" "$D/kit/"
+    mkdir -p "$D/kit/scripts" "$D/serve_kp"
+    cp "$ROOT/tesseract" "$D/kit/"
+    cp "$ROOT/scripts/tesseract-get-models" "$D/kit/scripts/"
     ln -s "$TESSERACT" "$D/kit/tesseract-asm"
     cp "$KPFIX" "$D/serve_kp/kpneumoniae.tsm"
-    echo "$(sha256sum < "$KPFIX" | cut -c1-64)  kpneumoniae.tsm" > "$D/kit/models.sha256"
+    echo "$(sha256sum < "$KPFIX" | cut -c1-64)  kpneumoniae.tsm" > "$D/kit/scripts/models.sha256"
     rm -f "$D/urls_c"
     TESSERACT_MODEL_DIR="$D/kfetch" PATH="$D/shim:$PATH" CURL_LOG="$D/urls_c" CURL_SERVE="$D/serve_kp" \
-        n22user "$D/kit/tesseract-klebsiella" "$TMP/t19/r_1.fq.gz" "$TMP/t19/r_2.fq.gz" \
-        -o "$D/kl_fetch" -t 2 --with-model >"$D/kl_fetch.out" 2>&1; st=$?
+        n22user "$D/kit/tesseract" models download kpneumoniae >"$D/kl_fetch.out" 2>&1; st=$?
     if [ "$(cat "$D/urls_c" 2>/dev/null)" != "https://github.com/iowa69/TesserACT/releases/download/models-v2/kpneumoniae.tsm" ] ||
        ! cmp -s "$KPFIX" "$D/kfetch/kpneumoniae.tsm"; then
-        fail "tesseract-klebsiella --with-model fetches it" "fetched: $(tr '\n' ' ' < "$D/urls_c" 2>/dev/null)"
+        fail "tesseract models download fetches it" "exit=$st fetched: $(tr '\n' ' ' < "$D/urls_c" 2>/dev/null)"
     else
-        modelran "tesseract-klebsiella --with-model fetches it" $st "$D/kl_fetch/r" kpneumoniae \
-                 "$D/kl_fetch/r/run.log"
+        rm -rf "$D/kl_fetch"
+        TESSERACT_MODEL_DIR="$D/kfetch" n22user "$D/kit/tesseract" -1 "$TMP/t19/r_1.fq.gz" -2 "$TMP/t19/r_2.fq.gz" \
+            -o "$D/kl_fetch" -t 2 --organism kpneumoniae >"$D/kl_fetch_run.out" 2>&1
+        modelran "tesseract models download, then --organism" $? "$D/kl_fetch" kpneumoniae "$D/kl_fetch/assembly.log"
     fi
 else
-    fail "tesseract-klebsiella --with-model fetches it" "no fixture model from section 19"
+    fail "tesseract models download fetches it" "no fixture model from section 19"
 fi
 
-# (d) the non-interactive install: it installs the four commands and the manifest, downloads no
+# (d) the non-interactive install: only `tesseract` on the PATH, its helpers in libexec, downloads no
 # model, and says the models are optional. `make` is a stand-in, so nothing is rebuilt here.
 rm -f "$D/urls_d"; rm -rf "$D/inst"
 env -u TESSERACT_MODEL_DIR HOME="$D/home" PATH="$D/mk:$D/shim:$PATH" CURL_LOG="$D/urls_d" \
     bash "$ROOT/install.sh" --prefix "$D/inst" </dev/null >"$D/install.out" 2>&1; st=$?
 rc=0; miss=""
 [ "$st" -eq 0 ] || rc=1
-for f in tesseract-asm tesseract-klebsiella tesseract-eskape tesseract-get-models models.sha256; do
-    [ -e "$D/inst/bin/$f" ] || miss="$miss $f"
+for f in bin/tesseract libexec/tesseract/tesseract-asm libexec/tesseract/tesseract-get-models \
+         libexec/tesseract/models.sha256 share/tesseract/om2detect.sketch; do
+    [ -e "$D/inst/$f" ] || miss="$miss $f"
+done
+for f in tesseract-asm tesseract-eskape tesseract-klebsiella tesseract-get-models; do
+    [ -e "$D/inst/bin/$f" ] && miss="$miss unexpected:bin/$f"
 done
 [ -z "$miss" ] || rc=1
 [ ! -e "$D/urls_d" ] && [ ! -e "$D/home/.tesseract" ] || rc=1
@@ -1552,10 +1515,9 @@ check "install.sh --prefix: no model, says optional" $rc "exit=$st${miss:+ missi
 # (e) the help texts say a model is optional and what it costs
 rc=0
 "$TESSERACT" --help 2>&1 | grep -q 'roughly doubled misassemblies' || rc=1
-"$ROOT/tesseract-eskape" --list | grep -q 'Models are optional and opt-in' || rc=1
-"$ROOT/tesseract-klebsiella" --help | grep -q -- '--with-model' || rc=1
-"$ROOT/tesseract-get-models" --help | grep -q 'The models are optional' || rc=1
-check "help texts: models optional, with their cost" $rc "tesseract-asm, -eskape, -klebsiella, -get-models"
+"$ROOT/tesseract" models download --help | grep -q 'Models are optional' || rc=1
+"$ROOT/tesseract" --help | grep -q -- '--organism NAME' || rc=1
+check "help texts: models optional" $rc "engine, tesseract, tesseract models"
 
 # ---------------------------------------------------------------------------
 # 21. Phase 2 emit-B (EVAL_PLAN_P2 W1): ends.tsv + lower-case tips, self-QA, provenance, detection

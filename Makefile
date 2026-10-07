@@ -26,19 +26,13 @@ CXXFLAGS  += $(CXXSTD) $(WARN) $(OPT) -pthread -MMD -MP
 LDFLAGS   += -pthread
 LDLIBS    += -lz
 
-# Development-only driver for the join stage. Lives outside src/ so the wildcard
-# above never sees its main(), and is never built by `all`.
-PROBESRC  := devtools/join_probe.cpp
-PROBEBIN  := $(BUILDDIR)/join_probe
-PROBEOBJS := $(filter-out $(BUILDDIR)/main.o $(BUILDDIR)/model_main.o,$(ALLOBJS))
-
-.PHONY: componenttest all native debug asan clean install uninstall test unittest check model flagcheck probe \
+.PHONY: componenttest all native debug asan clean install uninstall test unittest check model flagcheck \
         envguard pytest recipecheck
 
 # The model builder is deliberately NOT part of `all` or `install`. A model's value
 # is in how its panel was assembled and what was withheld from it; a file of the
 # right shape built from an arbitrary panel yields confident joins with nothing
-# behind them. Users get bundled, checksummed models via tesseract-get-models and
+# behind them. Users get bundled, checksummed models with `tesseract models download` and
 # select them with --organism. Build the tool with `make model` if you are the one
 # curating the panels.
 all: $(BIN)
@@ -102,17 +96,6 @@ test: $(BIN) $(MODELBIN)
 
 flagcheck: $(BIN) $(MODELBIN)
 	@bash tests/check_flags.sh ./$(BIN) ./$(MODELBIN)
-
-PIDXSRC := devtools/plasmid_index.cpp
-PIDXBIN := $(BUILDDIR)/plasmid_index
-
-probe: $(PROBEBIN) $(PIDXBIN)
-
-$(PIDXBIN): $(PIDXSRC) $(PROBEOBJS) | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(PIDXSRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
-
-$(PROBEBIN): $(PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
 
 # Tests run with every ambient TESSERACT_* removed, so an exported experiment environment can
 # neither fail them nor mask what they check. Each test main() also clears the environment
@@ -184,48 +167,30 @@ $(UNITBIN): $(UNITSRC) $(UNITOBJS) | $(BUILDDIR)
 # Everything: unit tests then the end-to-end suite.
 check: unittest componenttest envguard test flagcheck pytest recipecheck
 
+# `tesseract` is the only command on the PATH. The engine and the model fetcher are helpers it
+# calls from libexec/tesseract; the organism-detection sketch goes to share/tesseract.
+LIBEXEC := $(DESTDIR)$(PREFIX)/libexec/tesseract
+SHARE   := $(DESTDIR)$(PREFIX)/share/tesseract
 install: $(BIN)
-	@install -d $(DESTDIR)$(PREFIX)/bin
-	@install -m 755 $(BIN) $(DESTDIR)$(PREFIX)/bin/$(BIN)
-	@echo "installed $(DESTDIR)$(PREFIX)/bin/$(BIN)"
+	@install -d $(DESTDIR)$(PREFIX)/bin $(LIBEXEC) $(SHARE)
+	@install -m 755 tesseract $(DESTDIR)$(PREFIX)/bin/tesseract
+	@install -m 755 $(BIN) $(LIBEXEC)/$(BIN)
+	@install -m 755 scripts/tesseract-get-models $(LIBEXEC)/tesseract-get-models
+	@install -m 644 scripts/models.sha256 $(LIBEXEC)/models.sha256
+	@install -m 644 models/om2detect.sketch $(SHARE)/om2detect.sketch
+	@echo "installed $(DESTDIR)$(PREFIX)/bin/tesseract"
 
 uninstall:
-	@rm -f $(DESTDIR)$(PREFIX)/bin/$(BIN) $(DESTDIR)$(PREFIX)/bin/$(MODELBIN)
+	@rm -f $(DESTDIR)$(PREFIX)/bin/tesseract
+	@rm -rf $(LIBEXEC) $(SHARE)
 
 clean:
 	@rm -rf $(BUILDDIR) $(BIN) $(MODELBIN)
 
-# Organism Model 2.0 C3 (om2/c3): detection sketch builder and scorer, a development tool that
-# calls the library code behind --organism auto / TESSERACT_OM2_DETECT. Never built by `all`.
-.PHONY: om2probe
-OM2PROBESRC := devtools/om2_detect_probe.cpp
-OM2PROBEBIN := $(BUILDDIR)/om2_detect_probe
-om2probe: $(OM2PROBEBIN)
-$(OM2PROBEBIN): $(OM2PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(OM2PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
-
-# Organism Model 2.0 C4 (om2/clonal): the nearest-relative plasmid sidecar builder (<org>.om2nrp), a development tool
-# that reads a model, the panel's plasmid_map.tsv and the curated plasmid database. Never built by `all`.
-.PHONY: om2nrp om2clonaltest
-OM2NRPSRC := devtools/om2_nrp_build.cpp
-OM2NRPBIN := $(BUILDDIR)/om2_nrp_build
-om2nrp: $(OM2NRPBIN)
-$(OM2NRPBIN): $(OM2NRPSRC) $(PROBEOBJS) | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(OM2NRPSRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@
-
+.PHONY: om2clonaltest
 # C4 end-to-end test on synthetic clonal panels (a clone, a novel IS, a clone missing an IS, a rearranged clone),
 # with and without the layout; drives the built binaries. Not part of `check` (about 5 minutes).
 om2clonaltest: $(BIN) $(MODELBIN)
 	@d=$$(mktemp -d "$${TMPDIR:-/tmp}/tesseract-om2clonal.XXXXXXXX"); set -e; \
 	python3 tests/om2_clonal_e2e.py --asm $(CURDIR)/$(BIN) --model $(CURDIR)/$(MODELBIN) --out $$d --threads 2; \
 	rm -rf $$d
-
-# EVAL_PLAN_P2 W1 R3: runs the assembler's circle-closure and junction-verification code on a finished
-# assembly directory (contigs.fasta + assembly_graph.gfa [+ reads]) for comparison with the prototype's
-# registered verdicts. A development tool; never built by `all`.
-.PHONY: p2probe
-P2PROBESRC := devtools/p2_r3_probe.cpp
-P2PROBEBIN := $(BUILDDIR)/p2_r3_probe
-p2probe: $(P2PROBEBIN)
-$(P2PROBEBIN): $(P2PROBESRC) $(PROBEOBJS) | $(BUILDDIR)
-	$(CXX) $(CXXFLAGS) -I$(SRCDIR) $(P2PROBESRC) $(PROBEOBJS) $(LDFLAGS) $(LDLIBS) -o $@

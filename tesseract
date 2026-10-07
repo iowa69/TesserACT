@@ -17,52 +17,99 @@
 #                 that has a model, the summary says so -- it never applies the model by itself.
 set -uo pipefail
 
-VERSION="1.6.0"
-here="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+VERSION="1.6.1"
+# Where this script really lives, following symlinks without GNU readlink -f (macOS).
+src="${BASH_SOURCE[0]}"
+while [ -h "$src" ]; do d="$(cd "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; case "$src" in /*) ;; *) src="$d/$src" ;; esac; done
+here="$(cd "$(dirname "$src")" && pwd)"
+# The engine and the model fetcher are helpers: installed in ../libexec/tesseract, or beside this
+# script in a source checkout.
 ASM="${TESSERACT_ASM:-}"
 if [ -z "$ASM" ]; then
-    if [ -x "$here/tesseract-asm" ]; then ASM="$here/tesseract-asm"; else ASM="$(command -v tesseract-asm || true)"; fi
+    for c in "$here/../libexec/tesseract/tesseract-asm" "$here/tesseract-asm"; do [ -x "$c" ] && { ASM="$c"; break; }; done
+    [ -n "$ASM" ] || ASM="$(command -v tesseract-asm || true)"
 fi
+GETMODELS=""
+for c in "$here/../libexec/tesseract/tesseract-get-models" "$here/scripts/tesseract-get-models"; do [ -x "$c" ] && { GETMODELS="$c"; break; }; done
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'tesseract: %s\n' "$*" >&2; exit 2; }
 
 usage() {
 cat <<'EOF2'
-tesseract -- check the reads, assemble, check the outputs
+tesseract -- de novo assembler for bacterial isolates (paired-end Illumina reads)
 
 USAGE
-  tesseract -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [-t N] [--organism NAME] [tesseract-asm options]
-  tesseract check -1 R1.fq.gz -2 R2.fq.gz [--genome-size MB]
+  tesseract -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR [options]      assemble (vanilla)
+  tesseract -1 R1.fq.gz -2 R2.fq.gz -o OUTDIR --organism NAME   assemble with an organism model
+  tesseract check -1 R1.fq.gz -2 R2.fq.gz                     check the reads only
+  tesseract models list | download [NAME...]                  organism models
   tesseract --version
 
-OPTIONS
-  -1, -2 FILE          paired reads (FASTQ, gzipped or not). Names may contain spaces.
-  -o DIR               output directory
+MAIN OPTIONS
+  -1, -2 FILE          paired reads, FASTQ, gzipped or not (names may contain spaces)
+  -o DIR               output directory (must not already hold an assembly)
   -t N                 threads (default: all cores)
-  --organism NAME      use this organism's model (manual only; never applied automatically):
-                       kpneumoniae, ecoli, ecloacae, abaumannii, paeruginosa, saureus, efaecium,
-                       senterica (klebsiella and salmonella are accepted). Install the models once
-                       with tesseract-get-models. Also sets the expected genome size.
-  --genome-size MB     expected genome size, for the depth estimate (default: from --organism, else 5)
-  --force              assemble even if a preflight check fails
-  --keep-going         with --force, also ignore failed postflight checks in the exit status
-  anything else        passed to tesseract-asm unchanged (e.g. --mode careful, --min-contig 500)
+  --organism NAME      use the model of this organism (download it once first):
+                         kpneumoniae (klebsiella), ecoli, ecloacae, abaumannii,
+                         paeruginosa, saureus, efaecium, senterica (salmonella)
+  --genome-size MB     expected genome size, for the depth and size checks
+                       (default: from --organism, otherwise 5)
+
+ASSEMBLY OPTIONS (rarely needed)
+  --mode NAME          standard (default) | fast | careful | aggressive
+                       fast: fewer k values, no polishing
+                       careful: denser k ladder, more simplification, 2 polishing passes
+                       aggressive: collapses diverged repeat copies for contiguity
+                       (about one more misassembly per genome)
+  --min-contig N       shortest contig to report (default: 2k)
+  -k LIST              k-mer sizes, e.g. 21,33,55,77 (default: chosen from the read length)
+  --max-memory GB      stop cleanly above this much memory (default: 80% of RAM)
+  --map-polish bwa|bowtie2   polish against a full read alignment (needs the mapper)
+  --no-scaffold, --no-polish, --no-gfa, --no-html     skip a step or an output
+  --help-all           list every assembler setting
+
+RUN CONTROL
+  --force              assemble even if the read check fails
+  --keep-going         with --force, ignore failed output checks in the exit status
+
+OUTPUT (in OUTDIR)
+  contigs.fasta        the assembly
+  scaffolds.fasta      contigs joined across gaps of estimated size (only when gaps remain)
+  SUMMARY.txt          what was checked, every warning, and what to do about it
+  report.html          the run in a browser; report.json for scripts
+  assembly_graph.gfa   the assembly graph (opens in Bandage)
 
 EXIT STATUS
-  0 every check passed (warnings are listed in SUMMARY.txt), 1 a check failed, 2 usage error.
+  0 every check passed (warnings are in SUMMARY.txt), 1 a check failed, 2 usage error.
 EOF2
 }
 
 # ---------------------------------------------------------------- arguments
 cmd=run
 case "${1:-}" in
+    models)
+        shift
+        [ -n "$GETMODELS" ] || die "the model fetcher is missing from this installation"
+        case "${1:-}" in
+            list) shift; exec "$GETMODELS" --list "$@" ;;
+            download) shift; exec "$GETMODELS" "$@" ;;
+            ""|-h|--help) say "tesseract models list                 show the models and which are installed"
+                          say "tesseract models download            download all models (~1.7 GB, once)"
+                          say "tesseract models download NAME...    download only these"
+                          say "Models go to ~/.tesseract/models (TESSERACT_MODEL_DIR or --dir PATH moves them)."; exit 0 ;;
+            *) die "unknown models command '$1' (list or download)" ;;
+        esac ;;
+    --help-all)
+        [ -n "$ASM" ] || die "assembler engine not found"
+        "$ASM" --help 2>&1 | sed -n '/^OUTPUT/,$p' | sed 's/tesseract-asm/tesseract/g; s/tesseract-get-models/tesseract models download/g'
+        exit 0 ;;
     check) cmd=check; shift ;;
     run) shift ;;
-    version|--version|-v) say "tesseract $VERSION"; [ -n "$ASM" ] && "$ASM" --version 2>/dev/null | grep -m1 TesserACT; exit 0 ;;
+    version|--version|-v) say "TesserACT $VERSION"; exit 0 ;;
     ""|-h|--help|help) usage; exit 0 ;;
 esac
-R1=""; R2=""; OUT=""; TH="$(nproc 2>/dev/null || echo 4)"; ORG=""; GSIZE=""; FORCE=0; KEEPGOING=0; EXTRA=()
+R1=""; R2=""; OUT=""; TH="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"; ORG=""; GSIZE=""; FORCE=0; KEEPGOING=0; EXTRA=()
 while [ $# -gt 0 ]; do
     case "$1" in
         -1|--read1) R1="${2:-}"; shift 2 ;;
@@ -84,7 +131,7 @@ done
 case "$ORG" in klebsiella) ORG=kpneumoniae ;; salmonella) ORG=senterica ;; esac
 case "$ORG" in ""|kpneumoniae|ecoli|ecloacae|abaumannii|paeruginosa|saureus|efaecium|senterica) ;;
     *) die "unknown organism '$ORG' (kpneumoniae, ecoli, ecloacae, abaumannii, paeruginosa, saureus, efaecium, senterica)" ;; esac
-[ -n "$ASM" ] && [ -x "$ASM" ] || die "tesseract-asm not found (put it on PATH or set TESSERACT_ASM)"
+[ -n "$ASM" ] && [ -x "$ASM" ] || die "the assembler engine is missing from this installation (reinstall, or set TESSERACT_ASM)"
 
 genome_mb_for() {
     case "$1" in kpneumoniae) echo 5.5 ;; ecoli) echo 5.1 ;; ecloacae) echo 5.0 ;; abaumannii) echo 4.0 ;;
@@ -123,7 +170,7 @@ for f in "$R1" "$R2"; do
         else pf FAIL "gzip" "'$f' is truncated or corrupt (gzip -t failed)"; fi
     fi
 done
-[ "$(readlink -f "$R1")" = "$(readlink -f "$R2")" ] && pf FAIL "pairing" "-1 and -2 are the same file"
+[ "$R1" -ef "$R2" ] && pf FAIL "pairing" "-1 and -2 are the same file"
 
 if [ "$fails" -eq 0 ]; then
     # One pass over both files, record by record: format, pairing, length, quality, adapters, poly-G.
@@ -188,10 +235,13 @@ if [ "$fails" -eq 0 ]; then
 fi
 if [ "$cmd" = run ]; then
     avail_kb=$(df -Pk "$OUT" | awk 'NR==2 {print $4}')
-    need_kb=$(( ( $(stat -c %s "$R1" 2>/dev/null || echo 0) + $(stat -c %s "$R2" 2>/dev/null || echo 0) ) * 3 / 1024 + 2097152 ))
+    need_kb=$(( ( $(wc -c < "$R1") + $(wc -c < "$R2") ) * 3 / 1024 + 2097152 ))
     [ "${avail_kb:-0}" -ge "$need_kb" ] && pf OK "disk" "$((avail_kb / 1048576)) GB free in $OUT" || pf FAIL "disk" "only $((avail_kb / 1048576)) GB free in $OUT; need about $((need_kb / 1048576)) GB"
-    mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo 2>/dev/null || echo 0)
-    [ "${mem_kb:-0}" -ge 4194304 ] && pf OK "memory" "$((mem_kb / 1048576)) GB available" || pf WARN "memory" "only $((mem_kb / 1048576)) GB available; a bacterial assembly needs 2-6 GB"
+    if [ -r /proc/meminfo ]; then mem_kb=$(awk '/MemAvailable/ {print $2}' /proc/meminfo)
+    else mem_kb=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 0) / 1024 )); fi
+    if [ "${mem_kb:-0}" -gt 0 ]; then
+        [ "$mem_kb" -ge 4194304 ] && pf OK "memory" "$((mem_kb / 1048576)) GB available" || pf WARN "memory" "only $((mem_kb / 1048576)) GB available; a bacterial assembly needs 2-6 GB"
+    fi
 fi
 say "preflight: $fails failed, $warns warnings" | tee -a "$LOG"
 [ "$cmd" = check ] && { [ "$fails" -eq 0 ] && exit 0 || exit 1; }
@@ -213,7 +263,7 @@ for kv in "${PROFILE[@]}"; do k="${kv%%=*}"; [ -n "${!k:-}" ] || ENVS+=("$kv"); 
 MODEL_ARGS=()
 if [ -n "$ORG" ]; then
     MODEL_DIR="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
-    [ -s "$MODEL_DIR/$ORG.tsm" ] || { say "The $ORG model is not installed in $MODEL_DIR. Run tesseract-get-models once, or set TESSERACT_MODEL_DIR." >&2; exit 1; }
+    [ -s "$MODEL_DIR/$ORG.tsm" ] || { say "The $ORG model is not installed in $MODEL_DIR. Download it once with: tesseract models download $ORG" >&2; exit 1; }
     MODEL_ARGS=(--organism "$ORG")
     ENVS+=("TESSERACT_MODEL_DIR=$MODEL_DIR")
 fi
@@ -224,12 +274,16 @@ rc_v=$?
 # top rung. Measured: S. aureus at ~10x gave 0 contigs with the default ladder and 1,590 contigs
 # (85 % of the genome) with k = 21,33,55, while at 28x the short ladder was worse (NGA50 105 ->
 # 73 kb). So the short ladder is a retry, not a default: it runs only when the default assembly
-# covers less than a fifth of the expected genome, and only if -k was not given.
+# covers less than a fifth of the expected genome AND its top rung was left with almost no k-mer
+# depth, and only if -k was not given.
 RETRIED=0
 if [ "$rc_v" -eq 0 ] && ! printf '%s\n' "${EXTRA[@]:-}" | grep -qxE -- '-k|--kmers'; then
     got=$(grep -v '^>' "$OUT/contigs.fasta" 2>/dev/null | tr -d '\n' | wc -c)
     want=$(awk -v g="${gs:-5}" 'BEGIN { printf "%d", g * 1e6 * 0.2 }')
-    if [ "${got:-0}" -lt "$want" ]; then
+    # The failure has a signature: the top rung of the ladder is left with almost no k-mer depth
+    # ("k-mer depth 0.0x" in the log). A genuinely small genome assembles fine and is not retried.
+    kdepth=$(grep -o 'k-mer depth *[0-9.]*x' "$OUT/assembly.log" 2>/dev/null | tail -1 | grep -o '[0-9.]*' | head -1)
+    if [ "${got:-0}" -lt "$want" ] && awk -v d="${kdepth:-99}" 'BEGIN { exit !(d < 2) }'; then
         say "the assembly holds only ${got:-0} bp: retrying with a short k ladder (21,33,55) for thin data ..."
         mkdir -p "$OUT/attempt1_default_k"
         for f in "$OUT"/*; do case "$(basename "$f")" in preflight.txt|attempt1_default_k) ;; *) mv "$f" "$OUT/attempt1_default_k/" ;; esac; done
@@ -248,8 +302,8 @@ SUM="$OUT/SUMMARY.txt"; LOG="$SUM"; : > "$SUM"
 fails=0; warns=0
 say "TesserACT $VERSION run summary" | tee -a "$SUM"
 say "  reads    $R1 + $R2" | tee -a "$SUM"
-say "  binary   $ASM ($("$ASM" --version 2>/dev/null | head -1))" | tee -a "$SUM"
-say "  profile  ${ENVS[*]:-(environment overrides only)}" | tee -a "$SUM"
+say "  version  tesseract $VERSION, engine $("$ASM" --version 2>/dev/null | grep -m1 TesserACT)" | tee -a "$SUM"
+say "  settings standard (read-verified circles, library check, PhiX label, small-plasmid recovery, self-check)$( [ -n "$ORG" ] && echo " + $ORG model")" | tee -a "$SUM"
 say "  preflight $(tail -1 "$OUT/preflight.txt")" | tee -a "$SUM"
 
 check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
@@ -280,7 +334,10 @@ check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
     read -r n tot big n50 dup empty badch <<< "$st"
     [ "$dup$empty$badch" = "000" ] && pf OK "contigs.fasta" "$n records, $tot bp, largest $big, N50 $n50" \
         || pf FAIL "contigs.fasta" "malformed: $dup duplicate names, $empty empty records, $badch lines with non-ACGTN characters"
-    if [ -n "${gs:-}" ] && [ "$tot" -gt 0 ]; then
+    local gexp="${GSIZE:-}"
+    [ -z "$gexp" ] && [ -n "${detected:-}" ] && gexp="$(genome_mb_for "$detected")"
+    if [ -n "$gexp" ] && [ "$tot" -gt 0 ]; then
+        gs="$gexp"
         awk -v t="$tot" -v g="$gs" 'BEGIN { r = t / (g * 1e6); exit !(r < 0.8 || r > 1.3) }' \
             && pf WARN "size" "total $(awk -v t="$tot" 'BEGIN{printf "%.2f", t/1e6}') Mb vs ~${gs} Mb expected: contamination, a mixed sample, or the wrong genome size" || true
     fi
@@ -317,7 +374,7 @@ check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
 check_dir "$OUT" "$( [ -n "$ORG" ] && echo "assembly with the $ORG model" || echo "vanilla assembly")" "$rc_v"
 [ "$RETRIED" -eq 1 ] && pf WARN "thin data" "the default k ladder assembled almost nothing; this result uses k = 21,33,55 (the first attempt is in attempt1_default_k/). Expect a fragmented assembly: sequence more deeply if you can"
 if [ -n "$detected" ] && [ -z "$ORG" ]; then
-    say "  hint     the reads look like $detected; a genus model exists. To use it (manual choice), rerun with --organism $detected" | tee -a "$SUM"
+    say "  hint     the reads look like $detected, which has an organism model. To use it (your choice): tesseract models download $detected, then rerun with --organism $detected" | tee -a "$SUM"
 elif [ -n "$detected" ] && [ -n "$ORG" ] && [ "$detected" != "$ORG" ]; then
     pf WARN "organism" "--organism $ORG was given but the reads look like $detected"
 fi

@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
 # tesseract-get-models -- download the organism models and check they arrived intact.
+# Users call it as `tesseract models download|list`; it is installed in libexec/tesseract.
 #
 # Models are release assets, not part of the source tree: the eight total about 1.7 GB
 # and do not belong in a git history. 1.5.0 added senterica.tsm to the same models-v2 release:
 # the seven ESKAPEE files are unchanged, so a 1.4.0 install (whose models.sha256 lists only
 # those seven) still verifies everything it fetches, and never asks for the eighth. This fetches them, verifies each against a
-# checksum, and puts them where tesseract-eskape looks by default.
+# checksum, and puts them where --organism looks by default.
 #
 # Written to be safe to re-run: an already-verified model is skipped, and a download that fails
 # verification is deleted rather than left in place, because a truncated model file produces a
@@ -17,26 +18,24 @@ DEST="${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}"
 MANIFEST_LOCAL="$(dirname "$0")/models.sha256"
 
 say()  { printf '%s\n' "$*"; }
-die()  { printf 'tesseract-get-models: %s\n' "$*" >&2; exit 1; }
+die()  { printf 'tesseract models: %s\n' "$*" >&2; exit 1; }
 
 usage() {
 cat <<'USAGE'
-tesseract-get-models -- fetch the TesserACT organism models
+tesseract models -- fetch the organism models
 
-  tesseract-get-models              download every model
-  tesseract-get-models saureus      download just one (repeatable)
-  tesseract-get-models --list       show what is available and what you already have
-  tesseract-get-models --dir PATH   put them somewhere else
+  tesseract models download              download every model
+  tesseract models download saureus      download just one (several names are fine)
+  tesseract models list                  show what is available and what you already have
+  tesseract models download --dir PATH   put them somewhere else
 
-They go to ~/.tesseract/models by default, which is where tesseract-eskape looks.
-About 1.7 GB for the full set of eight (64 to 349 MB per organism). Re-running is safe:
-anything already verified is skipped.
+They go to ~/.tesseract/models by default, which is where --organism looks (TESSERACT_MODEL_DIR
+moves it). About 1.7 GB for all eight (64 to 349 MB each). Re-running is safe: anything
+already verified is skipped.
 
-The models are optional: TesserACT assembles without them. A model buys contiguity and costs
-misassemblies. With the 1.4.0 defaults, on 329 held-out ESKAPEE isolates, the models raised
-the median NGA50 from 134 to 156 kb and the misassemblies from 154 to 290 (models/README.md).
-The Salmonella model (senterica, new in 1.5.0) was measured on 15 development isolates only:
-median NGA50 150 -> 267 kb, misassemblies 3 -> 10.
+Models are optional: tesseract assembles without them. With --organism, the chromosome is laid
+out from the conserved gene order of thousands of closed genomes of that species: more
+contiguous, at some risk of joins that were seen in other genomes rather than in your reads.
 USAGE
 }
 
@@ -109,12 +108,11 @@ if [ "$n_404" -gt 0 ]; then
     say "$n_404 model(s) are not on the release page at:"
     say "    $BASE"
     say "That is a publishing gap on our side, not a fault on this machine, and retrying"
-    say "will not fix it. TesserACT works without them -- tesseract-eskape says so and falls"
-    say "back to the assembler defaults, which still assembles the genome, just less"
-    say "contiguously. Point TESSERACT_MODEL_DIR at a copy if you have one:"
+    say "will not fix it. tesseract works without them: run it without --organism, or point"
+    say "TESSERACT_MODEL_DIR at a copy if you have one:"
     say "    export TESSERACT_MODEL_DIR=/path/to/models"
     exit 1
 fi
 [ "$n_fail" -gt 0 ] && die "some models did not download. Re-run to retry just those."
 say "You can now run, for example:"
-say "    tesseract-eskape --preset saureus -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o result"
+say "    tesseract -1 reads_R1.fastq.gz -2 reads_R2.fastq.gz -o result --organism saureus"
