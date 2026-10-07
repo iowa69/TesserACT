@@ -1,8 +1,8 @@
 {% set name = "tesseract-assembler" %}
 {% set version = "1.6.1" %}
-{# sha256 below is still the v1.6.0 tarball.s. It is set once the v1.6.1 tag exists: #}
-{# git archive --prefix=TesserACT-1.6.0/ v1.6.0 | gzip -n | sha256sum #}
-{% set sha256 = "808d96b3189f2ca89428bb65f97b4717229fb3aa95d86db1564000e02fd4f5df" %}
+{# sha256 of the v1.6.1 tag.s tarball, computed as: #}
+{# git archive --prefix=TesserACT-1.6.1/ v1.6.1 | gzip -n | sha256sum #}
+{% set sha256 = "73a9eeb853919b4f1e3cda333cc6fd61566ca0fb1a9533527a74c681975a7f9e" %}
 
 package:
   name: {{ name|lower }}
