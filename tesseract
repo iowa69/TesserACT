@@ -220,6 +220,23 @@ fi
 say "assembling into $OUT $( [ -n "$ORG" ] && echo "with the $ORG model" || echo "(vanilla)") ..."
 env "${ENVS[@]}" "$ASM" -1 "$R1" -2 "$R2" -o "$OUT" -t "$TH" "${MODEL_ARGS[@]}" "${EXTRA[@]}" > "$OUT/assembly.log" 2>&1
 rc_v=$?
+# Very thin libraries (about 10x and below) can leave the default k ladder with nothing at its
+# top rung. Measured: S. aureus at ~10x gave 0 contigs with the default ladder and 1,590 contigs
+# (85 % of the genome) with k = 21,33,55, while at 28x the short ladder was worse (NGA50 105 ->
+# 73 kb). So the short ladder is a retry, not a default: it runs only when the default assembly
+# covers less than a fifth of the expected genome, and only if -k was not given.
+RETRIED=0
+if [ "$rc_v" -eq 0 ] && ! printf '%s\n' "${EXTRA[@]:-}" | grep -qxE -- '-k|--kmers'; then
+    got=$(grep -v '^>' "$OUT/contigs.fasta" 2>/dev/null | tr -d '\n' | wc -c)
+    want=$(awk -v g="${gs:-5}" 'BEGIN { printf "%d", g * 1e6 * 0.2 }')
+    if [ "${got:-0}" -lt "$want" ]; then
+        say "the assembly holds only ${got:-0} bp: retrying with a short k ladder (21,33,55) for thin data ..."
+        mkdir -p "$OUT/attempt1_default_k"
+        for f in "$OUT"/*; do case "$(basename "$f")" in preflight.txt|attempt1_default_k) ;; *) mv "$f" "$OUT/attempt1_default_k/" ;; esac; done
+        env "${ENVS[@]}" "$ASM" -1 "$R1" -2 "$R2" -o "$OUT" -t "$TH" -k 21,33,55 "${MODEL_ARGS[@]}" "${EXTRA[@]}" > "$OUT/assembly.log" 2>&1
+        rc_v=$?; RETRIED=1
+    fi
+fi
 detected=""
 if [ "$rc_v" -eq 0 ] && [ -s "$OUT/report.json" ]; then
     detected=$(tr -d '\n ' < "$OUT/report.json" | grep -o '"organism_detect":{.*' | grep -o '"call":"[a-z]*"' | head -1 | sed 's/"call":"\(.*\)"/\1/')
@@ -298,6 +315,7 @@ check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
     fi
 }
 check_dir "$OUT" "$( [ -n "$ORG" ] && echo "assembly with the $ORG model" || echo "vanilla assembly")" "$rc_v"
+[ "$RETRIED" -eq 1 ] && pf WARN "thin data" "the default k ladder assembled almost nothing; this result uses k = 21,33,55 (the first attempt is in attempt1_default_k/). Expect a fragmented assembly: sequence more deeply if you can"
 if [ -n "$detected" ] && [ -z "$ORG" ]; then
     say "  hint     the reads look like $detected; a genus model exists. To use it (manual choice), rerun with --organism $detected" | tee -a "$SUM"
 elif [ -n "$detected" ] && [ -n "$ORG" ] && [ "$detected" != "$ORG" ]; then
