@@ -1512,6 +1512,18 @@ grep -q 'Organism models are optional' "$D/install.out" || rc=1
 grep -q 'fetches the model' "$D/install.out" && rc=1
 check "install.sh --prefix: no model, says optional" $rc "exit=$st${miss:+ missing:$miss}"
 
+# (d2) a packager's flat layout (every file in one bin/, as bioconda's 1.6.1 recipe did): the
+# command still finds its engine, the model fetcher and the detection sketch.
+rm -rf "$D/flat"; mkdir -p "$D/flat/bin"
+cp "$ROOT/tesseract" "$TESSERACT" "$ROOT/scripts/tesseract-get-models" "$ROOT/scripts/models.sha256" \
+   "$ROOT/models/om2detect.sketch" "$D/flat/bin/"
+[ "$(basename "$TESSERACT")" = tesseract-asm ] || mv "$D/flat/bin/$(basename "$TESSERACT")" "$D/flat/bin/tesseract-asm"
+rc=0
+env -i PATH="$D/flat/bin:/usr/bin:/bin" HOME="$D/home" TESSERACT_MODEL_DIR="$D/flatmodels" \
+    bash -c 'tesseract --version && tesseract models --help && tesseract models list' >"$D/flat.out" 2>&1 || rc=1
+grep -q 'kpneumoniae.tsm' "$D/flat.out" || rc=1
+check "flat bin/ layout: engine, model fetcher and sketch found" $rc "$(tail -1 "$D/flat.out")"
+
 # (e) the help texts say a model is optional and what it costs
 rc=0
 "$TESSERACT" --help 2>&1 | grep -q 'roughly doubled misassemblies' || rc=1

@@ -17,7 +17,7 @@
 #                 that has a model, the summary says so -- it never applies the model by itself.
 set -uo pipefail
 
-VERSION="1.6.1"
+VERSION="1.6.2"
 # Where this script really lives, following symlinks without GNU readlink -f (macOS).
 src="${BASH_SOURCE[0]}"
 while [ -h "$src" ]; do d="$(cd "$(dirname "$src")" && pwd)"; src="$(readlink "$src")"; case "$src" in /*) ;; *) src="$d/$src" ;; esac; done
@@ -29,8 +29,12 @@ if [ -z "$ASM" ]; then
     for c in "$here/../libexec/tesseract/tesseract-asm" "$here/tesseract-asm"; do [ -x "$c" ] && { ASM="$c"; break; }; done
     [ -n "$ASM" ] || ASM="$(command -v tesseract-asm || true)"
 fi
+# Packagers may also put every file in one bin/ directory; each helper is looked for there too.
 GETMODELS=""
-for c in "$here/../libexec/tesseract/tesseract-get-models" "$here/scripts/tesseract-get-models"; do [ -x "$c" ] && { GETMODELS="$c"; break; }; done
+for c in "$here/../libexec/tesseract/tesseract-get-models" "$here/scripts/tesseract-get-models" "$here/tesseract-get-models"; do
+    [ -x "$c" ] && { GETMODELS="$c"; break; }
+done
+[ -n "$GETMODELS" ] || GETMODELS="$(command -v tesseract-get-models || true)"
 
 say()  { printf '%s\n' "$*"; }
 die()  { printf 'tesseract: %s\n' "$*" >&2; exit 2; }
@@ -141,7 +145,8 @@ genome_mb_for() {
 # The detection sketch ships next to the binary (share/tesseract) or in the source tree (models/).
 SKETCH="${TESSERACT_P2_DETECT_SKETCH:-}"
 if [ -z "$SKETCH" ]; then
-    for c in "$here/../share/tesseract/om2detect.sketch" "$here/models/om2detect.sketch" "${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}/om2detect.sketch"; do
+    for c in "$here/../share/tesseract/om2detect.sketch" "$here/models/om2detect.sketch" "$here/om2detect.sketch" \
+             "${TESSERACT_MODEL_DIR:-$HOME/.tesseract/models}/om2detect.sketch"; do
         [ -s "$c" ] && { SKETCH="$c"; break; }
     done
 fi
@@ -326,14 +331,20 @@ check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
         { if ($0 ~ /[^ACGTNacgtn]/) badch++; len += length($0) }
         END { if (name != "") { if (len == 0) empty++; print len > "/dev/stderr"; tot += len; n++ }
               printf "%d %d %d %d %d\n", n, tot, dup + 0, empty + 0, badch + 0 }' "$d/contigs.fasta" 2> "$d/.lens")
-    local big n50
-    big=$(sort -n "$d/.lens" | tail -1)
-    n50=$(sort -rn "$d/.lens" | awk -v t="$(printf '%s' "$st" | cut -d' ' -f2)" '{ a += $1; if (a >= t / 2) { print $1; exit } }')
+    # N50/N90 and L50/L90 over every contig written (no length filter).
+    local big n50 n90 l50 l90
+    read -r big n50 n90 l50 l90 < <(sort -rn "$d/.lens" | awk -v t="$(printf '%s' "$st" | cut -d' ' -f2)" '
+        NR == 1 { big = $1 }
+        { a += $1; i++
+          if (!n50 && a >= t * 0.5) { n50 = $1; l50 = i }
+          if (!n90 && a >= t * 0.9) { n90 = $1; l90 = i } }
+        END { printf "%d %d %d %d %d\n", big, n50, n90, l50, l90 }')
     rm -f "$d/.lens"
     st="$(printf '%s' "$st" | awk -v b="${big:-0}" -v m="${n50:-0}" '{ print $1, $2, b, m, $3, $4, $5 }')"
     read -r n tot big n50 dup empty badch <<< "$st"
-    [ "$dup$empty$badch" = "000" ] && pf OK "contigs.fasta" "$n records, $tot bp, largest $big, N50 $n50" \
+    [ "$dup$empty$badch" = "000" ] && pf OK "contigs.fasta" "$n contigs, $tot bp; largest $big; N50 $n50 (L50 $l50); N90 $n90 (L90 $l90)" \
         || pf FAIL "contigs.fasta" "malformed: $dup duplicate names, $empty empty records, $badch lines with non-ACGTN characters"
+    STATS=("contigs	$n" "total_bp	$tot" "largest	$big" "N50	$n50" "L50	$l50" "N90	$n90" "L90	$l90")
     local gexp="${GSIZE:-}"
     [ -z "$gexp" ] && [ -n "${detected:-}" ] && gexp="$(genome_mb_for "$detected")"
     if [ -n "$gexp" ] && [ "$tot" -gt 0 ]; then
@@ -361,15 +372,36 @@ check_dir() {   # $1 = assembly dir, $2 = label, $3 = assembler exit status
     [ "${spike:-0}" -gt 0 ] && pf WARN "spike-in" "${spike} PhiX record(s) labelled _spikein: remove them before submission" || true
     local guard; guard=$(printf '%s' "$js" | grep -o '"r2": *{[^}]*"verdict": *"[a-z]*"' | sed 's/.*"verdict": *"//; s/"$//')
     [ -n "$guard" ] && [ "$guard" != pass ] && pf WARN "library" "pair orientation check '$guard': not a standard FR library; pair-based joins were disabled" || true
-    if command -v minimap2 >/dev/null 2>&1; then
+    # Read map-back: a sample of read pairs aligned to the contigs, as the share of reads that
+    # map and of pairs that map as proper pairs. bwa (a dependency of the conda package) or
+    # minimap2; skipped, and said so, when neither is installed.
+    local mapper=""
+    command -v bwa >/dev/null 2>&1 && mapper=bwa
+    [ -z "$mapper" ] && command -v minimap2 >/dev/null 2>&1 && mapper=minimap2
+    if [ -n "$mapper" ]; then
         local tmp; tmp=$(mktemp -d)
-        reader "$R1" | head -n 400000 > "$tmp/s.fq"
-        local m; m=$(minimap2 -x sr -t "$TH" --secondary=no "$d/contigs.fasta" "$tmp/s.fq" 2>/dev/null | cut -f1 | sort -u | wc -l)
-        local pct; pct=$(awk -v m="$m" 'BEGIN { printf "%.1f", m / 100000 * 100 }')
-        awk -v p="$pct" 'BEGIN { exit !(p < 95) }' && pf WARN "map-back" "${pct}% of 100,000 reads map to the contigs: some of the genome is not assembled" \
-            || pf OK "map-back" "${pct}% of 100,000 reads map to the contigs"
+        reader "$R1" | head -n 800000 > "$tmp/s1.fq"; reader "$R2" | head -n 800000 > "$tmp/s2.fq"
+        if [ "$mapper" = bwa ]; then
+            bwa index -p "$tmp/idx" "$d/contigs.fasta" >/dev/null 2>&1
+            bwa mem -t "$TH" "$tmp/idx" "$tmp/s1.fq" "$tmp/s2.fq" 2>/dev/null > "$tmp/m.sam"
+        else
+            minimap2 -ax sr -t "$TH" "$d/contigs.fasta" "$tmp/s1.fq" "$tmp/s2.fq" 2>/dev/null > "$tmp/m.sam"
+        fi
+        local mb; mb=$(awk -F'\t' '!/^@/ && int($2 / 256) % 2 == 0 && int($2 / 2048) % 2 == 0 {
+                n++; if (int($2 / 4) % 2 == 0) m++; if (int($2 / 2) % 2 == 1) p++ }
+                END { if (n) printf "%.2f %.2f %d", 100 * m / n, 100 * p / n, n; else print "0 0 0" }' "$tmp/m.sam")
         rm -rf "$tmp"
+        local mapped proper nreads; read -r mapped proper nreads <<< "$mb"
+        if [ "${nreads:-0}" -gt 0 ]; then
+            STATS+=("reads_mapped_pct	$mapped" "reads_properly_paired_pct	$proper" "reads_sampled	$nreads")
+            awk -v p="$mapped" 'BEGIN { exit !(p < 95) }' \
+                && pf WARN "map-back" "${mapped}% of ${nreads} sampled reads map back (${proper}% as proper pairs): some of what was sequenced is not in the assembly" \
+                || pf OK "map-back" "${mapped}% of ${nreads} sampled reads map back, ${proper}% as proper pairs ($mapper)"
+        fi
+    else
+        pf OK "map-back" "skipped: install bwa or minimap2 to measure how many reads map back"
     fi
+    printf '%s\n' "metric	value" "${STATS[@]}" > "$d/assembly_stats.tsv"
 }
 check_dir "$OUT" "$( [ -n "$ORG" ] && echo "assembly with the $ORG model" || echo "vanilla assembly")" "$rc_v"
 [ "$RETRIED" -eq 1 ] && pf WARN "thin data" "the default k ladder assembled almost nothing; this result uses k = 21,33,55 (the first attempt is in attempt1_default_k/). Expect a fragmented assembly: sequence more deeply if you can"

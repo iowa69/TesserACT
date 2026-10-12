@@ -12,7 +12,9 @@ assembled genome:
   with read pairs, gap closing and polishing;
 - it **writes circular replicons** (plasmids, sometimes the chromosome) only when the reads
   prove the circle closes;
-- it **checks the result** and tells you in plain language what to look at.
+- it **checks the result**: contiguity (N50, N90), how many reads map back to the assembly,
+  what the reads contain that the assembly does not, and tells you in plain language what to
+  look at.
 
 Its special touch is the **organism models**. For *Klebsiella pneumoniae*, *E. coli*,
 *Enterobacter cloacae*, *Acinetobacter baumannii*, *Pseudomonas aeruginosa*,
@@ -153,6 +155,7 @@ You do not need to tune anything for the usual cases; `tesseract` adapts to the 
 | `contigs.fasta` | the assembly |
 | `scaffolds.fasta` | contigs joined across gaps of estimated size (only when such gaps remain) |
 | `SUMMARY.txt` | every check, as `OK` / `WARN` / `FAIL`, with what to do |
+| `assembly_stats.tsv` | contigs, total length, largest, N50/L50, N90/L90, and the share of reads (and of proper pairs) that map back to the assembly |
 | `report.html` | the whole run, for a browser; `report.json` for scripts |
 | `assembly_graph.gfa` | the assembly graph, for Bandage |
 | `replicons.tsv` | each circular candidate and why it was or was not closed |
